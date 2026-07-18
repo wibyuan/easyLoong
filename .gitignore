@@ -1,0 +1,18 @@
+# Vivado generated
+run_vivado/project/
+*.xpr
+*.jou
+
+# ASM build artifacts
+*.bin
+*.elf
+*.o
+
+# Editor
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
