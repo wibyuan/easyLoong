@@ -4,9 +4,9 @@ run_vivado/project/
 *.jou
 
 # ASM build artifacts
-*.bin
-*.elf
-*.o
+asm/*.bin
+asm/*.elf
+asm/*.o
 
 # Editor
 .vscode/
