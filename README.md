@@ -16,12 +16,40 @@
 |   |-- simulation/            # 仿真模型 (SRAM/Flash)
 |   `-- flow/                  # ★ 受控 CI 脚本（不可修改）
 |-- docs/
-|   |-- md/                    # ISA 手册 OCR 翻译 + 指令编码表（⚠ 公开前须从 git 历史中彻底删除）
+|   |-- *.pdf                     # 原始参考文档（⚠ 公开前须从 git 历史中彻底删除）
+|   |-- md/                       # PDF 的 OCR 翻译 + 指令编码表 + 原理图要点
+|   `-- html/                     # 平台评测题目（阶段 1-5）
 |-- loongarch32r-linux-gnusf-2022-05-20/  # LA32R 交叉编译工具链 (GCC 8.3.0)
 `-- README.md
 ```
 
-## 2. 开发环境
+## 2. 硬件平台
+
+| 项目 | 值 |
+|------|-----|
+| FPGA | XC7A200T-2FBG676C |
+| BaseRAM | `0x1c000000 - 0x1c3fffff` (4 MiB) |
+| ExtRAM | `0x1c400000 - 0x1c7fffff` (4 MiB) |
+| UART 窗口 | `0x1f000000 - 0x1f0fffff` (1 MiB) |
+| 复位 PC | `0x1c000000` |
+| 串口 | 115200 baud, 8N1 |
+| 字节序 | 小端 |
+
+## 3. 评测阶段
+
+| 阶段 | 类型 | 说明 |
+|------|------|------|
+| 1 | 功能测试 | 6 条指令 (`lu12i.w addi.w add.w ld.w st.w bne`)，计算斐波那契数列。裸机，无 UART、无 CSR、无异常 |
+| 2 | MATRIX | Monitor 运行，矩阵乘加。需 UART |
+| 3 | STREAM | Monitor 运行，~3MiB 连续访存 |
+| 4 | CRYPTONIGHT | Monitor 运行，2MiB 内存访问 + 整数运算 |
+| 5 | MIXED | Monitor 运行，混合运算 |
+
+> **评测方式**：脚本将测试程序写入 BaseRAM → 释放复位 → CPU 运行后将结果写入 ExtRAM → 脚本读回比对。不通过 UART 输出判定结果。
+
+> **指令集最终要求**：以 [supervisor README](https://gitee.com/loongson-edu/supervisor) 为准。
+
+## 4. 开发环境
 
 ### 工具链
 
@@ -52,7 +80,7 @@ vivado -mode batch -source run_vivado/flow/generate_bitstream.tcl
 - 不自建 Vivado IP 目录，`.xci` 放 `src/soc/xilinx_ip/<name>/`
 - 不提交 `ip_user_files/`、`.runs/`、`.cache/` 等中间产物
 
-## 3. 提交规范
+## 5. 提交规范
 
 ### 可修改
 
@@ -66,4 +94,4 @@ src/soc/**  src/vivado_cannot/**  run_vivado/constraints/**  asm/**  README.md  
 run_vivado/flow/**
 ```
 
-> **公开前须知**：repo 公开前，须向主办方请示哪些内容可以公开。`docs/` 目录须从 git 历史中彻底删除。
+> **公开前须知**：repo 公开前，须向主办方请示哪些内容可以公开。`docs/` 及 `loongarch32r-linux-gnusf-2022-05-20/` 须从 git 历史中彻底删除。
