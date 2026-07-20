@@ -93,7 +93,7 @@
 
 | 阶段 | 类型 | 说明 | 状态 |
 |------|------|------|------|
-| 1 | 功能测试 | 斐波那契数列（裸机，6 条基础指令） | ✅ 通过 |
+| 1 | 功能测试 | 斐波那契数列（裸机，6 条基础指令） | 🔧 difftest 通过，UART 待调通 |
 | 2 | MATRIX | Monitor 运行，矩阵乘加 | ⬜ |
 | 3 | STREAM | Monitor 运行，~3MiB 连续访存 | ⬜ |
 | 4 | CRYPTONIGHT | Monitor 运行，2MiB 内存访问 + 整数运算 | ⬜ |
@@ -354,13 +354,18 @@ vivado -mode batch -source run_vivado/flow/generate_bitstream.tcl
 
 - [ ] **supervisor CSR 对接**：帧测测试通过后，需实现完整的 CSR 读取/写入
   支持，以通过 supervisor 所有测试阶段（MATRIX / STREAM / CRYPTONIGHT / MIXED）
+- [ ] **UART 输出不工作**：difftest 确认 CPU 核心寄存器状态与 NEMU 一致
+  （GPR[0..31] + CSR + idle_pc 逐条比对通过），supervisor 初始化（BSS 清零、
+  GOT 间接加载、串口地址配置）正确完成。但 `fibonacci.json` 完整测试中
+  `uart_display` 从未触发，UART 无任何字符输出。需排查：
+  - AXI crossbar 是否将地址 `0x1f000000`（UART 窗口）正确路由到 UART 控制器
+  - UART 模型的仿真行为是否符合 16550 预期（LSR.THRE 位、FIFO 初始化等）
 
 ### 仿真说明
 
-阶段 1 斐波那契测试（`fibonacci.json`，uncache 内核）**已通过**。
-difftest 逐条比对确认 GPR[0..31] + CSR + idle_pc 全程一致，
-CPU 正常完成 supervisor 初始化（BSS 清零、串口配置、GOT 间接加载），
-进入 SHELL 等待 UART 交互。
+阶段 1 斐波那契测试（`fibonacci.json`，uncache 内核）当前状态：
+- difftest 逐条比对全程无 mismatch，CPU 核心逻辑正确
+- UART 交互部分未工作，测试最终超时退出
 
 ## 10. 提交规范
 
