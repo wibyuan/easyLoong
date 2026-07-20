@@ -93,7 +93,7 @@
 
 | 阶段 | 类型 | 说明 | 状态 |
 |------|------|------|------|
-| 1 | 功能测试 | 斐波那契数列（裸机，6 条基础指令） | 🔧 调试中 |
+| 1 | 功能测试 | 斐波那契数列（裸机，6 条基础指令） | ✅ 通过 |
 | 2 | MATRIX | Monitor 运行，矩阵乘加 | ⬜ |
 | 3 | STREAM | Monitor 运行，~3MiB 连续访存 | ⬜ |
 | 4 | CRYPTONIGHT | Monitor 运行，2MiB 内存访问 + 整数运算 | ⬜ |
@@ -344,20 +344,23 @@ vivado -mode batch -source run_vivado/flow/generate_bitstream.tcl
   - `id_ex_stall` 移除 `if_not_ready`（改用 flush 注入气泡，而非全局 stall）
   - `id_ex_flush` 增加 `load_use_hazard` 和 `if_not_ready` 条件，配以
     `!(lsu_not_ready || ex_not_ready)` 门控
+- [x] **AW 写通道 phantom write 抢占**：`axibus_arbiter.sv` 写通道未区分读写请求，
+  读操作（strobe=0000）触发无效 AXI 写事务，其 bvalid 回调被后续 store 误认为
+  写完成，导致 store 数据静默丢失。修复：
+  - 读通道仅对 `dreq.strobe == 4'd0` 的请求启动 AXI 读事务
+  - 写通道仅对 `|dreq.strobe` 的请求启动 AXI 写事务
 
 ### 待修复
 
-- [ ] **地址 0 写入挂死**：BSS 清除后，supervisor `bss_init_done` 处执行
-  `ld.w r13, r13, offset` 加载 cache 参数地址，但结果 r13 = 0x00000000，
-  随后 `st.w r29, (r13)` 写入 AXI crossbar slave1（0x00000000~0x00800000，
-  Reserved 无外设响应），导致 arbiter write channel 永不休眠，CPU 全局冻结。
-  需排查：kernel 数据段中该偏移处的值为何为 0，或为地址 0 提供默认映射。
+- [ ] **supervisor CSR 对接**：帧测测试通过后，需实现完整的 CSR 读取/写入
+  支持，以通过 supervisor 所有测试阶段（MATRIX / STREAM / CRYPTONIGHT / MIXED）
 
 ### 仿真说明
 
-阶段 1 斐波那契测试（`fibonacci.json`，uncache 内核）当前**未通过**。
-hazard_unit 修复后 BSS 清除循环正常退出，但 supervisor 在 cache 参数初始化阶段
-因写入 unmapped 地址 0x00000000 而挂死，无法进入 UART 欢迎信息输出流程。
+阶段 1 斐波那契测试（`fibonacci.json`，uncache 内核）**已通过**。
+difftest 逐条比对确认 GPR[0..31] + CSR + idle_pc 全程一致，
+CPU 正常完成 supervisor 初始化（BSS 清零、串口配置、GOT 间接加载），
+进入 SHELL 等待 UART 交互。
 
 ## 10. 提交规范
 
