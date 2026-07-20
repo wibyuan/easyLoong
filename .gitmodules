@@ -1,3 +1,6 @@
 [submodule "nscscc-solo-la-soc"]
 	path = nscscc-solo-la-soc
 	url = https://gitee.com/loongson-edu/nscscc-solo-la-soc.git
+[submodule "la32r-nemu"]
+	path = la32r-nemu
+	url = git@github.com:ImpLoong/la32r-nemu.git
