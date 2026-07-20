@@ -170,6 +170,7 @@ module axibus_arbiter import la32_common::*; (
         wvalid  = 1'b0;
         bready  = 1'b0;
         dresp.addr_ok = 1'b0;
+        dresp.data_ok = 1'b0;
 
         case (wstate)
             W_IDLE: begin
@@ -208,10 +209,12 @@ module axibus_arbiter import la32_common::*; (
             end
             W_RESP: begin
                 bready = 1'b1;
-                if (bvalid)
+                if (bvalid) begin
+                    dresp.data_ok = 1'b1;
                     wnext = W_IDLE;
-                else
+                end else begin
                     wnext = W_RESP;
+                end
             end
             default: wnext = W_IDLE;
         endcase
