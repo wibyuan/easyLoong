@@ -1,0 +1,1 @@
+/home/wibyu/easyLoong/src/soc/cpu/lsu.sv

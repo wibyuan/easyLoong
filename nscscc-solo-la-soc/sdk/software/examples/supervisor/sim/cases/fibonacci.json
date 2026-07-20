@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "supervisor-fibonacci-uart",
+  "backend": "verilator",
+  "supported_backends": ["verilator"],
+  "prepare": {
+    "cwd": "../..",
+    "command": ["./build_all.sh"]
+  },
+  "images": {
+    "base": "../../build/kernel/uncache/axi_ram.mif",
+    "ext": "none"
+  },
+  "plusargs": {
+    "supervisor_uart_check": true,
+    "max_time": 1000000000,
+    "supervisor_a_file": {
+      "path": "../../build/utility/fibonacci/fibonacci.mem"
+    },
+    "supervisor_a_addr": "0x1c300000",
+    "supervisor_expected_regs": "r4:1c400020,r5:1c400020,r12:22,r13:37,r14:37",
+    "supervisor_result_addr": "0x1c400000",
+    "supervisor_result_words": "2,3,5,8,d,15,22,37"
+  },
+  "flags": ["no_ext_ram_write_log"]
+}

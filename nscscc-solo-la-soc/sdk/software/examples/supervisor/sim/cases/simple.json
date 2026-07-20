@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "supervisor-simple",
+  "backend": "verilator",
+  "prepare": {
+    "cwd": "../..",
+    "command": ["./build_all.sh"]
+  },
+  "images": {
+    "base": "../../build/kernel/auto/axi_ram.mif",
+    "ext": "none"
+  },
+  "plusargs": {
+    "supervisor_entry": {
+      "symbol": "UTEST_SIMPLE",
+      "file": "../../build/kernel/auto/utest_symbols.txt"
+    },
+    "max_time": 100000000,
+    "dump_ext_size": 0
+  },
+  "flags": ["no_ext_ram_write_log"]
+}

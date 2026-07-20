@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "supervisor-mixed",
+  "backend": "verilator",
+  "prepare": {
+    "cwd": "../..",
+    "command": ["./build_all.sh"]
+  },
+  "images": {
+    "base": "../../build/kernel/auto/axi_ram.mif",
+    "ext": "none"
+  },
+  "plusargs": {
+    "supervisor_entry": {
+      "symbol": "UTEST_MIXED",
+      "file": "../../build/kernel/auto/utest_symbols.txt"
+    },
+    "max_time": 5000000000,
+    "dump_ext_size": 0,
+    "compare_ext_addr": "0x120000",
+    "compare_ext_file": {
+      "path": "../../build/utility/mixed/mixed_signature.bin"
+    }
+  },
+  "flags": ["no_ext_ram_write_log"]
+}

@@ -176,11 +176,13 @@ module core import la32_common::*; (
     assign id_jump_pc  = if_id_out.data.pc + dec_imm;
 
     logic [31:0] dec_rd1, dec_rd2;
+    logic [31:0] gpr_state [31:0];
     regfile rf_unit (
         .clk,
         .ra1(dec_rs1), .ra2(dec_rs2), .rd1(dec_rd1), .rd2(dec_rd2),
         .wa(mem_wb_out.data.rd), .wd(mem_wb_out.data.final_res),
-        .wen(mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid)
+        .wen(mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid),
+        .gpr_dbg(gpr_state)
     );
 
     logic id_valid;
@@ -356,6 +358,59 @@ module core import la32_common::*; (
         .jump_flush(ex_jump_flush_hazard),
         .id_jump_req(id_jump_req),
         .wb_jump_req(1'b0)
+    );
+
+    // ==================== DIFFTEST ====================
+    DifftestArchIntRegState u_difftest_gpr (
+        .clock(clk),
+        .gpr_0(gpr_state[0]),  .gpr_1(gpr_state[1]),  .gpr_2(gpr_state[2]),  .gpr_3(gpr_state[3]),
+        .gpr_4(gpr_state[4]),  .gpr_5(gpr_state[5]),  .gpr_6(gpr_state[6]),  .gpr_7(gpr_state[7]),
+        .gpr_8(gpr_state[8]),  .gpr_9(gpr_state[9]),  .gpr_10(gpr_state[10]), .gpr_11(gpr_state[11]),
+        .gpr_12(gpr_state[12]), .gpr_13(gpr_state[13]), .gpr_14(gpr_state[14]), .gpr_15(gpr_state[15]),
+        .gpr_16(gpr_state[16]), .gpr_17(gpr_state[17]), .gpr_18(gpr_state[18]), .gpr_19(gpr_state[19]),
+        .gpr_20(gpr_state[20]), .gpr_21(gpr_state[21]), .gpr_22(gpr_state[22]), .gpr_23(gpr_state[23]),
+        .gpr_24(gpr_state[24]), .gpr_25(gpr_state[25]), .gpr_26(gpr_state[26]), .gpr_27(gpr_state[27]),
+        .gpr_28(gpr_state[28]), .gpr_29(gpr_state[29]), .gpr_30(gpr_state[30]), .gpr_31(gpr_state[31])
+    );
+
+    DifftestInstrCommit u_difftest_commit (
+        .clock(clk),
+        .valid(mem_wb_out.ctrl.valid),
+        .pc(mem_wb_out.data.pc),
+        .instr(mem_wb_out.data.instr),
+        .wen(mem_wb_out.ctrl.rf_we),
+        .wdest(mem_wb_out.data.rd),
+        .wdata(mem_wb_out.data.final_res)
+    );
+
+    DifftestCSRState u_difftest_csr (
+        .clock(clk),
+        .crmd(32'h00000008),
+        .prmd(32'h00000000),
+        .euen(32'h00000000),
+        .ecfg(32'h00000000),
+        .estat(32'h00000000),
+        .era(32'h00000000),
+        .badv(32'h00000000),
+        .eentry(32'h00000000),
+        .tlbidx(32'h00000000),
+        .tlbehi(32'h00000000),
+        .tlbelo0(32'h00000000),
+        .tlbelo1(32'h00000000),
+        .asid(32'h000A0000),
+        .pgdl(32'h00000000),
+        .pgdh(32'h00000000),
+        .save0(32'h00000000),
+        .save1(32'h00000000),
+        .save2(32'h00000000),
+        .save3(32'h00000000),
+        .tid(32'h00000000),
+        .tcfg(32'h00000000),
+        .tval(32'h00000000),
+        .llbctl(32'h00000000),
+        .tlbrentry(32'h00000000),
+        .dmw0(32'h00000000),
+        .dmw1(32'h00000000)
     );
 
 endmodule

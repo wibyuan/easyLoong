@@ -8,6 +8,14 @@ asm/*.bin
 asm/*.elf
 asm/*.o
 
+# nscscc simulation build artifacts
+nscscc-solo-la-soc/sim/verilator/obj_dir/
+nscscc-solo-la-soc/sim/verilator/build/
+nscscc-solo-la-soc/sdk/software/examples/supervisor/build/
+
+# La32r-nemu build artifacts
+la32r-nemu/NEMU/build/
+
 # Editor
 .vscode/
 *.swp
@@ -16,3 +24,6 @@ asm/*.o
 # OS
 .DS_Store
 Thumbs.db
+
+# Downloaded packages
+*.deb

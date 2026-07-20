@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "supervisor-all",
+  "backend": "verilator",
+  "prepare": {
+    "cwd": "..",
+    "command": ["./build_all.sh"]
+  },
+  "cases": [
+    "cases/simple.json",
+    "cases/stream.json",
+    "cases/matrix.json",
+    "cases/mixed.json",
+    "cases/cryptonight.json",
+    "cases/fibonacci.json"
+  ]
+}
