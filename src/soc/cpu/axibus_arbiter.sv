@@ -81,11 +81,11 @@ module axibus_arbiter import la32_common::*; (
 
         case (rstate)
             R_IDLE: begin
-                if (ireq.valid && dreq.valid) begin
+                if (ireq.valid && (dreq.valid && dreq.strobe == 4'd0)) begin
                     rnext = R_ARB;
                 end else if (ireq.valid) begin
                     rnext = R_IREQ;
-                end else if (dreq.valid) begin
+                end else if (dreq.valid && dreq.strobe == 4'd0) begin
                     rnext = R_DREQ;
                 end
             end
@@ -174,7 +174,7 @@ module axibus_arbiter import la32_common::*; (
 
         case (wstate)
             W_IDLE: begin
-                if (dreq.valid) begin
+                if (dreq.valid && |dreq.strobe) begin
                     awaddr  = dreq.addr;
                     awvalid = 1'b1;
                     if (awready) begin
