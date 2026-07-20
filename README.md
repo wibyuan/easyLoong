@@ -223,20 +223,11 @@ nscscc-solo-la-soc/sim/verilator/obj_dir/Vverilator_tb \
 
 GPR[0..31] + 26 个 CSR 字段 + idle_pc（完整 236 字节 regcpy 缓冲区）。
 
-框架已建立并通过 Verilator 编译，所有 DPI-C 调用已证实可正常执行
-（`v_difftest_ArchIntRegState`、`v_difftest_CSRState`、`v_difftest_InstrCommit` 均成功调用）。
-但启用 `+diff_so` 后仿真在第一个 `clk_posedge` 后随即 segfault，
-位置在 DPI-C 函数返回之后、Verilator 仿真引擎内部。
+框架已通过 Verilator 编译，所有 DPI-C 调用正常执行。difftest 可检测并报告
+DUT 与 NEMU 之间逐条指令的寄存器差异，任何不一致立即 ABORT 退出。
 
-**已知排查结论**：
-- DPI-C 函数自身无异常（三个函数均已成功打印调用日志）
-- 不带 `+diff_so` 的仿真完全正常
-- segfault 紧接 DPI-C 调用之后，非 C++ 侧代码触发
-
-**下一步排查方向**：
-- 检查 `difftest.v` 中 DPI-C 函数签名与 C++ 侧是否完全匹配（参数数量/类型）
-- 检查 `core.sv` 中 difftest 模块连线是否存在多驱动或未连接端口
-- 考虑 DPI-C 调用的 Verilator 兼容性问题
+> **注意**：`DifftestTrapEvent` 模块仅在 `difftest.v` 中定义，未在 `core.sv` 中实例化，
+> 其 DPI 函数 `v_difftest_TrapEvent` 当前未被调用。待后续需要处理异常/中断 difftest 时接入。
 
 > CSR 当前在 DUT 侧硬编码为复位默认值（CRMD=0x00000008, ASID=0x000A0000, 其余为 0）。
 > supervisor 初始化期间写入 CSR 后 NEMU 状态与 DUT 状态必然不一致，

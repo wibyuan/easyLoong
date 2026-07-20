@@ -88,18 +88,23 @@ static bool checkregs(uint32_t *ref_buf, uint32_t pc) {
                     fprintf(stderr, "[difftest] %s different at pc=0x%08x, "
                         "ref=0x%08x, dut=0x%08x\n",
                         reg_name(i), pc, ref_buf[i], dut_buf[i]);
-                } else if (i < total_words) {
+                } else {
                     int csr_idx = i - DIFFTEST_NR_GPR;
-                    const char *csr_names[] = {
-                        "crmd","prmd","euen","ecfg","era","badv","eentry",
-                        "tlbidx","tlbehi","tlbelo0","tlbelo1","asid","pgdl","pgdh",
-                        "save0","save1","save2","save3","tid","tcfg","tval",
-                        "llbctl","tlbrentry","dmw0","dmw1","estat"
-                    };
-                    fprintf(stderr, "[difftest] %s different at pc=0x%08x, "
-                        "ref=0x%08x, dut=0x%08x\n",
-                        csr_idx < 27 ? csr_names[csr_idx] : "???",
-                        pc, ref_buf[i], dut_buf[i]);
+                    if (csr_idx < DIFFTEST_NR_CSR) {
+                        const char *csr_names[] = {
+                            "crmd","prmd","euen","ecfg","era","badv","eentry",
+                            "tlbidx","tlbehi","tlbelo0","tlbelo1","asid","pgdl","pgdh",
+                            "save0","save1","save2","save3","tid","tcfg","tval",
+                            "llbctl","tlbrentry","dmw0","dmw1","estat"
+                        };
+                        fprintf(stderr, "[difftest] %s different at pc=0x%08x, "
+                            "ref=0x%08x, dut=0x%08x\n",
+                            csr_names[csr_idx], pc, ref_buf[i], dut_buf[i]);
+                    } else {
+                        fprintf(stderr, "[difftest] idle_pc different at pc=0x%08x, "
+                            "ref=0x%08x, dut=0x%08x\n",
+                            pc, ref_buf[i], dut_buf[i]);
+                    }
                 }
             }
         }
