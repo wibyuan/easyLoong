@@ -1,3 +1,6 @@
 [submodule "supervisor"]
 	path = supervisor
 	url = https://gitee.com/loongson-edu/supervisor.git
+[submodule "nscscc-solo-la-soc"]
+	path = nscscc-solo-la-soc
+	url = https://gitee.com/loongson-edu/nscscc-solo-la-soc.git
