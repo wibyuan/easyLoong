@@ -85,6 +85,10 @@ void v_difftest_CSRState(
     dut_state.estat     = estat;
 }
 
+void v_difftest_IdlePC(int idle_pc) {
+    dut_state.idle_pc = idle_pc;
+}
+
 void v_difftest_TrapEvent(
     int valid, int code, int pc,
     long long cycleCnt, long long instrCnt

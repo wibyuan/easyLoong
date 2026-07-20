@@ -383,6 +383,11 @@ module core import la32_common::*; (
         .wdata(mem_wb_out.data.final_res)
     );
 
+    DifftestIdlePC u_difftest_idle (
+        .clock(clk),
+        .idle_pc(mem_wb_out.data.pc)
+    );
+
     DifftestCSRState u_difftest_csr (
         .clock(clk),
         .crmd(32'h00000008),

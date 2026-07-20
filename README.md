@@ -217,6 +217,7 @@ nscscc-solo-la-soc/sim/verilator/obj_dir/Vverilator_tb \
 | `DifftestArchIntRegState` | `v_difftest_ArchIntRegState` | 32 个 GPR（含组合逻辑旁路） |
 | `DifftestInstrCommit` | `v_difftest_InstrCommit` | WB 级提交信息（pc, instr, wen, wdest, wdata） |
 | `DifftestCSRState` | `v_difftest_CSRState` | 26 个 CSR 字段（当前硬编码默认值） |
+| `DifftestIdlePC` | `v_difftest_IdlePC` | 已提交指令的 PC，用于 regcpy 缓冲区对齐 |
 | `DifftestTrapEvent` | `v_difftest_TrapEvent` | 陷阱事件 |
 
 ### 当前比对范围
@@ -225,6 +226,39 @@ GPR[0..31] + 26 个 CSR 字段 + idle_pc（完整 236 字节 regcpy 缓冲区）
 
 框架已通过 Verilator 编译，所有 DPI-C 调用正常执行。difftest 可检测并报告
 DUT 与 NEMU 之间逐条指令的寄存器差异，任何不一致立即 ABORT 退出。
+
+### 调试实践
+
+**起手姿势**：在 `nscscc-solo-la-soc/` 目录下运行（run.py 的 ROOT_DIR 即为该目录，路径均以此为基准）。
+
+```bash
+cd nscscc-solo-la-soc
+
+python3 sim/run.py sdk/software/examples/supervisor/sim/cases/fibonacci.json -- \
+    +diff_so=../la32r-nemu/NEMU/build/la32r-nemu-interpreter-so \
+    +diff_img=sdk/software/examples/supervisor/build/kernel/uncache/kernel.bin
+```
+
+**关键参数说明**：
+
+- `+diff_so` — NEMU 参考模型 `.so` 路径
+- `+diff_img` — 与 MIF 对应的 **raw binary** 镜像（`kernel.bin`，不是 `.mif`）
+- 路径相对于 `nscscc-solo-la-soc/`；建议使用 `../` 前缀引用 easyLoong 根目录下的文件
+
+**常见过程**：
+
+1. 构建参考模型：`make -C difftest build`
+2. 构建软件：`cd nscscc-solo-la-soc/sdk/software/examples/supervisor && ./build_all.sh && cd -`
+3. 运行 difftest 仿真（如上）
+4. difftest 逐条比对 GPR[0..31] + CSR + idle_pc，任何不一致立即报告 "different at pc=..." 并 abort
+
+**首次运行时的预期**：
+
+- difftest 输出 `state synced at startup` 表示初始同步完成
+- 裸机测试中，CSR 字段在 supervisor 写 CSR 之前应一致（DUT 硬编码与 NEMU 默认值对齐）
+- 若测试中 supervisor 写 CSR，CSR 字段会触发 difftest 报告，这指明下一步需对接完整的 CSR 读写
+
+**临时 debug 打印**：如需逐条观察，可在 `difftest_dut.cpp:checkregs` 处加 `fprintf` 打印 `pc` 和关键 `gpr` 值，调试完毕后清理。
 
 > **注意**：`DifftestTrapEvent` 模块仅在 `difftest.v` 中定义，未在 `core.sv` 中实例化，
 > 其 DPI 函数 `v_difftest_TrapEvent` 当前未被调用。待后续需要处理异常/中断 difftest 时接入。

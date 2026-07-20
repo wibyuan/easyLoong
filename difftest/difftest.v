@@ -82,6 +82,16 @@ module DifftestCSRState (
     end
 endmodule
 
+module DifftestIdlePC (
+    input  logic        clock,
+    input  logic [31:0] idle_pc
+);
+    import "DPI-C" function void v_difftest_IdlePC(input int idle_pc);
+    always @(posedge clock) begin
+        v_difftest_IdlePC(idle_pc);
+    end
+endmodule
+
 module DifftestTrapEvent (
     input  logic        clock,
     input  logic        valid,
