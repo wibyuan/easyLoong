@@ -28,11 +28,11 @@ module decode import la32_common::*; (
     assign op10 = instr[31:22];
     assign op17 = instr[31:15];
 
-    assign rs2 = instr[14:10];
     assign rs1 = instr[9:5];
     assign rd  = instr[4:0];
 
     always_comb begin
+        rs2         = instr[14:10];
         rf_we       = 1'b0;
         alu_op      = ALU_ADD;
         alu_src_sel = 1'b0;
@@ -296,36 +296,42 @@ module decode import la32_common::*; (
                 is_illegal = 1'b0;
                 is_branch = 1'b1;
                 br_type = BR_BEQ;
+                rs2 = instr[4:0];
                 imm = {{14{instr[25]}}, instr[25:10], 2'd0};
             end
             32'b010111_????????????????_?????_?????: begin // BNE
                 is_illegal = 1'b0;
                 is_branch = 1'b1;
                 br_type = BR_BNE;
+                rs2 = instr[4:0];
                 imm = {{14{instr[25]}}, instr[25:10], 2'd0};
             end
             32'b011000_????????????????_?????_?????: begin // BLT
                 is_illegal = 1'b0;
                 is_branch = 1'b1;
                 br_type = BR_BLT;
+                rs2 = instr[4:0];
                 imm = {{14{instr[25]}}, instr[25:10], 2'd0};
             end
             32'b011001_????????????????_?????_?????: begin // BGE
                 is_illegal = 1'b0;
                 is_branch = 1'b1;
                 br_type = BR_BGE;
+                rs2 = instr[4:0];
                 imm = {{14{instr[25]}}, instr[25:10], 2'd0};
             end
             32'b011010_????????????????_?????_?????: begin // BLTU
                 is_illegal = 1'b0;
                 is_branch = 1'b1;
                 br_type = BR_BLTU;
+                rs2 = instr[4:0];
                 imm = {{14{instr[25]}}, instr[25:10], 2'd0};
             end
             32'b011011_????????????????_?????_?????: begin // BGEU
                 is_illegal = 1'b0;
                 is_branch = 1'b1;
                 br_type = BR_BGEU;
+                rs2 = instr[4:0];
                 imm = {{14{instr[25]}}, instr[25:10], 2'd0};
             end
 
