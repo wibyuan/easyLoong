@@ -21,12 +21,17 @@ module hazard_unit (
     assign load_use_hazard = id_ex_mem_re &&
                             ((id_ex_rd != 5'd0) && ((id_ex_rd == dec_rs1) || (id_ex_rd == dec_rs2)));
 
-    assign if_id_flush = jump_flush || wb_jump_req || id_jump_req;
-    assign id_ex_flush = jump_flush || wb_jump_req;
+    always_comb begin
+        pc_stall     = lsu_not_ready || ex_not_ready || load_use_hazard || if_not_ready;
+        if_id_stall  = lsu_not_ready || ex_not_ready || load_use_hazard || if_not_ready;
+        id_ex_stall  = lsu_not_ready || ex_not_ready;
+        ex_mem_stall = lsu_not_ready;
 
-    assign pc_stall     = if_not_ready || load_use_hazard;
-    assign if_id_stall  = if_not_ready || load_use_hazard || ex_not_ready;
-    assign id_ex_stall  = ex_not_ready || lsu_not_ready;
-    assign ex_mem_stall = lsu_not_ready;
+        id_ex_flush  = wb_jump_req || ( !(lsu_not_ready || ex_not_ready) &&
+                       (jump_flush || load_use_hazard || (if_not_ready && !id_jump_req)) );
+
+        if_id_flush  = wb_jump_req || ( !(lsu_not_ready || ex_not_ready) &&
+                       (jump_flush || (id_jump_req && !id_ex_stall)) );
+    end
 
 endmodule

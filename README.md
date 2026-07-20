@@ -226,23 +226,30 @@ vivado -mode batch -source run_vivado/flow/generate_bitstream.tcl
 - [x] 五级流水线冒烟（PC 从 0x1c000000 启动，取指成功）
 - [x] reset 向量 → supervisor init 代码线性执行（PCADDU12I、ADDI.W、JIRL、B 等）
 - [x] AXI 读通路（取指 + 数据 load）
+- [x] BSS 清除循环正常退出（修复 hazard_unit 后）
+
+### 已修复
+
+- [x] **EX 级指令重复执行与自转发**：`hazard_unit.sv` 已对齐 easyCPU 参考设计，
+  采用 `always_comb` + 条件门控的 stall/flush 逻辑：
+  - `pc_stall` / `if_id_stall` 增加 `lsu_not_ready` 使 stall 向后传播
+  - `id_ex_stall` 移除 `if_not_ready`（改用 flush 注入气泡，而非全局 stall）
+  - `id_ex_flush` 增加 `load_use_hazard` 和 `if_not_ready` 条件，配以
+    `!(lsu_not_ready || ex_not_ready)` 门控
 
 ### 待修复
 
-- [ ] **EX 级指令重复执行与自转发**：仿真中单个指令在 EX 级滞留多周期，每周期
-  通过 `ex_mem` 或 `mem_wb` 自转发读取自身前一周期的结果，形成"自循环递减"
-  效应。例如 `addi.w r12, r12, -12` 应写回 `0x1c7f0000`，实际写回
-  `0x1c7eff70`（递减了 13 次）。根因疑与流水线 stall 逻辑中的 AXI 取指
-  延迟有关——取指未就绪时 `pc_stall=if_id_stall=1`，但 `id_ex_stall` 仍为 0，
-  导致 IF/ID 阻塞而 EX 级指令被"架空"重复执行。需排查 `hazard_unit` 的 stall
-  信号与 fetch_unit 取指就绪 `iresp.data_ok` 之间的耦合关系。
-- [ ] **UART 输出**：supervisor 未输出欢迎消息（依赖上述问题修复后验证）。
+- [ ] **地址 0 写入挂死**：BSS 清除后，supervisor `bss_init_done` 处执行
+  `ld.w r13, r13, offset` 加载 cache 参数地址，但结果 r13 = 0x00000000，
+  随后 `st.w r29, (r13)` 写入 AXI crossbar slave1（0x00000000~0x00800000，
+  Reserved 无外设响应），导致 arbiter write channel 永不休眠，CPU 全局冻结。
+  需排查：kernel 数据段中该偏移处的值为何为 0，或为地址 0 提供默认映射。
 
 ### 仿真说明
 
 阶段 1 斐波那契测试（`fibonacci.json`，uncache 内核）当前**未通过**。
-因上述 EX 级重复执行问题导致 BSS 初始化寄存器初值错误，`beq` 循环无法
-正常退出，supervisor 无法进入后续 WELCOME 及 UART 输出流程。
+hazard_unit 修复后 BSS 清除循环正常退出，但 supervisor 在 cache 参数初始化阶段
+因写入 unmapped 地址 0x00000000 而挂死，无法进入 UART 欢迎信息输出流程。
 
 ## 9. 提交规范
 
