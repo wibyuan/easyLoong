@@ -53,7 +53,8 @@ void v_difftest_CSRState(
     int asid, int pgdl, int pgdh,
     int save0, int save1, int save2, int save3,
     int tid, int tcfg, int tval,
-    int llbctl, int tlbrentry, int dmw0, int dmw1
+    int llbctl, int tlbrentry, int dmw0, int dmw1,
+    int estat
 ) {
     dut_state.crmd      = crmd;
     dut_state.prmd      = prmd;
@@ -80,6 +81,7 @@ void v_difftest_CSRState(
     dut_state.tlbrentry = tlbrentry;
     dut_state.dmw0      = dmw0;
     dut_state.dmw1      = dmw1;
+    dut_state.estat     = estat;
 }
 
 void v_difftest_TrapEvent(

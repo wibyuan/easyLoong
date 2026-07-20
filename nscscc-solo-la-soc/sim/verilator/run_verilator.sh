@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 mapfile -t VERILOG_FILES < <(
     {
-        find rtl -type f \( -name '*.v' -o -name '*.sv' \) \
+        find -L rtl -type f \( -name '*.v' -o -name '*.sv' \) \
             ! -path 'rtl/ip/PLL_2019_2/*' \
             ! -path '*/.Xil/*'
         find sim -maxdepth 1 -type f \( -name '*.v' -o -name '*.sv' \) \
@@ -15,14 +15,14 @@ mapfile -t VERILOG_FILES < <(
 )
 
 mapfile -t HEADER_FILES < <(
-    find rtl sim -type f \( -name '*.h' -o -name '*.vh' \) \
+    find -L rtl sim -type f \( -name '*.h' -o -name '*.vh' \) \
         ! -path '*/.Xil/*' \
         ! -path 'sim/verilator/obj_dir/*' \
         | sort
 )
 
 mapfile -t MYCPU_INCLUDE_DIRS < <(
-    find rtl/ip/myCPU -type d ! -path '*/.Xil*' | sort | sed 's#^#-I#'
+    find -L rtl/ip/myCPU -type d ! -path '*/.Xil*' | sort | sed 's#^#-I#'
 )
 
 VERILATOR_DEFINES=()

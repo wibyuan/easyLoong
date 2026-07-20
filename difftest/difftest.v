@@ -55,7 +55,8 @@ module DifftestCSRState (
     input  logic [31:0] asid, pgdl, pgdh,
     input  logic [31:0] save0, save1, save2, save3,
     input  logic [31:0] tid, tcfg, tval,
-    input  logic [31:0] llbctl, tlbrentry, dmw0, dmw1
+    input  logic [31:0] llbctl, tlbrentry, dmw0, dmw1,
+    input  logic [31:0] estat
 );
     import "DPI-C" function void v_difftest_CSRState(
         input int crmd, input int prmd, input int euen, input int ecfg,
@@ -64,7 +65,8 @@ module DifftestCSRState (
         input int asid, input int pgdl, input int pgdh,
         input int save0, input int save1, input int save2, input int save3,
         input int tid, input int tcfg, input int tval,
-        input int llbctl, input int tlbrentry, input int dmw0, input int dmw1
+        input int llbctl, input int tlbrentry, input int dmw0, input int dmw1,
+        input int estat
     );
     always @(posedge clock) begin
         v_difftest_CSRState(
@@ -74,7 +76,8 @@ module DifftestCSRState (
             asid, pgdl, pgdh,
             save0, save1, save2, save3,
             tid, tcfg, tval,
-            llbctl, tlbrentry, dmw0, dmw1
+            llbctl, tlbrentry, dmw0, dmw1,
+            estat
         );
     end
 endmodule
