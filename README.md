@@ -12,13 +12,19 @@
 |   |   |-- cpu/               #   CPU 核心模块（五级流水线）
 |   |   `-- xilinx_ip/         # Xilinx IP (.xci)
 |   `-- vivado_cannot/         # 不可综合源码说明
+|-- difftest/                  # ★ differential test 框架
+|   |-- difftest.v             #   DPI-C Verilog wrapper 模块
+|   |-- difftest_interface.cpp/h  # DPI-C C++ 桥接
+|   |-- difftest_dut.cpp/h        # difftest 步进/比对逻辑
+|   `-- Makefile                  # 构建 la32r-nemu .so
+|-- la32r-nemu/                # [submodule] LA32R NEMU 参考模型
 |-- run_vivado/
 |   |-- constraints/           # 引脚约束 (thinpad_top.xdc)
 |   |-- simulation/            # 仿真模型 (SRAM/Flash)
 |   `-- flow/                  # ★ 受控 CI 脚本（不可修改）
-|-- nscscc-solo-la-soc/        # [submodule] 官方 SoC 仿真框架 (Verilator/XSIM)
+|-- nscscc-solo-la-soc/        # 官方 SoC 仿真框架 (Verilator/XSIM)
 |   `-- sdk/software/examples/
-|       `-- supervisor/        # [submodule] LA32R 监控程序与测试用例
+|       `-- supervisor/        # LA32R 监控程序与测试用例
 |-- docs/
 |   |-- *.pdf                  # 原始参考文档（⚠ 公开前须从 git 历史中彻底删除）
 |   |-- md/                    # PDF 的 OCR 翻译 + 指令编码表 + 原理图要点
@@ -146,20 +152,85 @@ cd ../../../..   # 返回 nscscc-solo-la-soc 根目录
 - `build/kernel/auto/utest_symbols.txt` —— 性能测试入口地址
 - `build/utility/` —— 各测试的输入、期望结果和 MIF
 
-### CPU 源文件软链接
+### CPU 源文件及 difftest 软链接
 
 nscscc 仿真框架要求 CPU 源文件位于 `rtl/ip/myCPU/`。从 easyLoong 根目录执行：
 
 ```bash
 # 清旧链接后重建
-rm -f nscscc-solo-la-soc/rtl/ip/myCPU/*.sv
+rm -f nscscc-solo-la-soc/rtl/ip/myCPU/*.sv nscscc-solo-la-soc/rtl/ip/myCPU/difftest.v
 for f in src/soc/cpu/*.sv; do
     ln -sf "$(realpath "$f")" "nscscc-solo-la-soc/rtl/ip/myCPU/$(basename "$f")"
 done
 ln -sf "$(realpath src/soc/core_top.sv)" nscscc-solo-la-soc/rtl/ip/myCPU/core_top.sv
+ln -sf "$(realpath difftest/difftest.v)" nscscc-solo-la-soc/rtl/ip/myCPU/difftest.v
+
+# difftest C++ 文件软链接
+ln -sf "$(realpath difftest/difftest_interface.h)" nscscc-solo-la-soc/sim/verilator/difftest_interface.h
+ln -sf "$(realpath difftest/difftest_interface.cpp)" nscscc-solo-la-soc/sim/verilator/difftest_interface.cpp
+ln -sf "$(realpath difftest/difftest_dut.h)" nscscc-solo-la-soc/sim/verilator/difftest_dut.h
+ln -sf "$(realpath difftest/difftest_dut.cpp)" nscscc-solo-la-soc/sim/verilator/difftest_dut.cpp
 ```
 
-## 6. Verilator 仿真
+## 6. Difftest 差分测试
+
+### 原理
+
+difftest 框架在 Verilator 仿真中引入 loongarch32r NEMU 作为 golden reference model。
+每个时钟周期，CPU 的五级流水线 WB 级提交一条已退休指令，通过 DPI-C
+将 DUT 的 GPR/CSR 状态传入 C++ 层，同时步进 NEMU 执行同一条指令，
+逐条比对寄存器状态。任何不一致立即报告并退出。
+
+### 构建参考模型
+
+```bash
+make -C difftest build
+# 产物: la32r-nemu/NEMU/build/la32r-nemu-interpreter-so
+```
+
+### 运行带 difftest 的仿真
+
+```bash
+# 准备软件
+cd nscscc-solo-la-soc/sdk/software/examples/supervisor && ./build_all.sh && cd -
+
+# 运行仿真（通过 run.py 透传 plusarg）
+python3 nscscc-solo-la-soc/sim/run.py \
+    nscscc-solo-la-soc/sdk/software/examples/supervisor/sim/cases/simple.json \
+    -- \
+    +diff_so=la32r-nemu/NEMU/build/la32r-nemu-interpreter-so \
+    +diff_img=path/to/binary.bin
+
+# 或直接调用 Verilator 二进制
+nscscc-solo-la-soc/sim/verilator/obj_dir/Vverilator_tb \
+    +base_ram_mif=path/to/axi_ram.mif \
+    +diff_so=la32r-nemu/NEMU/build/la32r-nemu-interpreter-so \
+    +diff_img=path/to/binary.bin \
+    +supervisor_entry=0x1c000000 \
+    +max_time=10000000
+```
+
+### DPI-C 接口
+
+| Verilog 模块 | DPI-C 函数 | 功能 |
+|-------------|-----------|------|
+| `DifftestArchIntRegState` | `v_difftest_ArchIntRegState` | 32 个 GPR（含组合逻辑旁路） |
+| `DifftestInstrCommit` | `v_difftest_InstrCommit` | WB 级提交信息（pc, instr, wen, wdest, wdata） |
+| `DifftestCSRState` | `v_difftest_CSRState` | 26 个 CSR 字段（当前硬编码默认值） |
+| `DifftestTrapEvent` | `v_difftest_TrapEvent` | 陷阱事件 |
+
+### 当前比对范围
+
+- GPR[1..31]（跳过 r0）
+- 26 个 CSR 字段（CRMD, PRMD, EUEN, ECFG, ERA, BADV, EENTRY,
+  TLBIDX, TLBEHI, TLBELO0, TLBELO1, ASID, PGDL, PGDH,
+  SAVE0~3, TID, TCFG, TVAL, LLBCTL, TLBRENTRY, DMW0, DMW1, ESTAT）
+
+> CSR 当前在 DUT 侧硬编码为复位默认值（CRMD=0x00000008, ASID=0x000A0000, 其余为 0）。
+> supervisor 初始化期间写入 CSR 后 NEMU 状态与 DUT 状态必然不一致，
+> difftest 将精确报告差异位置，这指明了 CPU 下一步需实现的 CSR 功能。
+
+## 7. Verilator 仿真
 
 ### 前置条件
 
@@ -200,7 +271,7 @@ python3 sim/run.py sdk/software/examples/supervisor/sim/suite.json
 | CRYPTONIGHT | `cases/cryptonight.json` | 阶段 4：密码学运算 |
 | MIXED | `cases/mixed.json` | 阶段 5：混合运算 |
 
-## 7. Vivado 本地流程
+## 8. Vivado 本地流程
 
 ```bash
 make -C asm
@@ -218,7 +289,7 @@ vivado -mode batch -source run_vivado/flow/generate_bitstream.tcl
 - 不自建 Vivado IP 目录，`.xci` 放 `src/soc/xilinx_ip/<name>/`
 - 不提交 `ip_user_files/`、`.runs/`、`.cache/` 等中间产物
 
-## 8. 当前进度与已知问题
+## 9. 当前进度与已知问题
 
 ### 已验证
 
@@ -251,20 +322,22 @@ vivado -mode batch -source run_vivado/flow/generate_bitstream.tcl
 hazard_unit 修复后 BSS 清除循环正常退出，但 supervisor 在 cache 参数初始化阶段
 因写入 unmapped 地址 0x00000000 而挂死，无法进入 UART 欢迎信息输出流程。
 
-## 9. 提交规范
+## 10. 提交规范
 
 ### 可修改
 
 ```
-src/soc/**  src/vivado_cannot/**  run_vivado/constraints/**  asm/**  README.md  design.pdf
+src/soc/**  src/vivado_cannot/**  run_vivado/constraints/**  asm/**  difftest/**  README.md  design.pdf
 ```
 
 ### 受控（不可修改）
 
 ```
 run_vivado/flow/**
-nscscc-solo-la-soc/**
 ```
+
+> 注：`nscscc-solo-la-soc` 已从 submodule 转为仓库内直接维护（difftest 集成导致改动较大）。
+> 如需与上游同步，可通过 diff/patch 进行选择性合并。
 
 > **公开前须知**：repo 公开前，须向主办方请示哪些内容可以公开。
 > `docs/` 及工具链二进制须从 git 历史中彻底删除。
