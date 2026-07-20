@@ -101,10 +101,13 @@ module core import la32_common::*; (
     logic [31:0] ex_jump_pc, id_jump_pc;
     logic id_jump_req;
     logic ex_stage_busy;
+    logic ex_jump_flush_hazard;
 
     // ==================== FETCH ====================
     logic do_ex_flush;
     assign do_ex_flush = ex_jump_flush && !ex_mem_stall;
+
+    assign ex_jump_flush_hazard = ex_jump_flush && !id_ex_out.ctrl.is_jal;
 
     fetch_unit if_stage (
         .clk, .reset,
@@ -293,7 +296,7 @@ module core import la32_common::*; (
     assign ex_mem_in.data.mem_unsigned = id_ex_out.data.mem_unsigned;
 
     pipeline_reg #($bits(ex_mem_ctrl_t)) reg_ex_mem_ctrl (
-        .clk, .reset, .stall(ex_mem_stall), .flush(id_ex_flush || ex_jump_flush),
+        .clk, .reset, .stall(ex_mem_stall), .flush(1'b0),
         .data_in(ex_mem_in.ctrl), .data_out(ex_mem_out.ctrl)
     );
     pipeline_reg #($bits(ex_mem_data_t)) reg_ex_mem_data (
@@ -350,8 +353,8 @@ module core import la32_common::*; (
         .dec_rs1(dec_rs1), .dec_rs2(dec_rs2),
         .pc_stall, .if_id_stall, .id_ex_stall, .ex_mem_stall,
         .if_id_flush, .id_ex_flush,
-        .jump_flush(ex_jump_flush),
-        .id_jump_req(id_jump_req & ~dec_is_jal),
+        .jump_flush(ex_jump_flush_hazard),
+        .id_jump_req(id_jump_req),
         .wb_jump_req(1'b0)
     );
 
