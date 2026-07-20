@@ -226,18 +226,23 @@ vivado -mode batch -source run_vivado/flow/generate_bitstream.tcl
 - [x] 五级流水线冒烟（PC 从 0x1c000000 启动，取指成功）
 - [x] reset 向量 → supervisor init 代码线性执行（PCADDU12I、ADDI.W、JIRL、B 等）
 - [x] AXI 读通路（取指 + 数据 load）
-- [x] 流水线转发与控制冒险处理
-- [x] `beq` 条件分支（not-taken 路径已验证）
 
 ### 待修复
 
-- [ ] **B/BL 立即数解码**：I26 型编码中立即数位排列与当前 decode 不完全匹配，
-  导致跳转目标偏移量计算错误（分支落入未初始化内存区）。需对照手册重新核对
-  `{instr[9:0], instr[25:10]}` 的正确拼接方式
-- [ ] **AXI 写通路验证**：ST.W 指令可能挂起 LSU → 流水线死锁，需确认 AXI 写
-  通道状态机与 soc_top 写地址解码的配合
-- [ ] **UART 输出**：supervisor 未输出欢迎消息（可能因分支错误导致未执行到 UART
-  初始化代码，或写通路故障导致 TX 无输出）
+- [ ] **EX 级指令重复执行与自转发**：仿真中单个指令在 EX 级滞留多周期，每周期
+  通过 `ex_mem` 或 `mem_wb` 自转发读取自身前一周期的结果，形成"自循环递减"
+  效应。例如 `addi.w r12, r12, -12` 应写回 `0x1c7f0000`，实际写回
+  `0x1c7eff70`（递减了 13 次）。根因疑与流水线 stall 逻辑中的 AXI 取指
+  延迟有关——取指未就绪时 `pc_stall=if_id_stall=1`，但 `id_ex_stall` 仍为 0，
+  导致 IF/ID 阻塞而 EX 级指令被"架空"重复执行。需排查 `hazard_unit` 的 stall
+  信号与 fetch_unit 取指就绪 `iresp.data_ok` 之间的耦合关系。
+- [ ] **UART 输出**：supervisor 未输出欢迎消息（依赖上述问题修复后验证）。
+
+### 仿真说明
+
+阶段 1 斐波那契测试（`fibonacci.json`，uncache 内核）当前**未通过**。
+因上述 EX 级重复执行问题导致 BSS 初始化寄存器初值错误，`beq` 循环无法
+正常退出，supervisor 无法进入后续 WELCOME 及 UART 输出流程。
 
 ## 9. 提交规范
 
