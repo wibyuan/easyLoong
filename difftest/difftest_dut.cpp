@@ -80,27 +80,27 @@ bool difftest_init(const char *ref_so_path, const char *img_path) {
 
 static bool checkregs(uint32_t *ref_buf, uint32_t pc) {
     uint32_t *dut_buf = difftest_state_buf();
+    int total_words = DIFFTEST_REG_SIZE / sizeof(uint32_t);
     if (memcmp(dut_buf + 1, ref_buf + 1, DIFFTEST_REG_SIZE - sizeof(uint32_t))) {
-        for (int i = 1; i <= DIFFTEST_NR_GPR; i++) {
+        for (int i = 1; i < total_words; i++) {
             if (dut_buf[i] != ref_buf[i]) {
-                fprintf(stderr, "[difftest] %s different at pc=0x%08x, "
-                    "ref=0x%08x, dut=0x%08x\n",
-                    reg_name(i), pc, ref_buf[i], dut_buf[i]);
-            }
-        }
-        uint32_t *dut_csr = dut_buf + DIFFTEST_NR_GPR + 1;
-        uint32_t *ref_csr = ref_buf + DIFFTEST_NR_GPR + 1;
-        const char *csr_names[] = {
-            "crmd","prmd","euen","ecfg","era","badv","eentry",
-            "tlbidx","tlbehi","tlbelo0","tlbelo1","asid","pgdl","pgdh",
-            "save0","save1","save2","save3","tid","tcfg","tval",
-            "llbctl","tlbrentry","dmw0","dmw1","estat"
-        };
-        for (int i = 0; i < DIFFTEST_NR_CSR; i++) {
-            if (dut_csr[i] != ref_csr[i]) {
-                fprintf(stderr, "[difftest] CSR.%s different at pc=0x%08x, "
-                    "ref=0x%08x, dut=0x%08x\n",
-                    csr_names[i], pc, ref_csr[i], dut_csr[i]);
+                if (i < DIFFTEST_NR_GPR) {
+                    fprintf(stderr, "[difftest] %s different at pc=0x%08x, "
+                        "ref=0x%08x, dut=0x%08x\n",
+                        reg_name(i), pc, ref_buf[i], dut_buf[i]);
+                } else if (i < total_words) {
+                    int csr_idx = i - DIFFTEST_NR_GPR;
+                    const char *csr_names[] = {
+                        "crmd","prmd","euen","ecfg","era","badv","eentry",
+                        "tlbidx","tlbehi","tlbelo0","tlbelo1","asid","pgdl","pgdh",
+                        "save0","save1","save2","save3","tid","tcfg","tval",
+                        "llbctl","tlbrentry","dmw0","dmw1","estat"
+                    };
+                    fprintf(stderr, "[difftest] %s different at pc=0x%08x, "
+                        "ref=0x%08x, dut=0x%08x\n",
+                        csr_idx < 27 ? csr_names[csr_idx] : "???",
+                        pc, ref_buf[i], dut_buf[i]);
+                }
             }
         }
         return false;

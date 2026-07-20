@@ -8,7 +8,7 @@
 #define DIFFTEST_REG_SIZE (sizeof(uint32_t) * (DIFFTEST_NR_GPR + 1 + DIFFTEST_NR_CSR))
 
 struct difftest_core_state_t {
-    uint32_t gpr[DIFFTEST_NR_GPR + 1];
+    uint32_t gpr[DIFFTEST_NR_GPR];
     uint32_t crmd;
     uint32_t prmd;
     uint32_t euen;
@@ -35,7 +35,7 @@ struct difftest_core_state_t {
     uint32_t dmw0;
     uint32_t dmw1;
     uint32_t estat;
-    uint32_t pc;
+    uint32_t idle_pc;
 };
 
 struct difftest_commit_t {

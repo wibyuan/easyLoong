@@ -1,4 +1,5 @@
 #include "difftest_interface.h"
+#include <cstdio>
 #include <cstring>
 
 static difftest_core_state_t dut_state;
