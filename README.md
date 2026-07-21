@@ -350,38 +350,73 @@ vivado -mode batch -source run_vivado/flow/generate_bitstream.tcl
 - [x] 五级流水线冒烟（PC 从 0x1c000000 启动，取指成功）
 - [x] reset 向量 → supervisor init 代码线性执行（PCADDU12I、ADDI.W、JIRL、B 等）
 - [x] AXI 读通路（取指 + 数据 load）
-- [x] BSS 清除循环正常退出（修复 hazard_unit 后）
+- [x] AXI 写通路（BSS 清零、ExtRAM 存储、UART 写入）
+- [x] BSS 清除循环正常退出
+- [x] **Difftest 前 215 条指令 GPR/CSR 逐条比对通过**（核心计算指令、load、store 结果均正确）
 
-### 已修复
+### 已修复（本阶段）
 
-- [x] **EX 级指令重复执行与自转发**：`hazard_unit.sv` 已对齐 easyCPU 参考设计，
-  采用 `always_comb` + 条件门控的 stall/flush 逻辑：
-  - `pc_stall` / `if_id_stall` 增加 `lsu_not_ready` 使 stall 向后传播
-  - `id_ex_stall` 移除 `if_not_ready`（改用 flush 注入气泡，而非全局 stall）
-  - `id_ex_flush` 增加 `load_use_hazard` 和 `if_not_ready` 条件，配以
-    `!(lsu_not_ready || ex_not_ready)` 门控
+- [x] **axibus_arbiter 多重驱动 + 缺 addr_ok**：读写通道分别用独立的 `always_comb` 驱动 `dresp` 造成多重驱动；
+  读通道从未设置 `dresp.addr_ok`，导致 LSU 永远停在 IDLE。
+  修复：合并为单一 `always_comb`，读通道 R_DREQ/R_ARB/R_IREQ 在 arready 时置 addr_ok。
+
+- [x] **fetch_unit 取指延迟一拍**：`if_instr` 仅在 `state==REQ` 时读 `iresp.data`，WAIT_DATA 状态时
+  取 `captured_instr`（上一拍 data_ok=0，值仍为复位 0），导致首条指令读出 0x00000000。
+  修复：`if_instr = iresp.data_ok ? iresp.data : captured_instr`。
+
+- [x] **decode 存数指令 rs2 字段错误**（Bug 1 致命根因）：LA32 存数指令的数据源寄存器
+  位于 `instr[4:0]`(rk)，但 decode 默认取 `instr[14:10]`（立即数字段的一部分，
+  恰好解码为 r0）。导致所有 `st.b/st.h/st.w` 实际存储 r0（恒为 0）而非目标寄存器。
+  修复：ST.B/ST.H/ST.W 中显式设 `rs2 = instr[4:0]`。
+
+- [x] **EX→MEM 转发门控**：load 在 MEM 级时 `ex_mem_out.data.alu_res` 仍是访存地址而非
+  读出的数据，不应转发给 EX 级源操作数。加 `!ex_mem_out.ctrl.mem_re` 门控条件。
+
 - [x] **AW 写通道 phantom write 抢占**：`axibus_arbiter.sv` 写通道未区分读写请求，
   读操作（strobe=0000）触发无效 AXI 写事务，其 bvalid 回调被后续 store 误认为
   写完成，导致 store 数据静默丢失。修复：
   - 读通道仅对 `dreq.strobe == 4'd0` 的请求启动 AXI 读事务
   - 写通道仅对 `|dreq.strobe` 的请求启动 AXI 写事务
 
+### 当前卡住位置
+
+`fibonacci.json` 测试在 supervisor 收到 `A`（加载 fibonacci 程序）和 `D`（回读校验）
+之后，**缺少 `G`（跳转执行）命令**导致死锁超时：
+
+1. supervisor 处理完 A/D 后回到 `SHELL` 等待下一条 UART 命令
+2. testbench (`verilator_main.cpp`) 的 `supervisor_uart_check` 流程中，
+   `PendingCommand::Run`（发送 'G'）仅在 `+supervisor_entry` 参数存在时触发
+3. `fibonacci.json` **未提供** `supervisor_entry` 字段
+4. 双方互相等待 → 测试在 `t=1,000,000,000` 超时
+
+**解决方向**（待确认后再执行）：
+- 方案 A: 在 `fibonacci.json` 中添加 `"supervisor_entry": "0x1c300000"`
+- 方案 B: 修改 testbench（`verilator_main.cpp`）使其在 LoadReadback 完成后
+  自动发送 `G` 命令（entry 地址取 `supervisor_a_addr` 的值）
+- 方案 C: 修改 supervisor shell 代码，在 A 命令完成后自动执行加载的程序
+
+> 注意：裸机测试（无 supervisor）的 fibonacci 不经过 UART 协议，由 monitor 直接
+> 加载到 BaseRAM 并跳转执行，结果写入 ExtRAM，不被此问题影响。
+
 ### 待修复
 
-- [ ] **supervisor CSR 对接**：帧测测试通过后，需实现完整的 CSR 读取/写入
-  支持，以通过 supervisor 所有测试阶段（MATRIX / STREAM / CRYPTONIGHT / MIXED）
-- [ ] **UART 输出不工作**：difftest 确认 CPU 核心寄存器状态与 NEMU 一致
-  （GPR[0..31] + CSR + idle_pc 逐条比对通过），supervisor 初始化（BSS 清零、
-  GOT 间接加载、串口地址配置）正确完成。但 `fibonacci.json` 完整测试中
-  `uart_display` 从未触发，UART 无任何字符输出。需排查：
-  - AXI crossbar 是否将地址 `0x1f000000`（UART 窗口）正确路由到 UART 控制器
-  - UART 模型的仿真行为是否符合 16550 预期（LSR.THRE 位、FIFO 初始化等）
+- [ ] **测试流程死锁**：如上，需打通 supervisor UART 交互流程使 fibonacci 程序
+  能在 supervisor 上运行完成并输出结果。
+- [ ] **UART 8N1 接收时序**：CPU 通过轮询 UART LSR.THRE 位判断发送就绪，
+  当前 LSR 读回值与 NEMU 参考模型不一致（DUT 返回 0x60，NEMU 返回 0x00）。
+  这是仿真模型差异，不影响 CPU 核心正确性，但会导致 difftest 在 UART 交互
+  开始后报 mismatch。
+- [ ] **supervisor CSR 对接**：需实现完整的 CSR 读取/写入支持，
+  以通过 supervisor 所有测试阶段（MATRIX / STREAM / CRYPTONIGHT / MIXED）。
+- [ ] **DifftestTrapEvent 接入**：`DifftestTrapEvent` 模块仅在 `difftest.v` 中定义，
+  未在 `core.sv` 中实例化，待需要处理异常/中断 difftest 时接入。
 
 ### 仿真说明
 
 阶段 1 斐波那契测试（`fibonacci.json`，uncache 内核）当前状态：
-- difftest 逐条比对全程无 mismatch，CPU 核心逻辑正确
-- UART 交互部分未工作，测试最终超时退出
+- difftest 前 215 条指令 GPR/CSR 比对**全程通过**，CPU 核心逻辑正确
+- supervisor 通过 UART 接收了 A/D 命令并完成校验，但因未收到 G 命令未执行 fibonacci
+- 测试超时退出
 
 ## 10. 提交规范
 
