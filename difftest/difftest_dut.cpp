@@ -22,6 +22,9 @@ static void (*ref_raise_intr)(uint64_t) = nullptr;
 static bool has_commit = false;
 static uint64_t instr_count = 0;
 static bool difftest_enabled = true;
+static uint32_t last_commit_pc = 0;
+static uint32_t last_commit_instr = 0;
+static bool last_commit_valid = false;
 
 static const char* reg_name(int i) {
     static const char* names[] = {
@@ -127,6 +130,9 @@ void difftest_step() {
     if (!cmt->valid) return;
 
     uint32_t pc = cmt->pc;
+    last_commit_pc = pc;
+    last_commit_instr = cmt->instr;
+    last_commit_valid = true;
     *difftest_cycle_ptr() += 1;
 
     ref_exec(1);
@@ -150,4 +156,16 @@ void difftest_step() {
 void difftest_finish() {
     if (!so_handle) return;
     fprintf(stdout, "[difftest] finished, %lu instructions checked\n", instr_count);
+}
+
+void difftest_dump_state() {
+    if (!so_handle) return;
+    fprintf(stdout, "[difftest] --- State dump ---\n");
+    fprintf(stdout, "[difftest] total instructions checked: %lu\n", instr_count);
+    if (last_commit_valid) {
+        fprintf(stdout, "[difftest] last committed: pc=0x%08x instr=0x%08x\n",
+                last_commit_pc, last_commit_instr);
+    } else {
+        fprintf(stdout, "[difftest] no instruction committed yet\n");
+    }
 }

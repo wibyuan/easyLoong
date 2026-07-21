@@ -229,6 +229,7 @@ module decode import la32_common::*; (
             // ==================== 2RI12-type: stores ====================
             32'b0010100100_????????????_?????_?????: begin // ST.B
                 is_illegal = 1'b0;
+                rs2 = instr[4:0];
                 alu_op = ALU_ADD;
                 alu_src_sel = 1'b1;
                 mem_we = 1'b1;
@@ -237,6 +238,7 @@ module decode import la32_common::*; (
             end
             32'b0010100101_????????????_?????_?????: begin // ST.H
                 is_illegal = 1'b0;
+                rs2 = instr[4:0];
                 alu_op = ALU_ADD;
                 alu_src_sel = 1'b1;
                 mem_we = 1'b1;
@@ -245,6 +247,7 @@ module decode import la32_common::*; (
             end
             32'b0010100110_????????????_?????_?????: begin // ST.W
                 is_illegal = 1'b0;
+                rs2 = instr[4:0];
                 alu_op = ALU_ADD;
                 alu_src_sel = 1'b1;
                 mem_we = 1'b1;

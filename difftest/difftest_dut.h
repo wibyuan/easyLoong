@@ -9,5 +9,6 @@ void difftest_finish();
 bool difftest_is_running();
 int  difftest_trap_code();
 void difftest_set_program(const uint8_t *img_data, uint64_t img_size);
+void difftest_dump_state();
 
 #endif

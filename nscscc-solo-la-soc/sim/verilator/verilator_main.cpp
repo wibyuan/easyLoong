@@ -1452,6 +1452,7 @@ int main(int argc, char** argv) {
     }
     if (!term_mode && main_time >= max_time) {
         std::cerr << "[TB] Timeout at t=" << main_time << "\n";
+        difftest_dump_state();
         return 1;
     }
     if (supervisor_uart_check && !uart_check_done) {

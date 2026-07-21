@@ -131,11 +131,6 @@ module core import la32_common::*; (
         end else begin
             pc <= next_pc_reg;
             cyc <= cyc + 1;
-            if (pc != next_pc_reg && cyc < 1000 && cyc > 100)
-                $display("[t=%0d] pc=%h npc=%h br=%b j=%b jr=%b fl=%b",
-                    cyc, pc, next_pc_reg,
-                    id_ex_out.ctrl.is_branch, id_ex_out.ctrl.is_jal,
-                    id_ex_out.ctrl.is_jalr, ex_jump_flush);
         end
     end
 
@@ -230,9 +225,9 @@ module core import la32_common::*; (
     // ==================== EXECUTE ====================
     logic [31:0] forward_a, forward_b, alu_result;
     logic fw_a_em, fw_a_mw, fw_b_em, fw_b_mw;
-    assign fw_a_em = id_ex_out.data.fw_a_ex_hit  && ex_mem_out.ctrl.rf_we && ex_mem_out.ctrl.valid;
+    assign fw_a_em = id_ex_out.data.fw_a_ex_hit  && ex_mem_out.ctrl.rf_we && ex_mem_out.ctrl.valid && !ex_mem_out.ctrl.mem_re;
     assign fw_a_mw = id_ex_out.data.fw_a_mem_hit && mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid;
-    assign fw_b_em = id_ex_out.data.fw_b_ex_hit  && ex_mem_out.ctrl.rf_we && ex_mem_out.ctrl.valid;
+    assign fw_b_em = id_ex_out.data.fw_b_ex_hit  && ex_mem_out.ctrl.rf_we && ex_mem_out.ctrl.valid && !ex_mem_out.ctrl.mem_re;
     assign fw_b_mw = id_ex_out.data.fw_b_mem_hit && mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid;
 
     always_comb begin

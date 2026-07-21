@@ -59,26 +59,35 @@ module axibus_arbiter import la32_common::*; (
     logic        r_for_d_r;
     logic [31:0] r_addr_r;
 
-    // ==================== Read channel ====================
+    // ==================== Combinational logic ====================
+    logic r_dresp_addr_ok, r_dresp_data_ok;
+    logic r_iresp_addr_ok, r_iresp_data_ok;
+    logic [31:0] r_dresp_data, r_iresp_data;
+    logic w_dresp_addr_ok, w_dresp_data_ok;
+
     always_comb begin
-        rnext  = rstate;
+
+        // ----- Read channel defaults -----
+        rnext   = rstate;
         arid    = 4'd0;
         araddr  = 32'd0;
         arlen   = 8'd0;
-        arsize  = 3'b010; // 4 bytes
-        arburst = 2'b01;  // INCR
+        arsize  = 3'b010;
+        arburst = 2'b01;
         arlock  = 2'd0;
         arcache = 4'd0;
         arprot  = 3'd0;
         arvalid = 1'b0;
         rready  = 1'b0;
-        iresp.addr_ok = 1'b0;
-        iresp.data_ok = 1'b0;
-        iresp.data    = 32'd0;
-        dresp.addr_ok = 1'b0;
-        dresp.data_ok = 1'b0;
-        dresp.data    = 32'd0;
 
+        r_iresp_addr_ok = 1'b0;
+        r_iresp_data_ok = 1'b0;
+        r_iresp_data    = 32'd0;
+        r_dresp_addr_ok = 1'b0;
+        r_dresp_data_ok = 1'b0;
+        r_dresp_data    = 32'd0;
+
+        // ----- Read channel FSM -----
         case (rstate)
             R_IDLE: begin
                 if (ireq.valid && (dreq.valid && dreq.strobe == 4'd0)) begin
@@ -90,16 +99,21 @@ module axibus_arbiter import la32_common::*; (
                 end
             end
             R_ARB: begin
-                araddr  = ireq.valid ? ireq.addr : dreq.addr;
+                araddr  = (dreq.valid && dreq.strobe == 4'd0) ? dreq.addr : ireq.addr;
                 arvalid = 1'b1;
                 if (arready) begin
                     rnext = R_WAIT;
+                    if (dreq.valid && dreq.strobe == 4'd0)
+                        r_dresp_addr_ok = 1'b1;
+                    else
+                        r_iresp_addr_ok = 1'b1;
                 end
             end
             R_IREQ: begin
                 araddr  = ireq.addr;
                 arvalid = 1'b1;
                 if (arready) begin
+                    r_iresp_addr_ok = 1'b1;
                     rnext = R_WAIT;
                 end
             end
@@ -107,6 +121,7 @@ module axibus_arbiter import la32_common::*; (
                 araddr  = dreq.addr;
                 arvalid = 1'b1;
                 if (arready) begin
+                    r_dresp_addr_ok = 1'b1;
                     rnext = R_WAIT;
                 end
             end
@@ -114,45 +129,19 @@ module axibus_arbiter import la32_common::*; (
                 rready = 1'b1;
                 if (rvalid) begin
                     if (r_for_d_r) begin
-                        dresp.data_ok = 1'b1;
-                        dresp.data = rdata;
+                        r_dresp_data_ok = 1'b1;
+                        r_dresp_data = rdata;
                     end else begin
-                        iresp.data_ok = 1'b1;
-                        iresp.data = rdata;
+                        r_iresp_data_ok = 1'b1;
+                        r_iresp_data = rdata;
                     end
                     rnext = R_IDLE;
                 end
             end
             default: rnext = R_IDLE;
         endcase
-    end
 
-    always_ff @(posedge clk) begin
-        if (!resetn) begin
-            rstate     <= R_IDLE;
-            r_for_d_r  <= 1'b0;
-            r_addr_r   <= 32'd0;
-        end else begin
-            rstate <= rnext;
-            if (rstate == R_ARB && arready) begin
-                r_for_d_r <= dreq.valid && !ireq.valid;
-                r_addr_r  <= ireq.valid ? ireq.addr : dreq.addr;
-            end else if (rstate == R_IREQ && arready) begin
-                r_for_d_r <= 1'b0;
-                r_addr_r  <= ireq.addr;
-            end else if (rstate == R_DREQ && arready) begin
-                r_for_d_r <= 1'b1;
-                r_addr_r  <= dreq.addr;
-            end
-        end
-    end
-
-    // ==================== Write channel ====================
-    logic [31:0] waddr_stored;
-    logic [31:0] wdata_stored;
-    logic [3:0]  wstrb_stored;
-
-    always_comb begin
+        // ----- Write channel FSM -----
         wnext   = wstate;
         awid    = 4'd0;
         awaddr  = 32'd0;
@@ -169,8 +158,9 @@ module axibus_arbiter import la32_common::*; (
         wlast   = 1'b1;
         wvalid  = 1'b0;
         bready  = 1'b0;
-        dresp.addr_ok = 1'b0;
-        dresp.data_ok = 1'b0;
+
+        w_dresp_addr_ok = 1'b0;
+        w_dresp_data_ok = 1'b0;
 
         case (wstate)
             W_IDLE: begin
@@ -182,7 +172,7 @@ module axibus_arbiter import la32_common::*; (
                         wstrb = dreq.strobe;
                         wvalid = 1'b1;
                         if (wready) begin
-                            dresp.addr_ok = 1'b1;
+                            w_dresp_addr_ok = 1'b1;
                             bready = 1'b1;
                             wnext = W_RESP;
                         end else begin
@@ -200,7 +190,7 @@ module axibus_arbiter import la32_common::*; (
                 wstrb = wstrb_stored;
                 wvalid = 1'b1;
                 if (wready) begin
-                    dresp.addr_ok = 1'b1;
+                    w_dresp_addr_ok = 1'b1;
                     bready = 1'b1;
                     wnext = W_RESP;
                 end else begin
@@ -210,7 +200,7 @@ module axibus_arbiter import la32_common::*; (
             W_RESP: begin
                 bready = 1'b1;
                 if (bvalid) begin
-                    dresp.data_ok = 1'b1;
+                    w_dresp_data_ok = 1'b1;
                     wnext = W_IDLE;
                 end else begin
                     wnext = W_RESP;
@@ -218,7 +208,41 @@ module axibus_arbiter import la32_common::*; (
             end
             default: wnext = W_IDLE;
         endcase
+
+        // ----- Combine read and write responses -----
+        iresp.addr_ok = r_iresp_addr_ok;
+        iresp.data_ok = r_iresp_data_ok;
+        iresp.data    = r_iresp_data;
+
+        dresp.addr_ok = r_dresp_addr_ok || w_dresp_addr_ok;
+        dresp.data_ok = r_dresp_data_ok || w_dresp_data_ok;
+        dresp.data    = r_dresp_data;
     end
+
+    // ==================== Sequential logic ====================
+    always_ff @(posedge clk) begin
+        if (!resetn) begin
+            rstate     <= R_IDLE;
+            r_for_d_r  <= 1'b0;
+            r_addr_r   <= 32'd0;
+        end else begin
+            rstate <= rnext;
+            if (rstate == R_ARB && arready) begin
+                r_for_d_r <= (dreq.valid && dreq.strobe == 4'd0);
+                r_addr_r  <= (dreq.valid && dreq.strobe == 4'd0) ? dreq.addr : ireq.addr;
+            end else if (rstate == R_IREQ && arready) begin
+                r_for_d_r <= 1'b0;
+                r_addr_r  <= ireq.addr;
+            end else if (rstate == R_DREQ && arready) begin
+                r_for_d_r <= 1'b1;
+                r_addr_r  <= dreq.addr;
+            end
+        end
+    end
+
+    logic [31:0] waddr_stored;
+    logic [31:0] wdata_stored;
+    logic [3:0]  wstrb_stored;
 
     always_ff @(posedge clk) begin
         if (!resetn) begin

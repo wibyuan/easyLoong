@@ -81,8 +81,8 @@ module fetch_unit import la32_common::*; (
     end
 
     assign if_valid = (state == REQ && iresp.data_ok) || (state == WAIT_DATA && iresp.data_ok);
-    assign if_pc = (state == REQ && iresp.data_ok) ? pc_current : captured_pc;
-    assign if_instr = (state == REQ && iresp.data_ok) ? iresp.data : captured_instr;
+    assign if_pc = iresp.data_ok ? ((state == REQ) ? pc_current : captured_pc) : captured_pc;
+    assign if_instr = iresp.data_ok ? iresp.data : captured_instr;
     assign if_pc_valid = 1'b1;
 
     always_comb begin
