@@ -119,33 +119,22 @@ git submodule update --init --recursive
 
 ### LA32R 交叉编译工具链
 
-本项目不自带工具链二进制。使用 nscscc 提供的下载脚本安装：
+使用 nscscc 提供的下载脚本安装：
 
 ```bash
 cd nscscc-solo-la-soc/sdk/toolchains
 bash init.sh
 ```
 
-或者手动下载 `loongson-gnu-toolchain-8.3-x86_64-loongarch32r-linux-gnusf-v2.0.tar.xz`
-并解压到 `nscscc-solo-la-soc/sdk/toolchains/`。
+> 根目录 Makefile 已内置工具链路径，无需手动设 `PATH`。
 
-将工具链加入 PATH：
-
-```bash
-TOOLCHAIN_PATH="$(pwd)/nscscc-solo-la-soc/sdk/toolchains/loongson-gnu-toolchain-8.3-x86_64-loongarch32r-linux-gnusf-v2.0/bin"
-export PATH="$TOOLCHAIN_PATH:$PATH"
-loongarch32r-linux-gnusf-gcc --version   # 验证
-```
-
-### Supervisor 构建
+### 构建
 
 ```bash
-cd nscscc-solo-la-soc/sdk/software/examples/supervisor
-./build_all.sh
-cd ../../../..   # 返回 nscscc-solo-la-soc 根目录
+make build
 ```
 
-产物在 `build/` 下（MIF / BIN / ELF），包括：
+自动完成 NEMU 参考模型编译 + supervisor 软件构建。产物在 `nscscc-solo-la-soc/sdk/software/examples/supervisor/build/` 下，包括：
 
 - `build/kernel/auto/axi_ram.mif` —— 默认 kernel（自适应 cache）
 - `build/kernel/uncache/axi_ram.mif` —— 强制 uncache kernel（当前阶段使用）
@@ -181,14 +170,44 @@ difftest 框架在 Verilator 仿真中引入 loongarch32r NEMU 作为 golden ref
 将 DUT 的 GPR/CSR 状态传入 C++ 层，同时步进 NEMU 执行同一条指令，
 逐条比对寄存器状态。任何不一致立即报告并退出。
 
-### 构建参考模型
+### 快速开始
+
+从 easyLoong 根目录直接运行：
 
 ```bash
-make -C difftest build
+make test-simple       # 冒烟测试（difftest 默认开启）
+make test-fibonacci    # 斐波那契测试
+make test-matrix       # 矩阵乘加
+make test-stream       # 连续访存
+make test-cryptonight  # 密码学运算
+make test-mixed        # 混合运算
+make test-all          # 全部 6 个测试
+make test-fibonacci DIFF=0  # 关闭 difftest，仅仿真
+```
+
+每条命令自动完成 NEMU + supervisor 构建，无需手动准备。`test-all` 中单个测试失败不中断后续。
+
+### 可用测试场景
+
+| 目标 | 说明 |
+|------|------|
+| `test-simple` | 基础冒烟测试 |
+| `test-fibonacci` | 阶段 1：UART 交互 + 斐波那契 |
+| `test-matrix` | 阶段 2：矩阵乘加 |
+| `test-stream` | 阶段 3：连续访存 |
+| `test-cryptonight` | 阶段 4：密码学运算 |
+| `test-mixed` | 阶段 5：混合运算 |
+
+### 手动构建参考模型
+
+```bash
+make build-nemu
 # 产物: la32r-nemu/NEMU/build/la32r-nemu-interpreter-so
 ```
 
-### 运行带 difftest 的仿真
+### 手动运行（底层命令）
+
+如需精确控制参数，可直接调用 run.py：
 
 ```bash
 # 准备软件
@@ -229,7 +248,19 @@ DUT 与 NEMU 之间逐条指令的寄存器差异，任何不一致立即 ABORT 
 
 ### 调试实践
 
-**起手姿势**：在 `nscscc-solo-la-soc/` 目录下运行（run.py 的 ROOT_DIR 即为该目录，路径均以此为基准）。
+从 easyLoong 根目录运行：
+
+```bash
+make test-fibonacci       # difftest 模式（默认）
+make test-fibonacci DIFF=0 # 仅仿真，不比对
+```
+
+**常见过程**：
+
+1. 首次运行 `make test-fibonacci` 自动完成 NEMU + supervisor 构建 + difftest 仿真
+2. difftest 逐条比对 GPR[0..31] + CSR + idle_pc，任何不一致立即报告 "different at pc=..." 并 abort
+
+**底层命令**（如需精确控制）：在 `nscscc-solo-la-soc/` 目录下运行：
 
 ```bash
 cd nscscc-solo-la-soc
@@ -238,19 +269,6 @@ python3 sim/run.py sdk/software/examples/supervisor/sim/cases/fibonacci.json -- 
     +diff_so=../la32r-nemu/NEMU/build/la32r-nemu-interpreter-so \
     +diff_img=sdk/software/examples/supervisor/build/kernel/uncache/kernel.bin
 ```
-
-**关键参数说明**：
-
-- `+diff_so` — NEMU 参考模型 `.so` 路径
-- `+diff_img` — 与 MIF 对应的 **raw binary** 镜像（`kernel.bin`，不是 `.mif`）
-- 路径相对于 `nscscc-solo-la-soc/`；建议使用 `../` 前缀引用 easyLoong 根目录下的文件
-
-**常见过程**：
-
-1. 构建参考模型：`make -C difftest build`
-2. 构建软件：`cd nscscc-solo-la-soc/sdk/software/examples/supervisor && ./build_all.sh && cd -`
-3. 运行 difftest 仿真（如上）
-4. difftest 逐条比对 GPR[0..31] + CSR + idle_pc，任何不一致立即报告 "different at pc=..." 并 abort
 
 **首次运行时的预期**：
 
@@ -273,40 +291,38 @@ python3 sim/run.py sdk/software/examples/supervisor/sim/cases/fibonacci.json -- 
 
 - Verilator >= 5.0
 - Python 3 + numpy
-- LA32R 工具链在 PATH 中
-- 已完成 supervisior 构建和 myCPU 软链接
+- 已完成 myCPU 软链接
+- （工具链路径由根目录 Makefile 自动处理）
 
 ### 运行单个测试
 
 ```bash
-cd nscscc-solo-la-soc
-python3 sim/run.py sdk/software/examples/supervisor/sim/cases/simple.json
+make test-simple          # difftest 模式（默认）
+make test-simple DIFF=0   # 仅仿真，不比对
 ```
-
-首次运行或软件修改后加 `--prepare` 重新构建 supervisor。
 
 强制重新编译 RTL（修改 CPU 源码后）：
 
 ```bash
-FORCE_VERILATOR_REBUILD=1 python3 sim/run.py sdk/software/examples/supervisor/sim/cases/simple.json
+FORCE_VERILATOR_REBUILD=1 make test-simple
 ```
 
 ### 运行全部回归
 
 ```bash
-python3 sim/run.py sdk/software/examples/supervisor/sim/suite.json
+make test-all
 ```
 
 ### 可用测试场景
 
-| 场景 | JSON 文件 | 说明 |
+| 目标 | JSON 文件 | 说明 |
 |------|-----------|------|
-| SIMPLE | `cases/simple.json` | 基础冒烟测试 |
-| FIBONACCI | `cases/fibonacci.json` | 阶段 1：UART 交互 + 斐波那契 |
-| STREAM | `cases/stream.json` | 阶段 3：连续访存 |
-| MATRIX | `cases/matrix.json` | 阶段 2：矩阵乘加 |
-| CRYPTONIGHT | `cases/cryptonight.json` | 阶段 4：密码学运算 |
-| MIXED | `cases/mixed.json` | 阶段 5：混合运算 |
+| `test-simple` | `cases/simple.json` | 基础冒烟测试 |
+| `test-fibonacci` | `cases/fibonacci.json` | 阶段 1：UART 交互 + 斐波那契 |
+| `test-stream` | `cases/stream.json` | 阶段 3：连续访存 |
+| `test-matrix` | `cases/matrix.json` | 阶段 2：矩阵乘加 |
+| `test-cryptonight` | `cases/cryptonight.json` | 阶段 4：密码学运算 |
+| `test-mixed` | `cases/mixed.json` | 阶段 5：混合运算 |
 
 ## 8. Vivado 本地流程
 
