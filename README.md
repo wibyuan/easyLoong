@@ -93,11 +93,11 @@
 
 | 阶段 | 类型 | 说明 | 状态 |
 |------|------|------|------|
-| 1 | 功能测试 | 斐波那契数列（裸机，6 条基础指令） | 🔧 difftest 通过，UART 待调通 |
-| 2 | MATRIX | Monitor 运行，矩阵乘加 | ⬜ |
-| 3 | STREAM | Monitor 运行，~3MiB 连续访存 | ⬜ |
-| 4 | CRYPTONIGHT | Monitor 运行，2MiB 内存访问 + 整数运算 | ⬜ |
-| 5 | MIXED | Monitor 运行，混合运算 | ⬜ |
+| 1 | 功能测试 | 斐波那契数列（裸机，6 条基础指令） | ✅ difftest 30K+ 条通过 |
+| 2 | MATRIX | Monitor 运行，矩阵乘加 | ⬜ 待 CSR 支持 |
+| 3 | STREAM | Monitor 运行，~3MiB 连续访存 | ⬜ 待 CSR 支持 |
+| 4 | CRYPTONIGHT | Monitor 运行，2MiB 内存访问 + 整数运算 | ⬜ 待 CSR 支持 |
+| 5 | MIXED | Monitor 运行，混合运算 | ⬜ 待 CSR 支持 |
 
 > **评测方式**：脚本将测试程序写入 BaseRAM → 释放复位 → CPU 运行后将结果写入 ExtRAM → 脚本读回比对。不通过 UART 输出判定结果。
 > **指令集最终要求**：以 supervisor README 为准。
@@ -234,17 +234,30 @@ nscscc-solo-la-soc/sim/verilator/obj_dir/Vverilator_tb \
 | Verilog 模块 | DPI-C 函数 | 功能 |
 |-------------|-----------|------|
 | `DifftestArchIntRegState` | `v_difftest_ArchIntRegState` | 32 个 GPR（含组合逻辑旁路） |
-| `DifftestInstrCommit` | `v_difftest_InstrCommit` | WB 级提交信息（pc, instr, wen, wdest, wdata） |
+| `DifftestInstrCommit` | `v_difftest_InstrCommit` | WB 级提交信息（pc, instr, wen, wdest, wdata, mem_addr, mem_re） |
 | `DifftestCSRState` | `v_difftest_CSRState` | 26 个 CSR 字段（当前硬编码默认值） |
 | `DifftestIdlePC` | `v_difftest_IdlePC` | 已提交指令的 PC，用于 regcpy 缓冲区对齐 |
-| `DifftestTrapEvent` | `v_difftest_TrapEvent` | 陷阱事件 |
+| `DifftestTrapEvent` | `v_difftest_TrapEvent` | 陷阱事件（定义但未实例化） |
 
-### 当前比对范围
+### 比对逻辑
 
-GPR[0..31] + 26 个 CSR 字段 + idle_pc（完整 236 字节 regcpy 缓冲区）。
+difftest 引擎由三个类组成（`difftest_dut.cpp`）：
 
-框架已通过 Verilator 编译，所有 DPI-C 调用正常执行。difftest 可检测并报告
-DUT 与 NEMU 之间逐条指令的寄存器差异，任何不一致立即 ABORT 退出。
+| 类 | 职责 |
+|---|---|
+| `RefProxy` | NEMU .so 加载，封装 `difftest_memcpy/regcpy/exec/isa_reg_display` |
+| `DiffState` | 环形缓冲区，记录最近 16 条 commit group + 16 条提交指令 |
+| `DifftestEngine` | difftest_step/checkregs/超时检测；MMIO load 值注入 NEMU 内存 |
+
+**mismatch 时输出顺序：**
+1. Commit Group Trace（最近 16 个 commit group 的 PC + 提交数）
+2. Commit Instr Trace（最近 16 条已提交指令的 pc/instr/wen/wdest/wdata）
+3. Register Diff（逐寄存器列出 REF vs DUT 差异值）
+4. REF Regs（NEMU `isa_reg_display` 完整寄存器 dump）
+
+**MMIO 处理**：当 DUT 从设备地址（`0x1f000000-0x1f000fff`）load 时，
+在 `ref_exec(1)` 之前将 DUT 读到的值通过 `memcpy` 注入 NEMU 内存，
+避免 NEMU 因缺少设备模型而返回 0 导致的 mismatch。
 
 ### 调试实践
 
@@ -276,14 +289,8 @@ python3 sim/run.py sdk/software/examples/supervisor/sim/cases/fibonacci.json -- 
 - 裸机测试中，CSR 字段在 supervisor 写 CSR 之前应一致（DUT 硬编码与 NEMU 默认值对齐）
 - 若测试中 supervisor 写 CSR，CSR 字段会触发 difftest 报告，这指明下一步需对接完整的 CSR 读写
 
-**临时 debug 打印**：如需逐条观察，可在 `difftest_dut.cpp:checkregs` 处加 `fprintf` 打印 `pc` 和关键 `gpr` 值，调试完毕后清理。
-
 > **注意**：`DifftestTrapEvent` 模块仅在 `difftest.v` 中定义，未在 `core.sv` 中实例化，
 > 其 DPI 函数 `v_difftest_TrapEvent` 当前未被调用。待后续需要处理异常/中断 difftest 时接入。
-
-> CSR 当前在 DUT 侧硬编码为复位默认值（CRMD=0x00000008, ASID=0x000A0000, 其余为 0）。
-> supervisor 初始化期间写入 CSR 后 NEMU 状态与 DUT 状态必然不一致，
-> difftest 将精确报告差异位置，这指明了 CPU 下一步需实现的 CSR 功能。
 
 ## 7. Verilator 仿真
 
