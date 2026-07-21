@@ -7,7 +7,12 @@ module core import la32_common::*; (
     output ibus_req_t  ireq,
     input  ibus_resp_t iresp,
     output dbus_req_t  dreq,
-    input  dbus_resp_t dresp
+    input  dbus_resp_t dresp,
+    output logic [31:0] debug_wb_pc,
+    output logic [31:0] debug_wb_inst,
+    output logic        debug_wb_rf_wen,
+    output logic [4:0]  debug_wb_rf_wnum,
+    output logic [31:0] debug_wb_rf_wdata
 );
 
     typedef struct packed {
@@ -355,6 +360,13 @@ module core import la32_common::*; (
         .id_jump_req(id_jump_req),
         .wb_jump_req(1'b0)
     );
+
+    // ==================== DEBUG OUTPUT ====================
+    assign debug_wb_pc      = mem_wb_out.data.pc;
+    assign debug_wb_inst    = mem_wb_out.data.instr;
+    assign debug_wb_rf_wen  = mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid;
+    assign debug_wb_rf_wnum = mem_wb_out.data.rd;
+    assign debug_wb_rf_wdata = mem_wb_out.data.final_res;
 
     // ==================== DIFFTEST ====================
 `ifdef VERILATOR

@@ -70,13 +70,24 @@ module core_top #(
     dbus_req_t  dreq;
     dbus_resp_t dresp;
 
+    logic [31:0] core_debug_wb_pc;
+    logic [31:0] core_debug_wb_inst;
+    logic        core_debug_wb_rf_wen;
+    logic [4:0]  core_debug_wb_rf_wnum;
+    logic [31:0] core_debug_wb_rf_wdata;
+
     core u_core (
         .clk,
         .reset(~aresetn),
         .ireq,
         .iresp,
         .dreq,
-        .dresp
+        .dresp,
+        .debug_wb_pc      (core_debug_wb_pc),
+        .debug_wb_inst    (core_debug_wb_inst),
+        .debug_wb_rf_wen  (core_debug_wb_rf_wen),
+        .debug_wb_rf_wnum (core_debug_wb_rf_wnum),
+        .debug_wb_rf_wdata(core_debug_wb_rf_wdata)
     );
 
     axibus_arbiter u_arbiter (
@@ -97,10 +108,10 @@ module core_top #(
 
     assign ws_valid = 1'b0;
     assign rf_rdata = 32'd0;
-    assign debug0_wb_pc      = 32'd0;
-    assign debug0_wb_rf_wen  = 4'd0;
-    assign debug0_wb_rf_wnum = 5'd0;
-    assign debug0_wb_rf_wdata = 32'd0;
-    assign debug0_wb_inst    = 32'd0;
+    assign debug0_wb_pc      = core_debug_wb_pc;
+    assign debug0_wb_rf_wen  = {3'd0, core_debug_wb_rf_wen};
+    assign debug0_wb_rf_wnum = core_debug_wb_rf_wnum;
+    assign debug0_wb_rf_wdata = core_debug_wb_rf_wdata;
+    assign debug0_wb_inst    = core_debug_wb_inst;
 
 endmodule
