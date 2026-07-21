@@ -1,3 +1,4 @@
+`default_nettype none
 module pipeline_reg #(
     parameter WIDTH = 32
 )(

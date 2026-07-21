@@ -1,3 +1,4 @@
+`default_nettype none
 ////////////////////////////////////////////////////////
 // RS-232 RX and TX module
 // (c) fpga4fun.com & KNJN LLC - 2003 to 2016

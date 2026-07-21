@@ -1,3 +1,4 @@
+`default_nettype none
 `ifdef VERILATOR
 module DifftestArchIntRegState (
     input  logic        clock,

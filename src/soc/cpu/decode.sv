@@ -1,3 +1,4 @@
+`default_nettype none
 `include "common.sv"
 
 module decode import la32_common::*; (

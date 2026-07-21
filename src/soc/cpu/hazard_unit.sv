@@ -1,3 +1,4 @@
+`default_nettype none
 module hazard_unit (
     input  logic        if_not_ready,
     input  logic        ex_not_ready,

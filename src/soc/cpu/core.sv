@@ -1,3 +1,4 @@
+`default_nettype none
 `include "common.sv"
 
 module core import la32_common::*; (
