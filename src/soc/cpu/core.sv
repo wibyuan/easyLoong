@@ -356,6 +356,7 @@ module core import la32_common::*; (
     );
 
     // ==================== DIFFTEST ====================
+`ifdef VERILATOR
     DifftestArchIntRegState u_difftest_gpr (
         .clock(clk),
         .gpr_0(gpr_state[0]),  .gpr_1(gpr_state[1]),  .gpr_2(gpr_state[2]),  .gpr_3(gpr_state[3]),
@@ -412,5 +413,6 @@ module core import la32_common::*; (
         .dmw0(32'h00000000),
         .dmw1(32'h00000000)
     );
+`endif
 
 endmodule

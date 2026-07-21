@@ -1,3 +1,4 @@
+`ifdef VERILATOR
 module DifftestArchIntRegState (
     input  logic        clock,
     input  logic [31:0] gpr_0,  gpr_1,  gpr_2,  gpr_3,
@@ -108,3 +109,4 @@ module DifftestTrapEvent (
         v_difftest_TrapEvent(valid, code, pc, cycleCnt, instrCnt);
     end
 endmodule
+`endif
