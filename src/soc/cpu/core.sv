@@ -389,7 +389,9 @@ module core import la32_common::*; (
         .instr(mem_wb_out.data.instr),
         .wen(mem_wb_out.ctrl.rf_we),
         .wdest(mem_wb_out.data.rd),
-        .wdata(mem_wb_out.data.final_res)
+        .wdata(mem_wb_out.data.final_res),
+        .mem_addr(mem_wb_out.data.mem_addr),
+        .mem_re(mem_wb_out.ctrl.mem_re)
     );
 
     DifftestIdlePC u_difftest_idle (

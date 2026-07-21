@@ -30,10 +30,10 @@ module decode import la32_common::*; (
     assign op17 = instr[31:15];
 
     assign rs1 = instr[9:5];
-    assign rd  = instr[4:0];
 
     always_comb begin
         rs2         = instr[14:10];
+        rd          = instr[4:0];
         rf_we       = 1'b0;
         alu_op      = ALU_ADD;
         alu_src_sel = 1'b0;
@@ -290,6 +290,7 @@ module decode import la32_common::*; (
             end
             32'b010101_????????????????_??????????: begin // BL
                 is_illegal = 1'b0;
+                rd = 5'd1;
                 is_jal = 1'b1;
                 rf_we = 1'b1;
                 imm = {{4{instr[9]}}, instr[9:0], instr[25:10], 2'd0};

@@ -7,6 +7,13 @@
 
 #define RESET_VECTOR 0x1c000000
 
+#define MMIO_BASE 0x1f000000
+#define MMIO_END  0x1f001000
+
+static inline bool is_mmio_addr(uint32_t addr) {
+    return (addr >= MMIO_BASE && addr < MMIO_END);
+}
+
 enum { DIFFTEST_TO_DUT, DIFFTEST_TO_REF };
 
 // ==================== RefProxy ====================
@@ -266,8 +273,12 @@ void DifftestEngine::step() {
     *difftest_cycle_ptr() += 1;
 
     state_.record_inst(cmt->pc, cmt->instr, cmt->wen, cmt->wdest, cmt->wdata);
-
     state_.record_group(pc, 1);
+
+    if (cmt->mem_re && is_mmio_addr(cmt->mem_addr)) {
+        uint32_t val = cmt->wdata;
+        proxy_.memcpy(cmt->mem_addr, &val, sizeof(val), DIFFTEST_TO_REF);
+    }
 
     proxy_.exec(1);
 

@@ -37,14 +37,17 @@ void v_difftest_ArchIntRegState(
 
 void v_difftest_InstrCommit(
     int valid, int pc, int instr,
-    int wen, int wdest, int wdata
+    int wen, int wdest, int wdata,
+    int mem_addr, int mem_re
 ) {
-    dut_commit.valid = valid;
-    dut_commit.pc    = pc;
-    dut_commit.instr = instr;
-    dut_commit.wen   = wen;
-    dut_commit.wdest = wdest;
-    dut_commit.wdata = wdata;
+    dut_commit.valid    = valid;
+    dut_commit.pc       = pc;
+    dut_commit.instr    = instr;
+    dut_commit.wen      = wen;
+    dut_commit.wdest    = wdest;
+    dut_commit.wdata    = wdata;
+    dut_commit.mem_addr = mem_addr;
+    dut_commit.mem_re   = mem_re;
 }
 
 void v_difftest_CSRState(

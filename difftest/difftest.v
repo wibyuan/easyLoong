@@ -38,14 +38,17 @@ module DifftestInstrCommit (
     input  logic [31:0] instr,
     input  logic        wen,
     input  logic [4:0]  wdest,
-    input  logic [31:0] wdata
+    input  logic [31:0] wdata,
+    input  logic [31:0] mem_addr,
+    input  logic        mem_re
 );
     import "DPI-C" function void v_difftest_InstrCommit(
         input int valid, input int pc, input int instr,
-        input int wen, input int wdest, input int wdata
+        input int wen, input int wdest, input int wdata,
+        input int mem_addr, input int mem_re
     );
     always @(posedge clock) begin
-        v_difftest_InstrCommit(valid, pc, instr, wen, wdest, wdata);
+        v_difftest_InstrCommit(valid, pc, instr, wen, wdest, wdata, mem_addr, mem_re);
     end
 endmodule
 

@@ -45,6 +45,8 @@ struct difftest_commit_t {
     uint32_t wen;
     uint32_t wdest;
     uint32_t wdata;
+    uint32_t mem_addr;
+    uint32_t mem_re;
 };
 
 struct difftest_trap_t {
