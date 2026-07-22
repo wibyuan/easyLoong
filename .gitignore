@@ -1,13 +1,3 @@
-# Vivado generated
-run_vivado/project/
-*.xpr
-*.jou
-
-# ASM build artifacts
-asm/*.bin
-asm/*.elf
-asm/*.o
-
 # nscscc simulation build artifacts
 nscscc-solo-la-soc/sim/verilator/obj_dir/
 nscscc-solo-la-soc/sim/verilator/build/
