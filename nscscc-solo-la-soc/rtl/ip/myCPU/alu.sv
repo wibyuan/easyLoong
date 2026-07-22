@@ -1,4 +1,3 @@
-`default_nettype none
 `include "common.sv"
 
 module alu import la32_common::*; (

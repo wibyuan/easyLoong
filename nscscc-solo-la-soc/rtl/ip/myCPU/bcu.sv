@@ -1,4 +1,3 @@
-`default_nettype none
 `include "common.sv"
 
 module bcu import la32_common::*; (

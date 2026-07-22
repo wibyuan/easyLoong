@@ -1,4 +1,3 @@
-`default_nettype none
 `include "common.sv"
 
 module axibus_arbiter import la32_common::*; (

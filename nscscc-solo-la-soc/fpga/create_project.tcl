@@ -45,6 +45,11 @@ proc collect_files {root extensions excluded_dirs} {
 set rtl_files [collect_files ../rtl [list .v .sv .vhd .vhdl] \
     [list ../rtl/ip/PLL_2019_2]]
 add_files -scan_for_includes $rtl_files
+# difftest.v is a Verilator-only DPI-C wrapper; exclude from synthesis
+set difftest_file [glob -nocomplain ../rtl/ip/myCPU/difftest.v]
+if {[llength $difftest_file] != 0} {
+    remove_files -fileset sources_1 {*}$difftest_file
+}
 
 # Add packaged Vivado IPs separately, including optional CPU-owned IPs.
 set ip_files [collect_files ../rtl [list .xci .xcix] [list]]

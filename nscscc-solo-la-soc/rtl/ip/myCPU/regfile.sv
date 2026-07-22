@@ -1,4 +1,3 @@
-`default_nettype none
 module regfile (
     input  logic        clk,
     input  logic [4:0]  ra1, ra2,

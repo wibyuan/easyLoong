@@ -1,4 +1,3 @@
-`default_nettype none
 `include "common.sv"
 
 module fetch_unit import la32_common::*; (
