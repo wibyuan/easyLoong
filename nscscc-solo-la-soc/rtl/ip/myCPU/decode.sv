@@ -18,6 +18,9 @@ module decode import la32_common::*; (
     output br_type_t    br_type,
     output logic        is_pcadd,
     output logic        is_cpucfg,
+    output logic        is_csrrd,
+    output logic        is_csrwr,
+    output logic        is_csrxchg,
     output logic        is_illegal
 );
 
@@ -49,6 +52,9 @@ module decode import la32_common::*; (
         br_type     = BR_NONE;
         is_pcadd    = 1'b0;
         is_cpucfg   = 1'b0;
+        is_csrrd    = 1'b0;
+        is_csrwr    = 1'b0;
+        is_csrxchg  = 1'b0;
         is_illegal  = 1'b1;
 
         casez (instr)
@@ -351,6 +357,25 @@ module decode import la32_common::*; (
                 is_illegal = 1'b0;
                 rf_we = 1'b1;
                 is_cpucfg = 1'b1;
+            end
+
+            // ==================== CSR instructions ====================
+            32'b00000100_??????????????_00000_?????: begin // CSRRD
+                is_illegal = 1'b0;
+                rf_we = 1'b1;
+                is_csrrd = 1'b1;
+            end
+            32'b00000100_??????????????_00001_?????: begin // CSRWR
+                is_illegal = 1'b0;
+                rf_we = 1'b1;
+                is_csrwr = 1'b1;
+                rs1 = instr[4:0];
+            end
+            32'b00000100_??????????????_?????_?????: begin // CSRXCHG
+                is_illegal = 1'b0;
+                rf_we = 1'b1;
+                is_csrxchg = 1'b1;
+                rs2 = instr[4:0];
             end
 
             default: ;

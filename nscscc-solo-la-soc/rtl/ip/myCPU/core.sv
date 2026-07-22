@@ -36,6 +36,9 @@ module core import la32_common::*; (
         logic      is_jalr;
         logic      is_pcadd;
         logic      is_cpucfg;
+        logic      is_csrrd;
+        logic      is_csrwr;
+        logic      is_csrxchg;
     } id_ex_ctrl_t;
     typedef struct packed {
         logic [31:0] pc;
@@ -154,6 +157,7 @@ module core import la32_common::*; (
     logic       dec_rf_we, dec_alu_src_sel;
     logic       dec_mem_re, dec_mem_we, dec_mem_unsigned;
     logic       dec_is_branch, dec_is_jal, dec_is_jalr, dec_is_pcadd, dec_is_cpucfg, dec_is_illegal;
+    logic       dec_is_csrrd, dec_is_csrwr, dec_is_csrxchg;
     logic [31:0] dec_imm;
     alu_op_t    dec_alu_op;
     br_type_t   dec_br_type;
@@ -171,6 +175,9 @@ module core import la32_common::*; (
         .br_type(dec_br_type),
         .is_pcadd(dec_is_pcadd),
         .is_cpucfg(dec_is_cpucfg),
+        .is_csrrd(dec_is_csrrd),
+        .is_csrwr(dec_is_csrwr),
+        .is_csrxchg(dec_is_csrxchg),
         .is_illegal(dec_is_illegal)
     );
 
@@ -199,6 +206,9 @@ module core import la32_common::*; (
     assign id_ex_in.ctrl.is_jalr    = dec_is_jalr & id_valid;
     assign id_ex_in.ctrl.is_pcadd   = dec_is_pcadd & id_valid;
     assign id_ex_in.ctrl.is_cpucfg  = dec_is_cpucfg & id_valid;
+    assign id_ex_in.ctrl.is_csrrd   = dec_is_csrrd & id_valid;
+    assign id_ex_in.ctrl.is_csrwr   = dec_is_csrwr & id_valid;
+    assign id_ex_in.ctrl.is_csrxchg = dec_is_csrxchg & id_valid;
 
     assign id_ex_in.data.fw_a_ex_hit  = (dec_rs1 != 5'd0) && (dec_rs1 == id_ex_out.data.rd);
     assign id_ex_in.data.fw_a_mem_hit = (dec_rs1 != 5'd0) && (dec_rs1 == ex_mem_out.data.rd);
@@ -274,6 +284,49 @@ module core import la32_common::*; (
         .flush_req(ex_jump_flush)
     );
 
+    // ==================== CSR REGISTER FILE ====================
+    logic [13:0] csr_num;
+    logic [31:0] csr_rdata, csr_wdata;
+    logic        csr_we;
+    logic [31:0] csr_crmd, csr_dmw0, csr_dmw1;
+    logic [31:0] csr_prmd, csr_euen, csr_ecfg, csr_estat, csr_era, csr_badv, csr_eentry;
+    logic [31:0] csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl, csr_pgdh;
+    logic [31:0] csr_save0, csr_save1, csr_save2, csr_save3;
+    logic [31:0] csr_tid, csr_tcfg, csr_tval, csr_llbctl, csr_tlbrentry;
+
+    assign csr_num = id_ex_out.data.instr[23:10];
+
+    csr_regfile csr_rf (
+        .clk, .reset,
+        .csr_num,
+        .csr_rdata,
+        .csr_we,
+        .csr_waddr(csr_num),
+        .csr_wdata,
+        .crmd(csr_crmd), .prmd(csr_prmd), .euen(csr_euen),
+        .ecfg(csr_ecfg), .estat(csr_estat), .era(csr_era),
+        .badv(csr_badv), .eentry(csr_eentry),
+        .tlbidx(csr_tlbidx), .tlbehi(csr_tlbehi),
+        .tlbelo0(csr_tlbelo0), .tlbelo1(csr_tlbelo1),
+        .asid(csr_asid), .pgdl(csr_pgdl), .pgdh(csr_pgdh),
+        .save0(csr_save0), .save1(csr_save1), .save2(csr_save2), .save3(csr_save3),
+        .tid(csr_tid), .tcfg(csr_tcfg), .tval(csr_tval),
+        .llbctl(csr_llbctl), .tlbrentry(csr_tlbrentry),
+        .dmw0(csr_dmw0), .dmw1(csr_dmw1)
+    );
+
+    always_comb begin
+        if (id_ex_out.ctrl.is_csrwr)
+            csr_wdata = forward_a;
+        else if (id_ex_out.ctrl.is_csrxchg)
+            csr_wdata = (csr_rdata & ~forward_a) | (forward_b & forward_a);
+        else
+            csr_wdata = 32'd0;
+    end
+
+    assign csr_we = id_ex_out.ctrl.valid && (id_ex_out.ctrl.is_csrwr || id_ex_out.ctrl.is_csrxchg);
+
+    // ==================== EXECUTE (continued) ====================
     logic ex_valid;
     assign ex_valid = id_ex_out.ctrl.valid;
 
@@ -298,6 +351,8 @@ module core import la32_common::*; (
     always_comb begin
         if (id_ex_out.ctrl.is_cpucfg)
             ex_mem_in.data.alu_res = cpucfg_result;
+        else if (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrwr || id_ex_out.ctrl.is_csrxchg)
+            ex_mem_in.data.alu_res = csr_rdata;
         else if (id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr)
             ex_mem_in.data.alu_res = id_ex_out.data.pc_plus_4;
         else if (id_ex_out.ctrl.is_pcadd)
@@ -307,7 +362,19 @@ module core import la32_common::*; (
     end
 
     assign ex_mem_in.data.rs2_val   = forward_b;
-    assign ex_mem_in.data.mem_addr  = alu_result;
+
+    logic [31:0] ex_mem_addr;
+    always_comb begin
+        ex_mem_addr = alu_result;
+        if (!csr_crmd[3] && csr_crmd[4]) begin
+            if (alu_result[31:29] == csr_dmw0[31:29] && csr_dmw0[0])
+                ex_mem_addr = {csr_dmw0[27:25], alu_result[28:0]};
+            else if (alu_result[31:29] == csr_dmw1[31:29] && csr_dmw1[0])
+                ex_mem_addr = {csr_dmw1[27:25], alu_result[28:0]};
+        end
+    end
+
+    assign ex_mem_in.data.mem_addr  = ex_mem_addr;
     assign ex_mem_in.data.mem_size  = id_ex_out.data.mem_size;
     assign ex_mem_in.data.mem_unsigned = id_ex_out.data.mem_unsigned;
 
@@ -329,7 +396,7 @@ module core import la32_common::*; (
         .valid_in(ex_mem_out.ctrl.valid),
         .mem_re(ex_mem_out.ctrl.mem_re), .mem_we(ex_mem_out.ctrl.mem_we),
         .mem_size(ex_mem_out.data.mem_size), .mem_unsigned(ex_mem_out.data.mem_unsigned),
-        .addr(ex_mem_out.data.alu_res), .wdata(ex_mem_out.data.rs2_val),
+        .addr(ex_mem_out.data.mem_addr), .wdata(ex_mem_out.data.rs2_val),
         .rdata_out(lsu_rdata), .lsu_ready,
         .dreq, .dresp
     );
@@ -414,32 +481,32 @@ module core import la32_common::*; (
 
     DifftestCSRState u_difftest_csr (
         .clock(clk),
-        .crmd(32'h00000008),
-        .prmd(32'h00000000),
-        .euen(32'h00000000),
-        .ecfg(32'h00000000),
-        .estat(32'h00000000),
-        .era(32'h00000000),
-        .badv(32'h00000000),
-        .eentry(32'h00000000),
-        .tlbidx(32'h00000000),
-        .tlbehi(32'h00000000),
-        .tlbelo0(32'h00000000),
-        .tlbelo1(32'h00000000),
-        .asid(32'h000A0000),
-        .pgdl(32'h00000000),
-        .pgdh(32'h00000000),
-        .save0(32'h00000000),
-        .save1(32'h00000000),
-        .save2(32'h00000000),
-        .save3(32'h00000000),
-        .tid(32'h00000000),
-        .tcfg(32'h00000000),
-        .tval(32'h00000000),
-        .llbctl(32'h00000000),
-        .tlbrentry(32'h00000000),
-        .dmw0(32'h00000000),
-        .dmw1(32'h00000000)
+        .crmd(csr_crmd),
+        .prmd(csr_prmd),
+        .euen(csr_euen),
+        .ecfg(csr_ecfg),
+        .estat(csr_estat),
+        .era(csr_era),
+        .badv(csr_badv),
+        .eentry(csr_eentry),
+        .tlbidx(csr_tlbidx),
+        .tlbehi(csr_tlbehi),
+        .tlbelo0(csr_tlbelo0),
+        .tlbelo1(csr_tlbelo1),
+        .asid(csr_asid),
+        .pgdl(csr_pgdl),
+        .pgdh(csr_pgdh),
+        .save0(csr_save0),
+        .save1(csr_save1),
+        .save2(csr_save2),
+        .save3(csr_save3),
+        .tid(csr_tid),
+        .tcfg(csr_tcfg),
+        .tval(csr_tval),
+        .llbctl(csr_llbctl),
+        .tlbrentry(csr_tlbrentry),
+        .dmw0(csr_dmw0),
+        .dmw1(csr_dmw1)
     );
 `endif
 
