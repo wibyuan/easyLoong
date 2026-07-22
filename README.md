@@ -36,20 +36,19 @@
 - **流水线**：五级经典流水线 (IF → ID → EX → MEM → WB)，含数据转发与流水线冒险控制
 - **寄存器文件**：32 个 32 位通用寄存器 (r0 恒为 0)
 - **总线接口**：AXI4 Master（通过 `core_top` 封装 SoC 接口）
-- **特权级**：当前仅支持 M-mode 直接地址模式
+- **特权级**：支持 DMW 直接映射地址翻译 (DA/PG 模式切换)，CRMD/DMW0/DMW1 可编程
 
 ### 指令集覆盖
-
-按 supervisor 无 cache 模式最小要求实现：
 
 | 类别 | 已实现指令 |
 |------|-----------|
 | 立即数计算 | `lu12i.w`, `pcaddu12i` |
 | 立即数 ALU | `addi.w`, `andi`, `ori`, `xori`, `slti`, `sltui` |
-| 寄存器 ALU | `add.w`, `sub.w`, `slt`, `sltu`, `and`, `nor`, `or`, `xor`, `sll.w`, `srl.w`, `sra.w` |
+| 寄存器 ALU | `add.w`, `sub.w`, `mul.w`, `slt`, `sltu`, `and`, `nor`, `or`, `xor`, `sll.w`, `srl.w`, `sra.w` |
 | 移位立即数 | `slli.w`, `srli.w`, `srai.w` |
 | 访存 | `ld.b`, `ld.h`, `ld.w`, `ld.bu`, `ld.hu`, `st.b`, `st.h`, `st.w` |
 | 跳转/分支 | `b`, `bl`, `beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu`, `jirl` |
+| 系统/CSR | `csrrd`, `csrwr`, `csrxchg`, `cpucfg` |
 
 ### 模块清单 (`nscscc-solo-la-soc/rtl/ip/myCPU/`)
 
@@ -59,6 +58,7 @@
 | `core.sv` | 五级流水线顶层，例化全部子模块 |
 | `pipeline_reg.sv` | 通用流水线寄存器 (stall/flush) |
 | `regfile.sv` | 32×32 位寄存器文件 (r0=0) |
+| `csr_regfile.sv` | 26 个 CSR 寄存器文件 + DMW 存储 |
 | `decode.sv` | 指令译码 |
 | `alu.sv` | 32 位 ALU |
 | `bcu.sv` | 分支条件判断 |
@@ -86,10 +86,10 @@
 | 阶段 | 类型 | 说明 | 状态 |
 |------|------|------|------|
 | 1 | 功能测试 | 斐波那契数列（裸机） | ✅ difftest 30K+ 条通过 |
-| 2 | MATRIX | 矩阵乘加 | ⬜ 待 CSR 支持 |
-| 3 | STREAM | ~3 MiB 连续访存 | ⬜ 待 CSR 支持 |
-| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ⬜ 待 CSR 支持 |
-| 5 | MIXED | 混合运算 | ⬜ 待 CSR 支持 |
+| 2 | MATRIX | 矩阵乘加 (96×96, 64KB) | ✅ DIFF=0 通过，difftest 待 NEMU cpucfg |
+| 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=0 通过，difftest 待 NEMU cpucfg |
+| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=0 通过，difftest 待 NEMU cpucfg |
+| 5 | MIXED | 混合运算 | ✅ DIFF=0 通过，difftest 待 NEMU cpucfg |
 
 ## 5. 开发环境搭建
 

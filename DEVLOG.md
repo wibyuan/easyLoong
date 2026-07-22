@@ -10,10 +10,16 @@
 - [x] BL 指令 rd 修复：隐式写 r1(ra) 而非 instr[4:0] 的 offset 位
 - [x] MMIO difftest 解决：UART LSR 等设备寄存器读值在 ref_exec 前注入 NEMU 内存
 - [x] difftest mismatch 全状态暴露：commit group/instruction trace + 逐寄存器 diff + NEMU isa_reg_display
+- [x] mul.w 指令实现：纯组合逻辑 `*` 运算符，DSP 可推断
+- [x] cpucfg 指令实现：返回 CPUCFG 配置值，匹配 NEMU 期望
+- [x] CSR 寄存器组 (`csr_regfile.sv`)：26 个完整 CSR + DMW0/DMW1 存储，difftest 全量接线
+- [x] csrrd / csrwr / csrxchg 指令解码与执行：EX 阶段退体 CSR 读改写，结果走 ALU 路径
+- [x] DMW 地址翻译：MEM 阶段组合逻辑匹配 DMW0/DMW1，支持 identity 映射与 UART uncached alias
+- [x] 阶段 2-5 性能测试 DIFF=0 全通过：MATRIX (96×96), STREAM (~3 MiB), CRYPTONIGHT (2 MiB), MIXED
 
 ## 待完成
 
-- [ ] supervisor CSR 对接：需实现完整 CSR 读写，以通过 MATRIX / STREAM / CRYPTONIGHT / MIXED
+- [ ] NEMU cpucfg 兼容：la32r-nemu 参考模型不支持 cpucfg 指令，遇之抛 INE 异常设置 ESTAT/ERA 导致 difftest 分叉。DIFF=0 时全量测试通过。
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] 上板验证：soc_top.v + 引脚约束 + Vivado bitstream 生成 → 被 Vivado 2019.2 TclStackFree 崩溃阻塞
 
@@ -56,8 +62,11 @@
 |--------|------|
 | `default_nettype` 移除 | 所有 CPU .sv 文件 |
 | `create_project.tcl` | `difftest.v` 从 `sources_1` 排除 |
+| `add mul.w` | `decode.sv` + `alu.sv` + `common.sv` |
+| `add cpucfg` | `decode.sv` + `core.sv` (EX 级 CPUCFG 查询) |
+| `add CSR + DMW` | 新增 `csr_regfile.sv`，`decode.sv` (csrrd/csrwr/csrxchg)，`core.sv` (CSR 流水线 + DMW 翻译 + difftest 接线) |
 
 ## 已知局限
 
-- DUT 侧 CSR 硬编码为复位默认值（CRMD=0x00000008, ASID=0x000A0000, 其余为 0）。supervisor 写 CSR 后 NEMU 与 DUT 的 CSR 状态将不一致，后续测试阶段需实现完整 CSR
+- NEMU (la32r-nemu) 参考模型不支持 `cpucfg` 指令，遇之抛 INE 异常。DIFF=0 时 DUT 5 个阶段测试全部通过。diffest 修复需在 NEMU 侧添加 cpucfg 解码与 EHelper。
 - MMIO 注入目前覆盖 0x1f000000-0x1f000fff，若后续阶段访问其他设备地址需扩展 is_mmio_addr
