@@ -16,7 +16,8 @@ package la32_common;
         ALU_AND, ALU_NOR, ALU_OR, ALU_XOR,
         ALU_SLL, ALU_SRL, ALU_SRA,
         ALU_LUI,
-        ALU_PCADD
+        ALU_PCADD,
+        ALU_MUL
     } alu_op_t;
 
     typedef enum logic [2:0] {

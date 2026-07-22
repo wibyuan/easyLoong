@@ -150,6 +150,11 @@ module decode import la32_common::*; (
                 rf_we = 1'b1;
                 alu_op = ALU_SRA;
             end
+            32'b00000000000111000_?????_?????_?????: begin // MUL.W
+                is_illegal = 1'b0;
+                rf_we = 1'b1;
+                alu_op = ALU_MUL;
+            end
 
             // ==================== 2RI5-type: shift immediate ====================
             32'b0000000001000000_1_?????_?????_?????: begin // SLLI.W
