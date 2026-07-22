@@ -15,7 +15,47 @@
 
 - [ ] supervisor CSR 对接：需实现完整 CSR 读写，以通过 MATRIX / STREAM / CRYPTONIGHT / MIXED
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
-- [ ] 上板验证：soc_top.v + 引脚约束 + Vivado bitstream 生成
+- [ ] 上板验证：soc_top.v + 引脚约束 + Vivado bitstream 生成 → 被 Vivado 2019.2 TclStackFree 崩溃阻塞
+
+## Vivado FPGA 构建状态（2026-07-22）
+
+### RTL 可综合性
+
+- 全部 66 个模块均通过 Vivado 2019.2 的 RTL Elaboration 阶段，无功能错误
+- PLL IP（`clk_pll`）可在 out-of-context 综合中完成 5 个模块的模块级综合
+- `default_nettype` directive 已从所有 CPU .sv 文件中移除（Vivado 2019.2 兼容性修复）
+- `difftest.v` 保留 symlink，改由 `create_project.tcl` 从 `sources_1` 排除（该文件为 Verilator-only DPI-C）
+
+### 阻塞：TclStackFree 崩溃
+
+**现象**：RTL Elaboration 完成后，Vivado 崩溃输出 `TclStackFree: incorrect freePtr. Call out of sequence?`
+
+**特征**：
+- 66 个模块 `done synthesizing module` 全部正常完成
+- 不打印 `synth_design completed successfully` 和 timing summary
+- 崩溃位置在 Vivado C 层，Tcl `catch` 无法拦截
+- `launch_runs` 将 run 标记为 failed，导致后续 `impl_1` 依赖断裂
+
+**已验证无效的规避**：
+- `-mode batch` / `-mode tcl` / GUI Tcl Console 直接执行 — 均崩溃
+- `create_project -in_memory` / `open_project` — 均崩溃
+- `-flatten_hierarchy none` / warning suppression — 均无效
+- UNC 路径 vs D: 盘原生路径 — 与路径无关
+
+**环境**：Vivado v2019.2, Windows 11 24H2 (build 10.0.26200), FPGA xc7a200tfbg676-1
+
+### 后续方向
+
+1. 换 Vivado 版本（2019.1 / 2020.x / 2021.x）
+2. GUI 中 `reset_target Synthesis [get_ips clk_pll]` → `generate_target Synthesis` 确认 IP OOC 能否产出有效 DCP
+3. 若 OOC 可行，绕过 `launch_runs` 直接使用 `open_run` + 已生成 IP DCP
+
+### 代码修改
+
+| commit | 说明 |
+|--------|------|
+| `default_nettype` 移除 | 所有 CPU .sv 文件 |
+| `create_project.tcl` | `difftest.v` 从 `sources_1` 排除 |
 
 ## 已知局限
 
