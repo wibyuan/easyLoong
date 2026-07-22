@@ -35,6 +35,7 @@ module core import la32_common::*; (
         logic      is_jal;
         logic      is_jalr;
         logic      is_pcadd;
+        logic      is_cpucfg;
     } id_ex_ctrl_t;
     typedef struct packed {
         logic [31:0] pc;
@@ -152,7 +153,7 @@ module core import la32_common::*; (
     logic [4:0] dec_rs1, dec_rs2, dec_rd;
     logic       dec_rf_we, dec_alu_src_sel;
     logic       dec_mem_re, dec_mem_we, dec_mem_unsigned;
-    logic       dec_is_branch, dec_is_jal, dec_is_jalr, dec_is_pcadd, dec_is_illegal;
+    logic       dec_is_branch, dec_is_jal, dec_is_jalr, dec_is_pcadd, dec_is_cpucfg, dec_is_illegal;
     logic [31:0] dec_imm;
     alu_op_t    dec_alu_op;
     br_type_t   dec_br_type;
@@ -169,6 +170,7 @@ module core import la32_common::*; (
         .is_branch(dec_is_branch), .is_jal(dec_is_jal), .is_jalr(dec_is_jalr),
         .br_type(dec_br_type),
         .is_pcadd(dec_is_pcadd),
+        .is_cpucfg(dec_is_cpucfg),
         .is_illegal(dec_is_illegal)
     );
 
@@ -196,6 +198,7 @@ module core import la32_common::*; (
     assign id_ex_in.ctrl.is_jal     = dec_is_jal & id_valid;
     assign id_ex_in.ctrl.is_jalr    = dec_is_jalr & id_valid;
     assign id_ex_in.ctrl.is_pcadd   = dec_is_pcadd & id_valid;
+    assign id_ex_in.ctrl.is_cpucfg  = dec_is_cpucfg & id_valid;
 
     assign id_ex_in.data.fw_a_ex_hit  = (dec_rs1 != 5'd0) && (dec_rs1 == id_ex_out.data.rd);
     assign id_ex_in.data.fw_a_mem_hit = (dec_rs1 != 5'd0) && (dec_rs1 == ex_mem_out.data.rd);
@@ -283,8 +286,19 @@ module core import la32_common::*; (
     assign ex_mem_in.data.instr     = id_ex_out.data.instr;
     assign ex_mem_in.data.rd        = id_ex_out.data.rd;
 
+    logic [31:0] cpucfg_result;
     always_comb begin
-        if (id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr)
+        cpucfg_result = 32'd0;
+        case (forward_a)
+            32'd16: cpucfg_result = 32'h00000010;
+            default: cpucfg_result = 32'd0;
+        endcase
+    end
+
+    always_comb begin
+        if (id_ex_out.ctrl.is_cpucfg)
+            ex_mem_in.data.alu_res = cpucfg_result;
+        else if (id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr)
             ex_mem_in.data.alu_res = id_ex_out.data.pc_plus_4;
         else if (id_ex_out.ctrl.is_pcadd)
             ex_mem_in.data.alu_res = id_ex_out.data.pc + id_ex_out.data.imm;

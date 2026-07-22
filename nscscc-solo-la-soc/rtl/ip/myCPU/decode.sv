@@ -17,6 +17,7 @@ module decode import la32_common::*; (
     output logic        is_jalr,
     output br_type_t    br_type,
     output logic        is_pcadd,
+    output logic        is_cpucfg,
     output logic        is_illegal
 );
 
@@ -47,6 +48,7 @@ module decode import la32_common::*; (
         is_jalr     = 1'b0;
         br_type     = BR_NONE;
         is_pcadd    = 1'b0;
+        is_cpucfg   = 1'b0;
         is_illegal  = 1'b1;
 
         casez (instr)
@@ -342,6 +344,13 @@ module decode import la32_common::*; (
                 br_type = BR_BGEU;
                 rs2 = instr[4:0];
                 imm = {{14{instr[25]}}, instr[25:10], 2'd0};
+            end
+
+            // ==================== CPUCFG ====================
+            32'b00000000000000000_11011_?????_?????: begin // CPUCFG
+                is_illegal = 1'b0;
+                rf_we = 1'b1;
+                is_cpucfg = 1'b1;
             end
 
             default: ;
