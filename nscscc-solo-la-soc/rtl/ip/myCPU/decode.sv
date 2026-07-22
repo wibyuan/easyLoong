@@ -32,9 +32,8 @@ module decode import la32_common::*; (
     assign op10 = instr[31:22];
     assign op17 = instr[31:15];
 
-    assign rs1 = instr[9:5];
-
     always_comb begin
+        rs1         = instr[9:5];
         rs2         = instr[14:10];
         rd          = instr[4:0];
         rf_we       = 1'b0;
