@@ -261,12 +261,8 @@ compact vdisk
 exit
 ```
 
-### 教训：`docker run` 超时设置
+### 注意：`docker run` 超时
 
-`docker run` 是同步命令，Vivado 完成后自然返回。不应设置静态的极长超时时间（如 1 小时）去死等，而应：
+`docker run` 是同步命令，Vivado 完成后自动返回，不需要设置超时。设置任意静态超时值都是多余的——过短会误中断，过长则无谓阻塞。
 
-1. 使用合理的超时值（如 30 分钟）作为兜底
-2. 或直接不设超时（`docker run` 自身不会无故挂起）
-3. 如需监控进度，可读取 Vivado log 文件（`vivado.log`）判断阶段完成状态
-
-> 本项目 `build_bitstream.tcl` 实际运行时间约 2 分钟，设置 1 小时超时会无谓阻塞工具链。
+若需确认 Vivado 进度，读取 `vivado.log` 即可。
