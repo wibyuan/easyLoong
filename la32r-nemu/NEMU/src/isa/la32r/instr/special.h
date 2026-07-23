@@ -57,6 +57,19 @@ def_EHelper(dbar) {
   //printf("DBAR do nothing in NEMU\n"); 
 }
 
+def_EHelper(cpucfg) {
+  word_t cfg_val = 0;
+  switch (*dsrc1) {
+    case 0x10:
+      cfg_val = 0x00000010;
+      break;
+    default:
+      cfg_val = 0;
+      break;
+  }
+  rtl_li(s, ddest, cfg_val);
+}
+
 def_EHelper(cacop) { 
     if((id_src1->imm) & (0x10)){
         // printf("PC: 0x%x [NEMU]: this is CACOP HIT inst.\n",cpu.pc);

@@ -23,7 +23,8 @@
   f(syscall) f(break) f(idle) f(dbar) f(ibar) f(rdcntvl_w) f(rdcntvh_w) f(rdcntid_w)
 #define INSTR_BINARY(f) \
   f(lu12i_w) f(pcaddu12i) \
-  f(csrrd) f(csrwr) f(b) f(bl) 
+  f(csrrd) f(csrwr) f(b) f(bl) \
+  f(cpucfg)
   
 #define INSTR_TERNARY(f) \
   f(add_w) f(addi_w) f(sub_w) f(slt) f(sltu) f(slti) f(sltui) f(xor) f(nor) f(and) f(or) \
