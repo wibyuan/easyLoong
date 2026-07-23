@@ -48,7 +48,7 @@ initial begin
     #2000;
     reset = 1'b0;
 end
-always #20 clk=~clk;
+always #10 clk=~clk;    // 50 MHz (matches PLL input clock constraint)
 
 initial begin
     touch_btn = 4'h0;
@@ -60,7 +60,7 @@ initial begin
     #100000 touch_btn = 4'b1000; #50 touch_btn = 4'b0000;
 end
 
-soc_top  #(.SIMULATION(1'b1)) u_soc_top (
+soc_top  u_soc_top (
     .clk                     ( clk           ),
     .reset                   ( reset         ),
     .touch_btn               ( touch_btn     ),
@@ -284,7 +284,7 @@ end
 // ---------------------------------------------------------------------------
 // UART TX monitor — decode the physical UART_TX pin instead of using XMRs
 // ---------------------------------------------------------------------------
-localparam integer UART_BIT_TIME = 8960;
+localparam integer UART_BIT_TIME = 9600;      // 25 MHz sys_clk, divisor 14, 104.2 kbaud
 localparam integer UART_FAST_BIT_TIME = 640;
 
 reg supervisor_fast_uart;
