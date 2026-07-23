@@ -35,27 +35,9 @@
 - `default_nettype` directive 已从所有 CPU .sv 文件中移除（Vivado 2019.2 兼容性修复）
 - `difftest.v` 保留 symlink，改由 `create_project.tcl` 从 `sources_1` 排除（该文件为 Verilator-only DPI-C）
 
-### 阻塞：TclStackFree 崩溃 — 已解决
+### 已解决：TclStackFree 崩溃
 
-**现象**：RTL Elaboration 完成后，Vivado 崩溃输出 `TclStackFree: incorrect freePtr. Call out of sequence?`
-
-**特征**：
-- 66 个模块 `done synthesizing module` 全部正常完成
-- 不打印 `synth_design completed successfully` 和 timing summary
-- 崩溃位置在 Vivado C 层，Tcl `catch` 无法拦截
-- `launch_runs` 将 run 标记为 failed，导致后续 `impl_1` 依赖断裂
-
-**已验证无效的规避**：
-- `-mode batch` / `-mode tcl` / GUI Tcl Console 直接执行 — 均崩溃
-- `create_project -in_memory` / `open_project` — 均崩溃
-- `-flatten_hierarchy none` / warning suppression — 均无效
-- UNC 路径 vs D: 盘原生路径 — 与路径无关
-
-**环境**：Vivado v2019.2, Windows 11 24H2 (build 10.0.26200), FPGA xc7a200tfbg676-1
-
-**根因**：TclStackFree 为 Vivado 2019.2 在 Windows 11 24H2 上的兼容性 bug。该版本 Vivado 的 Tcl 运行时与新版 Windows 内存管理机制不兼容。
-
-**解决方案**：在 Docker 容器内运行 Vivado 2019.2 on Ubuntu 18.04，完全绕过 Windows 版本问题。详见 [Vivado Docker 安装教程](#vivado-20192-docker-安装教程)。
+Vivado 2019.2 在 Windows 11 24H2 上综合阶段崩溃（`TclStackFree: incorrect freePtr`），为操作系统兼容性 bug。通过在 Docker 容器内运行 Vivado 2019.2 on Ubuntu 18.04 绕过，详见 [Vivado Docker 安装教程](#vivado-20192-docker-安装教程)。
 
 ### Bitstream 生成结果（2026-07-23）
 
