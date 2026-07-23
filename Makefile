@@ -90,7 +90,7 @@ build-bitstream:
 vivado-sim-behavioral: build-supervisor
 	$(call DOCKER_VIVADO_RUN, \
 	 cd /workspace && \
-	 python3 sim/run.py $(SIM_CASES_DIR)/simple.json --backend xsim)
+	 python3 sim/run.py sdk/software/examples/supervisor/sim/cases/simple.json --backend xsim)
 
 # ─── Vivado Post-Implementation Timing Simulation ─────────────────────
 # Gate-level timing simulation with SDF delay annotation.  Requires a
@@ -98,7 +98,7 @@ vivado-sim-behavioral: build-supervisor
 vivado-sim-post-impl: build-bitstream
 	$(call DOCKER_VIVADO_RUN, \
 	 cd /workspace && \
-	 python3 sim/run_post_impl.py $(SIM_CASES_DIR)/simple.json)
+	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/simple.json)
 
 clean-vivado:
 	rm -rf $(FPGA_DIR)/project $(FPGA_DIR)/vivado.log $(FPGA_DIR)/vivado.jou \
