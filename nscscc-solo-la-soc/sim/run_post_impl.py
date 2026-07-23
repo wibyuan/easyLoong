@@ -116,7 +116,7 @@ def find_vivado(requested):
 def run_command(command, cwd, dry_run):
     import shlex
     print(f"[POST_IMPL] cwd: {cwd}", flush=True)
-    print(f"[POST_IMPL] command: {shlex.join(str(v) for v in command)}", flush=True)
+    print(f"[POST_IMPL] command: {' '.join(shlex.quote(str(v)) for v in command)}", flush=True)
     if dry_run:
         return
     subprocess.run(command, cwd=cwd, check=True)

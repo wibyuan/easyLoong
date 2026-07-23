@@ -184,7 +184,7 @@ def validate_backend(scenario_path, scenario, backend):
 
 def run_command(command, cwd, dry_run):
     print(f"[SIM] cwd: {cwd}", flush=True)
-    print(f"[SIM] command: {shlex.join(str(value) for value in command)}", flush=True)
+    print(f"[SIM] command: {' '.join(shlex.quote(str(v)) for v in command)}", flush=True)
     if dry_run:
         return
     subprocess.run(command, cwd=cwd, check=True)
