@@ -36,14 +36,8 @@ endif
         test-simple test-fibonacci test-matrix test-stream test-cryptonight test-mixed test-all \
         clean clean-nemu clean-supervisor \
         build-bitstream \
-        vivado-sim-behavioral-simple vivado-sim-behavioral-fibonacci \
-        vivado-sim-behavioral-matrix vivado-sim-behavioral-stream \
-        vivado-sim-behavioral-cryptonight vivado-sim-behavioral-mixed \
-        vivado-sim-behavioral-all \
-        vivado-sim-post-impl-simple vivado-sim-post-impl-fibonacci \
-        vivado-sim-post-impl-matrix vivado-sim-post-impl-stream \
-        vivado-sim-post-impl-cryptonight vivado-sim-post-impl-mixed \
-        vivado-sim-post-impl-all \
+        vivado-sim-behavioral \
+        vivado-sim-post-impl \
         clean-vivado
 
 build: build-nemu build-supervisor
@@ -91,87 +85,20 @@ build-bitstream:
 	 vivado -mode batch -source build_bitstream.tcl)
 
 # ─── Vivado Behavioral Simulation (XSIM) ─────────────────────────────
-# Each target runs one supervisor test case in Vivado XSim at the RTL
-# level.  The Vivado project must already exist (created by
-# build-bitstream or vivado-sim-behavioral-all).
-vivado-sim-behavioral-simple: build-supervisor
+# RTL-level simulation in Vivado XSim.  The Vivado project must already
+# exist (created by build-bitstream).
+vivado-sim-behavioral: build-supervisor
 	$(call DOCKER_VIVADO_RUN, \
 	 cd /workspace && \
-	 python3 sim/run.py sdk/software/examples/supervisor/sim/cases/simple.json --backend xsim)
-
-vivado-sim-behavioral-fibonacci: build-supervisor
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run.py sdk/software/examples/supervisor/sim/cases/fibonacci.json --backend xsim)
-
-vivado-sim-behavioral-matrix: build-supervisor
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run.py sdk/software/examples/supervisor/sim/cases/matrix.json --backend xsim)
-
-vivado-sim-behavioral-stream: build-supervisor
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run.py sdk/software/examples/supervisor/sim/cases/stream.json --backend xsim)
-
-vivado-sim-behavioral-cryptonight: build-supervisor
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run.py sdk/software/examples/supervisor/sim/cases/cryptonight.json --backend xsim)
-
-vivado-sim-behavioral-mixed: build-supervisor
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run.py sdk/software/examples/supervisor/sim/cases/mixed.json --backend xsim)
-
-vivado-sim-behavioral-all: build-supervisor
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run.py sdk/software/examples/supervisor/sim/suite.json --backend xsim --recreate-project)
+	 python3 sim/run.py $(SIM_CASES_DIR)/simple.json --backend xsim)
 
 # ─── Vivado Post-Implementation Timing Simulation ─────────────────────
-# Each target runs one supervisor test case against the gate-level
-# netlist with SDF delay annotation (post-implementation timing
-# simulation).  Requires a completed bitstream build.
-vivado-sim-post-impl-simple: build-bitstream
+# Gate-level timing simulation with SDF delay annotation.  Requires a
+# completed bitstream build.
+vivado-sim-post-impl: build-bitstream
 	$(call DOCKER_VIVADO_RUN, \
 	 cd /workspace && \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/simple.json)
-
-vivado-sim-post-impl-fibonacci: build-bitstream
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/fibonacci.json)
-
-vivado-sim-post-impl-matrix: build-bitstream
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/matrix.json)
-
-vivado-sim-post-impl-stream: build-bitstream
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/stream.json)
-
-vivado-sim-post-impl-cryptonight: build-bitstream
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/cryptonight.json)
-
-vivado-sim-post-impl-mixed: build-bitstream
-	$(call DOCKER_VIVADO_RUN, \
-	 cd /workspace && \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/mixed.json)
-
-vivado-sim-post-impl-all: build-bitstream
-	$(call DOCKER_VIVADO_RUN, \
-	 set +e; cd /workspace; \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/simple.json; \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/fibonacci.json; \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/matrix.json; \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/stream.json; \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/cryptonight.json; \
-	 python3 sim/run_post_impl.py sdk/software/examples/supervisor/sim/cases/mixed.json)
+	 python3 sim/run_post_impl.py $(SIM_CASES_DIR)/simple.json)
 
 clean-vivado:
 	rm -rf $(FPGA_DIR)/project $(FPGA_DIR)/vivado.log $(FPGA_DIR)/vivado.jou \
