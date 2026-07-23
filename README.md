@@ -22,7 +22,7 @@
 │   │   └── supervisor/          #   LA32R 监控程序 + 阶段 1-5 测试用例
 │   └── sdk/toolchains/          #   LA32R 交叉编译工具链
 ├── difftest/                    # ★ Differential test 框架 (DPI-C)
-├── la32r-nemu/                  # [git submodule] NEMU 参考模型
+├── la32r-nemu/                  # NEMU 参考模型（项目自有代码）
 ├── docs/                        # 参考文档、评测说明
 ├── Makefile                     # 根构建/测试入口
 ├── DEVLOG.md                    # 开发进度
@@ -85,18 +85,18 @@
 
 | 阶段 | 类型 | 说明 | 状态 |
 |------|------|------|------|
-| 1 | 功能测试 | 斐波那契数列（裸机） | ✅ difftest 30K+ 条通过 |
-| 2 | MATRIX | 矩阵乘加 (96×96, 64KB) | ✅ DIFF=0 通过，difftest 待 NEMU cpucfg |
-| 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=0 通过，difftest 待 NEMU cpucfg |
-| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=0 通过，difftest 待 NEMU cpucfg |
-| 5 | MIXED | 混合运算 | ✅ DIFF=0 通过，difftest 待 NEMU cpucfg |
+| 1 | 功能测试 | 斐波那契数列（裸机） | ✅ DIFF=1 通过 |
+| 2 | MATRIX | 矩阵乘加 (96×96, 64KB) | ✅ DIFF=1 通过 |
+| 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=1 通过 |
+| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=1 通过 |
+| 5 | MIXED | 混合运算 | ✅ DIFF=1 通过 |
 
 ## 5. 开发环境搭建
 
 ### Clone
 
 ```bash
-git clone --recurse-submodules <this-repo-url>
+git clone <this-repo-url>
 cd easyLoong
 ```
 
@@ -160,7 +160,11 @@ FORCE_VERILATOR_REBUILD=1 make test-simple
 
 ### MMIO 处理
 
-DUT 从设备地址 (`0x1f000000-0x1f000fff`) load 时，将值注入 NEMU 内存，避免 NEMU 因缺少设备模型返回 0。
+DUT 从设备地址 (`0x1f000000-0x1f000fff`) load 时，将值注入 NEMU 内存。
+
+### MIF 注入
+
+仿真初始化时自动将 `base_ram_mif` 和 `ext_ram_mif` 加载至 NEMU 对应地址空间，支持 `@` 地址标记格式。
 
 ## 8. Vivado 上板
 

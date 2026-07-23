@@ -16,10 +16,13 @@
 - [x] csrrd / csrwr / csrxchg 指令解码与执行：EX 阶段执行 CSR 读改写，结果走 ALU 路径
 - [x] DMW 地址翻译：MEM 阶段组合逻辑匹配 DMW0/DMW1，支持 identity 映射与 UART uncached alias
 - [x] 阶段 2-5 性能测试 DIFF=0 全通过：MATRIX (96×96), STREAM (~3 MiB), CRYPTONIGHT (2 MiB), MIXED
+- [x] 阶段 1-5 difftest DIFF=1 全通过：全量 6 个测试均通过（2026-07-23）
+- [x] NEMU cpucfg 兼容：la32r-nemu 添加 cpucfg 解码与 EHelper，修复解码表模式顺序
+- [x] la32r-nemu 去 submodule 化：从 gitee 拉取新版并作为项目自有代码维护
+- [x] difftest MIF 注入：支持 BaseRAM/ExtRAM MIF（含 `@` 地址标记）注入 NEMU，使数据依赖测试可通过
 
 ## 待完成
 
-- [ ] NEMU cpucfg 兼容：la32r-nemu 参考模型不支持 cpucfg 指令，遇之抛 INE 异常设置 ESTAT/ERA 导致 difftest 分叉。DIFF=0 时全量测试通过。
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] 上板验证：soc_top.v + 引脚约束 + Vivado bitstream 生成 → 被 Vivado 2019.2 TclStackFree 崩溃阻塞
 
@@ -67,8 +70,9 @@
 | `add CSR + DMW` | 新增 `csr_regfile.sv`，`decode.sv` (csrrd/csrwr/csrxchg)，`core.sv` (CSR 流水线 + DMW 翻译 + difftest 接线) |
 | `update docs` | README / DEVLOG 同步进度 |
 | `fix multi-driven rs1` | `decode.sv` rs1 从 `assign` 移入 `always_comb` 消除多驱动 |
+| `nemu cpucfg` | NEMU 添加 cpucfg 解码 (decode.c) + EHelper (special.h) + 指令注册 (isa-all-instr.h) |
+| `difftest MIF inject` | difftest 支持 BaseRAM/ExtRAM MIF 注入 NEMU（含 @ 地址标记） |
 
 ## 已知局限
 
-- NEMU (la32r-nemu) 参考模型不支持 `cpucfg` 指令，遇之抛 INE 异常。DIFF=0 时 DUT 5 个阶段测试全部通过。difftest 修复需在 NEMU 侧添加 cpucfg 解码与 EHelper。
-- MMIO 注入目前覆盖 0x1f000000-0x1f000fff，若后续阶段访问其他设备地址需扩展 is_mmio_addr
+- MMIO 注入目前覆盖 0x1f000000-0x1f000fff，若后续阶段访问其他设备地址需扩展 is_mmio_addr。
