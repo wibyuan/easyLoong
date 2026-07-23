@@ -175,12 +175,20 @@ DUT 从设备地址 (`0x1f000000-0x1f000fff`) load 时，将值注入 NEMU 内�
 
 ## 8. Vivado 上板
 
-使用 `nscscc-solo-la-soc/fpga/` 下的 TCL 脚本：
+Vivado 2019.2 在 Windows 11 上有兼容性问题，推荐使用 Docker 容器运行。完整安装教程见 [docs/vivado-docker.md](docs/vivado-docker.md)。
 
 ```bash
 cd nscscc-solo-la-soc/fpga
-vivado -mode batch -source create_project.tcl
-vivado -mode batch -source build_bitstream.tcl
+
+# 创建项目
+docker run --rm -v $(pwd)/../..:/workspace vivado:2019.2 bash -c \
+    "source /opt/Xilinx/Vivado/2019.2/settings64.sh && \
+     vivado -mode batch -source create_project.tcl"
+
+# 综合 + 实现 + 生成 bitstream
+docker run --rm -v $(pwd)/../..:/workspace vivado:2019.2 bash -c \
+    "source /opt/Xilinx/Vivado/2019.2/settings64.sh && \
+     vivado -mode batch -source build_bitstream.tcl"
 ```
 
 引脚约束文件：`nscscc-solo-la-soc/fpga/constraints/soc.xdc`。
