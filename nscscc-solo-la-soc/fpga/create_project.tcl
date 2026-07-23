@@ -44,12 +44,10 @@ proc collect_files {root extensions excluded_dirs} {
 # generated netlists and stubs must not be compiled as ordinary RTL.
 set rtl_files [collect_files ../rtl [list .v .sv .vhd .vhdl] \
     [list ../rtl/ip/PLL_2019_2]]
+# difftest.v is a Verilator-only DPI-C wrapper; filter it out before
+# add_files so unresolvable symlinks in Docker don't cause errors.
+set rtl_files [lsearch -all -inline -not -regexp $rtl_files {difftest\.v$}]
 add_files -scan_for_includes $rtl_files
-# difftest.v is a Verilator-only DPI-C wrapper; exclude from synthesis
-set difftest_file [glob -nocomplain ../rtl/ip/myCPU/difftest.v]
-if {[llength $difftest_file] != 0} {
-    remove_files -fileset sources_1 {*}$difftest_file
-}
 
 # Add packaged Vivado IPs separately, including optional CPU-owned IPs.
 set ip_files [collect_files ../rtl [list .xci .xcix] [list]]
