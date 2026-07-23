@@ -175,7 +175,7 @@ DUT 从设备地址 (`0x1f000000-0x1f000fff`) load 时，将值注入 NEMU 内�
 
 ## 8. Vivado 上板
 
-Vivado 2019.2 在 Windows 11 上有兼容性问题，推荐使用 Docker 容器运行。完整安装教程见 [docs/vivado-docker.md](docs/vivado-docker.md)。
+Vivado 2019.2 在 Windows 11 上有兼容性问题，推荐使用 Docker 容器运行。完整安装教程见 [vivado-docker.md](vivado-docker.md)。
 
 ```bash
 cd nscscc-solo-la-soc/fpga

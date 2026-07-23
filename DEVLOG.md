@@ -37,7 +37,7 @@
 
 ### 已解决：TclStackFree 崩溃
 
-Vivado 2019.2 在 Windows 11 24H2 上综合阶段崩溃（`TclStackFree: incorrect freePtr`），为操作系统兼容性 bug。通过在 Docker 容器内运行 Vivado 2019.2 on Ubuntu 18.04 绕过，详见 [Vivado Docker 安装教程](#vivado-20192-docker-安装教程)。
+Vivado 2019.2 在 Windows 11 24H2 上综合阶段崩溃（`TclStackFree: incorrect freePtr`），为操作系统兼容性 bug。通过在 Docker 容器内运行 Vivado 2019.2 on Ubuntu 18.04 绕过，详见 [vivado-docker.md](vivado-docker.md)。
 
 ### Bitstream 生成结果（2026-07-23）
 
@@ -86,4 +86,4 @@ ERROR: [Vivado 12-172] File or Directory '/workspace/.../difftest.v' does not ex
 
 ## Vivado 2019.2 Docker 环境
 
-TclStackFree 崩溃的解决方案及完整安装教程见 [docs/vivado-docker.md](docs/vivado-docker.md)。
+TclStackFree 崩溃的解决方案及完整安装教程见 [vivado-docker.md](vivado-docker.md)。
