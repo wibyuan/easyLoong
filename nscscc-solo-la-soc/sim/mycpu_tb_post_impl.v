@@ -284,7 +284,7 @@ end
 // ---------------------------------------------------------------------------
 // UART TX monitor — decode the physical UART_TX pin instead of using XMRs
 // ---------------------------------------------------------------------------
-localparam integer UART_BIT_TIME = 9600;      // 25 MHz sys_clk, divisor 14, 104.2 kbaud
+localparam integer UART_BIT_TIME = 4800;      // 50 MHz sys_clk, divisor 14, 208.3 kbaud
 localparam integer UART_FAST_BIT_TIME = 640;
 
 reg supervisor_fast_uart;
