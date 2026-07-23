@@ -64,16 +64,20 @@ def is_wsl():
     return "microsoft" in os.uname().release.lower()
 
 
+def has_wslpath():
+    return shutil.which("wslpath") is not None
+
+
 def windows_path(path):
     result = subprocess.run(
-        ["wslpath", "-m", str(path)], check=True, text=True,
-        stdout=subprocess.PIPE
+        ["wslpath", "-m", str(path)], check=True,
+        stdout=subprocess.PIPE, universal_newlines=True
     )
     return result.stdout.strip()
 
 
 def backend_path(path, backend):
-    if backend == "xsim" and is_wsl():
+    if backend == "xsim" and is_wsl() and has_wslpath():
         return windows_path(path)
     return str(path)
 
