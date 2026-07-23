@@ -20,28 +20,31 @@
 - [x] NEMU cpucfg 兼容：la32r-nemu 添加 cpucfg 解码与 EHelper，修复解码表模式顺序
 - [x] la32r-nemu 去 submodule 化：从 gitee 拉取新版并作为项目自有代码维护
 - [x] difftest MIF 注入：支持 BaseRAM/ExtRAM MIF（含 `@` 地址标记）注入 NEMU，使数据依赖测试可通过
+- [x] Vivado XSim 行为仿真通过：simple supervisor 测试在 XSim RTL 仿真中完整通过（2026-07-23）
+- [x] Post-Implementation 仿真基础设施就绪：TCL 脚本 + Python runner + 无 XMR 门级 testbench
+- [x] Vivado Makefile 工作流：`make build-bitstream` / `make vivado-sim-behavioral` / `make vivado-sim-post-impl`
 
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
 
-## Vivado FPGA 构建状态（2026-07-22）
+## Vivado FPGA 构建状态（2026-07-23）
 
 ### RTL 可综合性
 
 - 全部模块通过 Vivado 2019.2 的 RTL Elaboration 阶段，无功能错误
 - PLL IP（`clk_pll`）可在 out-of-context 综合中完成 5 个模块的模块级综合
 - `default_nettype` directive 已从所有 CPU .sv 文件中移除（Vivado 2019.2 兼容性修复）
-- `difftest.v` 保留 symlink，改由 `create_project.tcl` 从 `sources_1` 排除（该文件为 Verilator-only DPI-C）
+- `difftest.v` 从 `create_project.tcl` 的 `collect_files` 阶段直接过滤（避免 Docker 内 symlink 解析失败）
 
 ### 已解决：TclStackFree 崩溃
 
 Vivado 2019.2 在 Windows 11 24H2 上综合阶段崩溃（`TclStackFree: incorrect freePtr`），为操作系统兼容性 bug。通过在 Docker 容器内运行 Vivado 2019.2 on Ubuntu 18.04 绕过，详见 [vivado-docker.md](vivado-docker.md)。
 
-### Bitstream 生成结果（2026-07-23）
+### Bitstream 生成（2026-07-23，Docker 重建验证）
 
-Docker 容器内 Vivado 2019.2 on Ubuntu 18.04 一次性综合/实现成功：
+Docker 容器内 Vivado 2019.2 on Ubuntu 18.04 一次性综合/实现成功，与 DEVLOG 初次记录一致，验证可重复性：
 
 | 阶段 | 结果 |
 |------|------|
@@ -55,30 +58,31 @@ Docker 容器内 Vivado 2019.2 on Ubuntu 18.04 一次性综合/实现成功：
 
 **最终时序**：WNS=11.859ns, TNS=0.000, WHS=0.012ns, THS=0.000 — setup/hold 均无违例。
 
-### Docker 环境已知问题与修复
+**PLL 配置**：CLKIN1=50MHz → cpu_clk=66MHz (CLKOUT0), sys_clk=50MHz (CLKOUT1)。
 
-**问题**：`difftest.v` 符号链接使用绝对路径（`/home/wibyu/easyLoong/difftest/difftest.v`），Docker 容器内项目挂载到 `/workspace` 后路径解析失败。
+### Vivado 仿真工作流
 
-```
-ERROR: [Vivado 12-172] File or Directory '/workspace/.../difftest.v' does not exist
-```
+| target | 功能 | 状态 |
+|--------|------|------|
+| `make build-bitstream` | 综合+实现+生成 bitstream | ✅ 通过 |
+| `make vivado-sim-behavioral` | XSim RTL 行为仿真 (simple) | ✅ 通过 |
+| `make vivado-sim-post-impl` | Post-Implementation 门级时序仿真 | ⬜ 接口就绪，极慢 |
 
-**修复**：将 symlink 改为相对路径（`../../../../difftest/difftest.v`），宿主机和容器内均可正确解析。
+**行为仿真性能**：XSim RTL 仿真 simple 测试含编译约 2-5 分钟。与 Verilator（<1 秒）相比慢 1145 倍以上。日常迭代优先使用 `make test-all`（Verilator）。
 
-### 代码修改
+**Post-Implementation 仿真**：门级网表 + SDF 时序反标，模拟 1000ns 消耗约 100 秒 CPU。完整测试需数小时，暂不推荐，接口已保留。
 
-| commit | 说明 |
-|--------|------|
-| `default_nettype` 移除 | 所有 CPU .sv 文件 |
-| `create_project.tcl` | `difftest.v` 从 `sources_1` 排除 |
-| `add mul.w` | `decode.sv` + `alu.sv` + `common.sv` |
-| `add cpucfg` | `decode.sv` + `core.sv` (EX 级 CPUCFG 查询) |
-| `add CSR + DMW` | 新增 `csr_regfile.sv`，`decode.sv` (csrrd/csrwr/csrxchg)，`core.sv` (CSR 流水线 + DMW 翻译 + difftest 接线) |
-| `update docs` | README / DEVLOG 同步进度 |
-| `fix multi-driven rs1` | `decode.sv` rs1 从 `assign` 移入 `always_comb` 消除多驱动 |
-| `nemu cpucfg` | NEMU 添加 cpucfg 解码 (decode.c) + EHelper (special.h) + 指令注册 (isa-all-instr.h) |
-| `difftest MIF inject` | difftest 支持 BaseRAM/ExtRAM MIF 注入 NEMU（含 @ 地址标记） |
-| `fix difftest.v symlink` | difftest.v 符号链接改为相对路径，兼容 Docker 挂载路径 `/workspace` |
+**Post-Impl 关键实现**：
+- `sim/mycpu_tb_post_impl.v`：无 XMR（跨层级引用）的门级 testbench，通过 UART_TX 引脚逐 bit 解码 supervisor 输出
+- `sim/xsim/run_post_impl.tcl`：Post-Implementation 仿真 TCL 脚本（自动切换 testbench top）
+- `sim/run_post_impl.py`：Python runner（复用 scenario JSON 格式）
+
+### Python 3.6 兼容性修复
+
+Vivado 2019.2 Docker 镜像基于 Ubuntu 18.04（Python 3.6），修复了以下不兼容调用：
+- `subprocess.run(text=True)` → `universal_newlines=True`
+- `shlex.join()` → `' '.join(shlex.quote())`
+- `is_wsl()` + `has_wslpath()` 判断，避免 Docker-on-WSL2 内误调用 wslpath
 
 ## 已知局限
 

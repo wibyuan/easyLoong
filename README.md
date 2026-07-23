@@ -173,23 +173,27 @@ DUT 从设备地址 (`0x1f000000-0x1f000fff`) load 时，将值注入 NEMU 内�
 
 仿真初始化时自动将 `base_ram_mif` 和 `ext_ram_mif` 加载至 NEMU 对应地址空间，支持 `@` 地址标记格式。
 
-## 8. Vivado 上板
+## 8. Vivado 上板与仿真
 
 Vivado 2019.2 在 Windows 11 上有兼容性问题，推荐使用 Docker 容器运行。完整安装教程见 [vivado-docker.md](vivado-docker.md)。
 
 ```bash
-cd nscscc-solo-la-soc/fpga
-
-# 创建项目
-docker run --rm -v $(pwd)/../..:/workspace vivado:2019.2 bash -c \
-    "source /opt/Xilinx/Vivado/2019.2/settings64.sh && \
-     vivado -mode batch -source create_project.tcl"
-
 # 综合 + 实现 + 生成 bitstream
-docker run --rm -v $(pwd)/../..:/workspace vivado:2019.2 bash -c \
-    "source /opt/Xilinx/Vivado/2019.2/settings64.sh && \
-     vivado -mode batch -source build_bitstream.tcl"
+make build-bitstream
+
+# XSIM RTL 行为仿真（耗时约 2-5 分钟/测试，输入输出通过 UART 引脚逐 bit 解码）
+make vivado-sim-behavioral
+
+# Post-Implementation 门级时序仿真（接口就绪，极慢，暂不推荐直接运行）
+make vivado-sim-post-impl
+
+# 清理 Vivado 项目文件
+make clean-vivado
 ```
+
+> **性能警告**：`vivado-sim-behavioral` 使用 Vivado XSim 的 RTL 行为仿真。与 Verilator（C++ 编译仿真，秒级完成）不同，XSim 是解释型事件驱动仿真器，simple 测试约需 **2-5 分钟**（含编译+elaboration+仿真）。全量 6 个测试预计 **20-30 分钟**。日常迭代请用 `make test-all`（Verilator）。
+
+> `vivado-sim-post-impl` 使用门级网表 + SDF 时序反标，速度约为行为仿真的 1145 倍慢，仅适合极小时间窗口的时序验证。
 
 引脚约束文件：`nscscc-solo-la-soc/fpga/constraints/soc.xdc`。
 
