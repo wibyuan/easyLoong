@@ -11,9 +11,9 @@
 - [x] MMIO difftest 解决：UART LSR 等设备寄存器读值在 ref_exec 前注入 NEMU 内存
 - [x] difftest mismatch 全状态暴露：commit group/instruction trace + 逐寄存器 diff + NEMU isa_reg_display
 - [x] mul.w 指令实现：纯组合逻辑 `*` 运算符，DSP 可推断
-- [x] cpucfg 指令实现：返回 CPUCFG 配置值，匹配 NEMU 期望
+- [x] cpucfg 指令实现：返回 CPUCFG 配置值（0x10），supervisor 据此跳过 cache 初始化
 - [x] CSR 寄存器组 (`csr_regfile.sv`)：26 个完整 CSR + DMW0/DMW1 存储，difftest 全量接线
-- [x] csrrd / csrwr / csrxchg 指令解码与执行：EX 阶段退体 CSR 读改写，结果走 ALU 路径
+- [x] csrrd / csrwr / csrxchg 指令解码与执行：EX 阶段执行 CSR 读改写，结果走 ALU 路径
 - [x] DMW 地址翻译：MEM 阶段组合逻辑匹配 DMW0/DMW1，支持 identity 映射与 UART uncached alias
 - [x] 阶段 2-5 性能测试 DIFF=0 全通过：MATRIX (96×96), STREAM (~3 MiB), CRYPTONIGHT (2 MiB), MIXED
 
@@ -27,7 +27,7 @@
 
 ### RTL 可综合性
 
-- 全部 66 个模块均通过 Vivado 2019.2 的 RTL Elaboration 阶段，无功能错误
+- 全部模块通过 Vivado 2019.2 的 RTL Elaboration 阶段，无功能错误
 - PLL IP（`clk_pll`）可在 out-of-context 综合中完成 5 个模块的模块级综合
 - `default_nettype` directive 已从所有 CPU .sv 文件中移除（Vivado 2019.2 兼容性修复）
 - `difftest.v` 保留 symlink，改由 `create_project.tcl` 从 `sources_1` 排除（该文件为 Verilator-only DPI-C）
@@ -52,9 +52,9 @@
 
 ### 后续方向
 
-1. 换 Vivado 版本（2019.1 / 2020.x / 2021.x）
-2. GUI 中 `reset_target Synthesis [get_ips clk_pll]` → `generate_target Synthesis` 确认 IP OOC 能否产出有效 DCP
-3. 若 OOC 可行，绕过 `launch_runs` 直接使用 `open_run` + 已生成 IP DCP
+1. Vivado 2019.2 on Ubuntu (Docker)：赛事指定 2019.2 版本，TclStackFree 为 Windows 11 特定问题，Linux 下应可规避
+2. 验证 `decode.sv` rs1 多驱动修复后的 Vivado 综合
+3. GUI 中 `reset_target Synthesis [get_ips clk_pll]` → `generate_target Synthesis` 确认 IP OOC 能否产出有效 DCP
 
 ### 代码修改
 
@@ -65,8 +65,10 @@
 | `add mul.w` | `decode.sv` + `alu.sv` + `common.sv` |
 | `add cpucfg` | `decode.sv` + `core.sv` (EX 级 CPUCFG 查询) |
 | `add CSR + DMW` | 新增 `csr_regfile.sv`，`decode.sv` (csrrd/csrwr/csrxchg)，`core.sv` (CSR 流水线 + DMW 翻译 + difftest 接线) |
+| `update docs` | README / DEVLOG 同步进度 |
+| `fix multi-driven rs1` | `decode.sv` rs1 从 `assign` 移入 `always_comb` 消除多驱动 |
 
 ## 已知局限
 
-- NEMU (la32r-nemu) 参考模型不支持 `cpucfg` 指令，遇之抛 INE 异常。DIFF=0 时 DUT 5 个阶段测试全部通过。diffest 修复需在 NEMU 侧添加 cpucfg 解码与 EHelper。
+- NEMU (la32r-nemu) 参考模型不支持 `cpucfg` 指令，遇之抛 INE 异常。DIFF=0 时 DUT 5 个阶段测试全部通过。difftest 修复需在 NEMU 侧添加 cpucfg 解码与 EHelper。
 - MMIO 注入目前覆盖 0x1f000000-0x1f000fff，若后续阶段访问其他设备地址需扩展 is_mmio_addr
