@@ -38,6 +38,18 @@ if {![file exists $project_file]} {
 }
 
 open_project $project_file
+
+# Ensure the post-implementation testbench is in the project fileset
+set tb_path [file normalize ../sim/mycpu_tb_post_impl.v]
+if {[catch {set current [get_files -of_objects [get_filesets sim_1] $tb_path]}] ||
+    [llength $current] == 0} {
+    add_files -fileset sim_1 $tb_path -quiet
+    update_compile_order -fileset sim_1
+}
+
+# Switch to the post-implementation testbench (no XMR cross-module refs)
+set_property -name "top" -value "tb_top_post_impl" -objects [get_filesets sim_1]
+
 set options ""
 foreach plusarg $plusargs {
     set escaped [string map [list "\\" "\\\\" "\"" "\\\""] $plusarg]
@@ -56,7 +68,7 @@ if {[catch {
     exit 1
 }
 
-if {[catch {get_value -radix unsigned /tb_top/tb_status} tb_status] ||
+if {[catch {get_value -radix unsigned /tb_top_post_impl/tb_status} tb_status] ||
     $tb_status ne "1"} {
     puts stderr "XSIM testbench did not pass (tb_status=$tb_status)"
     catch {close_sim}
