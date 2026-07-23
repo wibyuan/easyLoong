@@ -928,9 +928,13 @@ int main(int argc, char** argv) {
                 std::cout << "[DIFFTEST] Enabled with " << diff_so
                           << ", image " << diff_img
                           << " (" << img_size << " bytes)\n";
+                std::string base_mif = plusarg_string(argc, argv, "base_ram_mif");
+                if (!base_mif.empty() && base_mif != "none") {
+                    difftest_load_mif(base_mif.c_str(), 0x1c000000);
+                }
                 std::string ext_mif = plusarg_string(argc, argv, "ext_ram_mif");
                 if (!ext_mif.empty() && ext_mif != "none") {
-                    difftest_load_extram(ext_mif.c_str());
+                    difftest_load_mif(ext_mif.c_str(), 0x1c400000);
                 }
             }
         } else {

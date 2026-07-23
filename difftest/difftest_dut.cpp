@@ -174,28 +174,33 @@ bool DifftestEngine::init(const char *ref_so_path, const char * /*img_path*/) {
     return true;
 }
 
-void DifftestEngine::load_extram(const char *mif_path) {
+void DifftestEngine::load_mif(const char *mif_path, uint32_t base_addr) {
     if (!mif_path || !mif_path[0]) return;
     if (strcmp(mif_path, "none") == 0) return;
 
     std::ifstream mif(mif_path);
     if (!mif.is_open()) {
-        fprintf(stdout, "[difftest] WARNING: cannot open extram mif: %s\n", mif_path);
+        fprintf(stdout, "[difftest] WARNING: cannot open mif: %s\n", mif_path);
         return;
     }
 
     std::string line;
-    uint32_t addr = EXT_RAM_BASE;
+    uint32_t addr = base_addr;
     size_t word_count = 0;
     while (std::getline(mif, line)) {
         if (line.empty()) continue;
+        if (line[0] == '@') {
+            uint32_t word_addr = (uint32_t)std::stoul(line.substr(1), nullptr, 16);
+            addr = base_addr + word_addr * 4;
+            continue;
+        }
         uint32_t val = (uint32_t)std::stoul(line, nullptr, 2);
         proxy_.memcpy(addr, &val, sizeof(val), DIFFTEST_TO_REF);
         addr += 4;
         word_count++;
     }
-    fprintf(stdout, "[difftest] loaded extram from %s (%zu words)\n",
-            mif_path, word_count);
+    fprintf(stdout, "[difftest] loaded mif %s at 0x%08x (%zu words)\n",
+            mif_path, base_addr, word_count);
 }
 
 bool DifftestEngine::checkregs(uint32_t *ref_buf) {
@@ -397,6 +402,6 @@ void difftest_dump_state() {
     if (difftest) difftest->dump_state();
 }
 
-void difftest_load_extram(const char *mif_path) {
-    if (g_engine) g_engine->load_extram(mif_path);
+void difftest_load_mif(const char *mif_path, uint32_t base_addr) {
+    if (g_engine) g_engine->load_mif(mif_path, base_addr);
 }
