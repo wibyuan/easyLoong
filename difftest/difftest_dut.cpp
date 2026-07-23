@@ -329,7 +329,7 @@ void DifftestEngine::step() {
     }
 
     instr_count_++;
-    if (instr_count_ % 10000 == 0) {
+    if (instr_count_ % 100000 == 0) {
         fprintf(stdout, "[difftest] %lu instructions passed\n", instr_count_);
     }
 }
