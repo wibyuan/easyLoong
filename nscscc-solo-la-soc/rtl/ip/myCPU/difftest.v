@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/difftest/difftest.v
+../../../../difftest/difftest.v
