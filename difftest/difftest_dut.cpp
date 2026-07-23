@@ -3,9 +3,12 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <fstream>
+#include <string>
 #include <dlfcn.h>
 
 #define RESET_VECTOR 0x1c000000
+#define EXT_RAM_BASE  0x1c400000
 
 #define MMIO_BASE 0x1f000000
 #define MMIO_END  0x1f001000
@@ -169,6 +172,30 @@ bool DifftestEngine::init(const char *ref_so_path, const char * /*img_path*/) {
 
     fprintf(stdout, "[difftest] initialized with %s\n", ref_so_path);
     return true;
+}
+
+void DifftestEngine::load_extram(const char *mif_path) {
+    if (!mif_path || !mif_path[0]) return;
+    if (strcmp(mif_path, "none") == 0) return;
+
+    std::ifstream mif(mif_path);
+    if (!mif.is_open()) {
+        fprintf(stdout, "[difftest] WARNING: cannot open extram mif: %s\n", mif_path);
+        return;
+    }
+
+    std::string line;
+    uint32_t addr = EXT_RAM_BASE;
+    size_t word_count = 0;
+    while (std::getline(mif, line)) {
+        if (line.empty()) continue;
+        uint32_t val = (uint32_t)std::stoul(line, nullptr, 2);
+        proxy_.memcpy(addr, &val, sizeof(val), DIFFTEST_TO_REF);
+        addr += 4;
+        word_count++;
+    }
+    fprintf(stdout, "[difftest] loaded extram from %s (%zu words)\n",
+            mif_path, word_count);
 }
 
 bool DifftestEngine::checkregs(uint32_t *ref_buf) {
@@ -368,4 +395,8 @@ int difftest_trap_code() {
 
 void difftest_dump_state() {
     if (difftest) difftest->dump_state();
+}
+
+void difftest_load_extram(const char *mif_path) {
+    if (g_engine) g_engine->load_extram(mif_path);
 }

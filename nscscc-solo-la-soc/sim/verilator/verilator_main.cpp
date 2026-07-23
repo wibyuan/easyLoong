@@ -928,6 +928,10 @@ int main(int argc, char** argv) {
                 std::cout << "[DIFFTEST] Enabled with " << diff_so
                           << ", image " << diff_img
                           << " (" << img_size << " bytes)\n";
+                std::string ext_mif = plusarg_string(argc, argv, "ext_ram_mif");
+                if (!ext_mif.empty() && ext_mif != "none") {
+                    difftest_load_extram(ext_mif.c_str());
+                }
             }
         } else {
             std::cerr << "[DIFFTEST] Cannot open image: " << diff_img << "\n";

@@ -65,6 +65,7 @@ public:
     bool is_running() const { return enabled_; }
 
     void set_program(const uint8_t *img_data, uint64_t img_size);
+    void load_extram(const char *mif_path);
 
 private:
     static const uint64_t kFirstCommitLimit = 5000;
@@ -98,6 +99,7 @@ void difftest_finish();
 bool difftest_is_running();
 int  difftest_trap_code();
 void difftest_set_program(const uint8_t *img_data, uint64_t img_size);
+void difftest_load_extram(const char *mif_path);
 void difftest_dump_state();
 
 #endif
