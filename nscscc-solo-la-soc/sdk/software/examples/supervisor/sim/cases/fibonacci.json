@@ -2,7 +2,7 @@
   "version": 1,
   "name": "supervisor-fibonacci-uart",
   "backend": "verilator",
-  "supported_backends": ["verilator"],
+  "supported_backends": ["verilator", "xsim"],
   "prepare": {
     "cwd": "../..",
     "command": ["./build_all.sh"]
