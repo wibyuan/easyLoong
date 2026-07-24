@@ -15,8 +15,8 @@ module regfile (
             regs[wa] <= wd;
     end
 
-    assign rd1 = (ra1 == 5'd0) ? 32'd0 : regs[ra1];
-    assign rd2 = (ra2 == 5'd0) ? 32'd0 : regs[ra2];
+    assign rd1 = (ra1 == 5'd0) ? 32'd0 : ((wen && wa == ra1) ? wd : regs[ra1]);
+    assign rd2 = (ra2 == 5'd0) ? 32'd0 : ((wen && wa == ra2) ? wd : regs[ra2]);
 
     always_comb begin
         for (int i = 0; i < 32; i++) begin
