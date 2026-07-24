@@ -34,7 +34,8 @@
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
 - [ ] dcache CACOP / 写回冲刷：supervisor FLUSH_DCACHE 需将脏行写回内存。当前不支持，导致 (1) stream/matrix/mixed/cryptonight 数据比对失败 (2) fibonacci UART 加载代码到 ExtRAM 后取指失败（详见"dcache 已知问题"）
-- [ ] icache simple difftest 修复：双重提交已修复（fetch_unit 28f3546），推进至 #10120，为新 bug（LSU 误消费 dcache store 响应导致 load 返回 0）
+- [x] icache difftest simple 通过：dcache 幽灵 store hit 修复（Bug 7, 7639ae4）解决 #10120 sp=0。simple difftest DIFF=1 通过
+- [ ] icache difftest stream 修复：simple 通过后，stream 在 #3942292 处 NEMU idle_pc 跳变，DUT/NEMU commit 对齐但 register state 不一致，待定位
 
 ## dcache difftest 状态（2026-07-24）
 
@@ -63,7 +64,8 @@ fibonacci 用 UART（A 命令）加载程序到 ExtRAM（0x1c300000，cachable �
 
 | 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 根因 |
 |------|-----------------|----------|--------|------|
-| simple | ❌ @ #10120 | N/A | ~10120 | fetch_unit 双重提交已修复（28f3546），剩余 #10120 为 LSU 误消费 dcache store 响应导致 load 返回 0 |
+| simple | ✅ 通过 | N/A | ~170 | dcache 幽灵 store hit 修复（Bug 7, 7639ae4） |
+| stream | ❌ @ #3942292 | N/A | ~390 万 | NEMU idle_pc 跳变，DUT/NEMU commit 对齐但寄存器状态不一致，待定位 |
 
 ### 诊断进展
 
@@ -84,19 +86,19 @@ JAL/BL 的 `do_id_jump`（ID 级）和 `do_ex_flush`（EX 级）先后将 PC 设
 
 **效果**：simple difftest 从 #9169 推进至 #10120。
 
-#### 问题二：dcache store 响应污染后续 load（#10120 sp=0）
+#### 问题二（已修复）：dcache store 响应污染后续 load（Bug 7, 7639ae4）
 
-dcache 在 store 命中 S2 时同时驱动 `cpu_resp.addr_ok=1, cpu_resp.data_ok=1`（组合逻辑脉冲，持续一个周期）。如果 LSU 恰好在此周期对下一指令发起 load 请求（dreq.valid=1），LSU 在 IDLE 态的 `else if (dresp.data_ok) → IDLE` 路径会误将 store 的响应当作 load 的完成信号，`rdata_out` 保持默认值 0 并写回寄存器（sp=0）。
+dcache 在 store 命中 S2 时，`else if (s2_valid)` 路径仅清零 `s2_valid`，未清零 `s1_valid`。s1_valid 保留为 stale 值（store 地址/origin），下个周期 s1_stall 降为 0 后 stale S1 推进到 S2 形成幽灵 store hit。若 LSU 恰在此周期发起 load 请求，误将幽灵 hit 的 `data_ok=1` 当 load 完成信号 → `rdata_out=0`（stores 不返回 data）→ sp=0。
 
-**诊断证据**：
-- dcache 日志中 `0x1c7f007c` 仅有 `s2_op=1`（store 响应），无 `s2_op=0`（load 响应）
-- WB 日志确认 CMT#10120 是 `mem_re=1 mem_addr=1c7f007c` 的 load，`wdata=00000000`
-- LSU 无状态转移（IDLE→IDLE），说明在同周期完成了"load"
-- dcache 的 s1_stall 在 store 命中时=1，新请求未被接纳，LSU 看到的响应属于上一个 store
+**修复**：在 `else if (s2_valid)` 路径中增加 `s1_valid <= 1'b0`，与 load hit 修复（Bug 5）对称。阻止 stale S1→S2 推进。
 
-**解决方案方向**：LSU 侧延迟一个周期检查 dresp（避免与 store 的响应脉冲重叠），或 dcache 侧在 store 命中且有新请求到达时延迟 data_ok 一个周期。直接给 LSU 加流水级（SEND 态）会改变所有 load/store 的全局时序，引入新问题。
+**效果**：difftest simple 从 #10120 → 通过（~170 条指令）。
 
 ### 修复记录
+
+#### Bug 7: dcache store 命中后 s1_valid 未清零 → 幽灵 hit 污染 load（2026-07-24）
+
+见"问题二（已修复）"。
 
 #### Bug 6: fetch_unit 双重跳转提交（2026-07-24）
 
@@ -109,6 +111,14 @@ dCache 流水线在 load 命中 S2 后，时序逻辑无条件执行 `s2_valid <
 **修复**：当 `s2_valid && s2_hit && !s2_op && is_cachable(s2_addr)` 时，同时清零 `s2_valid` 和 `s1_valid`。与 icache Bug 4 修复一致。
 
 **效果**：diffest simple 从 #198 错误推进至 #9169，t1 寄存器 mismach（0x1c7f0080）已消除。
+
+### Bug 7: dCache store 命中后 s1_valid 未清零 → 幽灵 store hit 污染 load（2026-07-24, 7639ae4）
+
+store 命中 S2 时 `else if (s2_valid)` 路径仅清零 `s2_valid`，未清零 `s1_valid`。s1_valid 保留为 stale 值，下周期推进到 S2 形成幽灵 store hit，LSU 误消费其 `data_ok=1` 使 load 返回 rdata=0。
+
+**修复**：在 `else if (s2_valid)` 路径中增加 `s1_valid <= 1'b0`，与 Bug 5（load hit）对称。
+
+**效果**：difftest simple #10120 → 通过。⚠ 向 load hit 的负载负载对称。
 
 ---
 
