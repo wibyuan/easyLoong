@@ -29,9 +29,50 @@
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
 - [x] dcache 模块创建：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先、两级流水、插入 core_top 的 dreq/dresp 路径
-- [ ] dcache tag BRAM 初始化：Verilator 中 BRAM 初始值为 `'x`，tag valid bit 为 `'x` 导致 `s2_hit` 为 `'x`，`if(s2_hit)` 和 `else` 分支均不触发，dcache 永不对 CPU 请求响应。需加冷启动清零 FSM（256 个 tag 条目依次写 0）
+- [x] dcache tag BRAM 初始化：`S_INIT` 冷启动 FSM 在复位后依次写入 256 组 × 2 路 tag = 0（valid=0），共 512 周期
+- [x] dcache 流水线 stall 修复：`s2_valid` 未在 hit 后清零导致重复命中、`s1_valid` 在 miss 处理期间保留旧值导致 miss 结束后虚假 hit
+- [x] dcache refill rf_cnt 递增时机修复：从 `S_REFILL_REQ.addr_ok` 移至 `S_REFILL_WAIT.data_ok`，避免 rf_buf 错位
+- [x] dcache refill fmask 完成判定修复：`(&rf_fmask)` 仅看寄存器旧值，改用 `(&(rf_fmask | (4'd1 << rf_cnt)))` 预判完成
+- [ ] dcache CACOP / 写回冲刷：supervisor FLUSH_DCACHE 需将脏行写回内存，当前不支持，导致 STREAM/MATRIX/MIXED/CRYPTONIGHT ExtRAM 数据比对失败
 
-## Dcache 设计参数
+## dcache difftest 状态（2026-07-24）
+
+| 测试 | DIFF=1 Verilator | 说明 |
+|------|-------------------|------|
+| simple | ✅ 通过 | supervisor init + GOT 加载 + BSS 清零完整执行 |
+| stream | ✅ difftest 通过 | 寄存器级一致，但 ExtRAM 数据比对失败（缺 flush） |
+| fibonacci | ❓ 未测 | — |
+| matrix | ❓ 未测 | — |
+| mixed | ❓ 未测 | — |
+| cryptonight | ❓ 未测 | — |
+
+## dcache bug 修复记录（2026-07-24）
+
+### Bug 1: tag BRAM 未初始化 → s2_hit = X → 死锁
+
+Tag BRAM 在 Verilator 中初始值为 `'x`，导致 `s2_hit` 解析为 `'x`，`if(s2_hit)` 和 `else` 分支均不触发，dcache 永不对 CPU 请求响应。
+
+**修复**：增加 `S_INIT` 冷启动 FSM 状态（复位后首个状态），依次写 tag_mem[0][0..255] 和 tag_mem[1][0..255] = 21'd0（valid=0），共 512 周期。完成后进入 `S_IDLE`。此期间 `s1_stall=1` 阻塞所有 CPU 请求。
+
+### Bug 2: rf_cnt 过早递增 → rf_buf 错位 → 关键字优先转发数据错
+
+`rf_cnt` 在 `S_REFILL_REQ` 收到 `addr_ok` 时立即递增，但对应数据在 `S_REFILL_WAIT` 才到达，此时 `rf_cnt` 已指向下一个 word 偏移，导致 `rf_buf[rf_cnt]` 写入错误位置。
+
+**修复**：将 `rf_cnt` 递增从 `S_REFILL_REQ && addr_ok` 移至 `S_REFILL_WAIT && data_ok`，存入当前 `rf_cnt` 后才递增。
+
+### Bug 3: fmask 完成判定延迟 → 冗余第 5 次 refill → 虚假 keyword 转发
+
+`(&rf_fmask)` 在组合逻辑中只能看到寄存器旧值（上一周期），导致第 4 个 word 到达后仍判为未完成，产生一次多余的 `S_REFILL_REQ`。该冗余 refill 在收到第 5 个数据时再次触发 keyword 转发，将错误数据发给 LSU。
+
+**修复**：改用 `(&(rf_fmask | (4'd1 << rf_cnt)))` 预判完成——将当前 word 对应 bit 也纳入判定，避免延迟。
+
+### Bug 4: s2_valid 在 hit 后未清零 → 重复命中死循环 / 错误转发
+
+`S_IDLE` 中 hit 完成后 `next_state = S_IDLE`，`s2_valid` 既不被 `!s1_stall` 更新（stall=1），也不被 `state != S_IDLE` 清零，导致同一请求被无限次重新命中。后续 miss 处理后回到 `S_IDLE` 时，`s2_valid <= old s1_valid` 复用旧值 1，导致旧请求（如前一 GOT load）重新命中，将错误 `data_ok` 返回给 LSU。
+
+**修复**：
+- 增加 `else if (s2_valid) s2_valid <= 1'b0` 在 `S_IDLE` 中 hit 后清零
+- 在 `state != S_IDLE` 期间同时清零 `s1_valid <= 1'b0`，防止旧值传播
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
