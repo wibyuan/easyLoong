@@ -74,6 +74,7 @@ module dcache import la32_common::*; (
 
     // ==================== State ====================
     enum logic [3:0] {
+        S_INIT,
         S_IDLE,
         S_UNCACHED,
         S_MISS,
@@ -127,6 +128,10 @@ module dcache import la32_common::*; (
     word_t      rf_buf [0:3];
     word_t      wb_buf [0:3];
 
+    // ==================== Init registers ====================
+    index_t init_addr;
+    logic   init_wr_way;
+
     // ==================== Helper functions ====================
     function automatic logic is_cachable(input word_t a);
         return (a[31:24] == 8'h1c);
@@ -158,7 +163,9 @@ module dcache import la32_common::*; (
     logic s1_stall;
     always_comb begin
         s1_stall = 1'b0;
-        if (state != S_IDLE)
+        if (state == S_INIT)
+            s1_stall = 1'b1;
+        else if (state != S_IDLE)
             s1_stall = 1'b1;
         else if (s2_valid && s2_hit && s2_op && is_cachable(s2_addr))
             s1_stall = 1'b1;
@@ -212,6 +219,15 @@ module dcache import la32_common::*; (
         tag_wr_data = 21'd0;
 
         case (state)
+
+            S_INIT: begin
+                tag_wr_ena  = 1'b1;
+                tag_wr_way  = init_wr_way;
+                tag_wr_addr = init_addr;
+                tag_wr_data = 21'd0;
+                if (init_wr_way == 1'b1 && init_addr == 8'd255)
+                    next_state = S_IDLE;
+            end
 
             S_IDLE: begin
                 if (s2_valid) begin
@@ -291,7 +307,8 @@ module dcache import la32_common::*; (
                         cpu_resp.data_ok = 1'b1;
                         cpu_resp.data    = mem_resp.data;
                     end
-                    next_state = (&rf_fmask) ? S_REFILL_WRITE : S_REFILL_REQ;
+                    next_state = (&(rf_fmask | (4'd1 << rf_cnt)))
+                        ? S_REFILL_WRITE : S_REFILL_REQ;
                 end
             end
 
@@ -332,7 +349,7 @@ module dcache import la32_common::*; (
     // ==================== Sequential logic ====================
     always_ff @(posedge clk) begin
         if (reset) begin
-            state      <= S_IDLE;
+            state      <= S_INIT;
             s1_valid   <= 1'b0;
             s2_valid   <= 1'b0;
             dirty[0]   <= '0;
@@ -343,10 +360,18 @@ module dcache import la32_common::*; (
             rf_cnt     <= 2'd0;
             rf_wr_cnt  <= 2'd0;
             rf_kw_sent <= 1'b0;
-            mem_req_r    <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0};
+            mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0};
+            init_addr    <= 8'd0;
+            init_wr_way  <= 1'b0;
         end else begin
             state <= next_state;
             mem_req_r <= mem_req_next;
+
+            if (state == S_INIT) begin
+                if (init_wr_way == 1'b1)
+                    init_addr <= init_addr + 1;
+                init_wr_way <= ~init_wr_way;
+            end
 
             if (!s1_stall) begin
                 s1_valid <= cpu_req.valid;
@@ -369,6 +394,9 @@ module dcache import la32_common::*; (
                 s2_idx   <= s1_idx;
                 s2_tag   <= s1_tag;
             end else if (state != S_IDLE) begin
+                s1_valid <= 1'b0;
+                s2_valid <= 1'b0;
+            end else if (s2_valid) begin
                 s2_valid <= 1'b0;
             end
 
@@ -418,14 +446,12 @@ module dcache import la32_common::*; (
                 end
             end
 
-            if (state == S_REFILL_REQ && mem_resp.addr_ok)
-                rf_cnt <= (rf_cnt == 2'd3) ? 2'd0 : (rf_cnt + 1);
-
             if (state == S_REFILL_WAIT && mem_resp.data_ok) begin
                 rf_buf[rf_cnt]       <= mem_resp.data;
                 rf_fmask[rf_cnt]     <= 1'b1;
                 if (rf_cnt == m_wo && !rf_kw_sent && m_op == 1'b0)
                     rf_kw_sent <= 1'b1;
+                rf_cnt <= (rf_cnt == 2'd3) ? 2'd0 : (rf_cnt + 1);
             end
 
             if (state == S_REFILL_WAIT && next_state == S_REFILL_WRITE)
