@@ -28,14 +28,14 @@
 - [x] icache 流水线幽灵命中修复：命中后 `s2_valid` 和 `s1_valid` 同时清零，避免旧请求参数推进到 S2 形成错误命中
 - [x] icache 与 dCache 接口隔离：iCache miss 通过 arbiter 现有 `ireq` 端口访存，与 dCache 的 `dreq` 端口独立仲裁
 - [x] fetch_unit 双重跳转修复：JAL/BL 在 ID 级的 `do_id_jump` 和 EX 级的 `do_ex_flush` 先后将 PC 设到同一跳转目标。`do_ex_flush` 在目标指令从 icache 到达的同一周期重复设置 next_pc，覆盖了本应发生的 `pc+4` 自增，导致 fetch_unit 重复请求同一地址 → 双重提交到 WB。修复：`do_ex_flush` / `do_id_jump` 仅在 `pc_current != jump_target` 时生效（2026-07-24）
+- [x] icache difftest simple 通过：dcache 幽灵 store hit 修复（Bug 7, 7639ae4）解决 #10120 sp=0。simple difftest DIFF=1 通过
+- [x] icache difftest stream 通过：regfile 写旁路修复（Bug 8, b43ffec）解决 load→branch 转发窗口错过问题。stream 3.9M 条指令 DIFF=1 通过（2026-07-24）
 
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
 - [ ] dcache CACOP / 写回冲刷：supervisor FLUSH_DCACHE 需将脏行写回内存。当前不支持，导致 (1) stream/matrix/mixed/cryptonight 数据比对失败 (2) fibonacci UART 加载代码到 ExtRAM 后取指失败（详见"dcache 已知问题"）
-- [x] icache difftest simple 通过：dcache 幽灵 store hit 修复（Bug 7, 7639ae4）解决 #10120 sp=0。simple difftest DIFF=1 通过
-- [ ] icache difftest stream 修复：simple 通过后，stream 在 #3942292 处 NEMU idle_pc 跳变，DUT/NEMU commit 对齐但 register state 不一致，待定位
 
 ## dcache difftest 状态（2026-07-24）
 
@@ -65,28 +65,23 @@ fibonacci 用 UART（A 命令）加载程序到 ExtRAM（0x1c300000，cachable �
 | 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 根因 |
 |------|-----------------|----------|--------|------|
 | simple | ✅ 通过 | N/A | ~170 | dcache 幽灵 store hit 修复（Bug 7, 7639ae4） |
-| stream | ❌ @ #3942292 | N/A | ~390 万 | NEMU idle_pc 跳变，DUT/NEMU commit 对齐但寄存器状态不一致，待定位 |
+| stream | ✅ 通过 | N/A | ~390 万 | regfile 写旁路修复（Bug 8, b43ffec） |
+| matrix | 待测 | — | — | — |
+| mixed | 待测 | — | — | — |
+| cryptonight | 待测 | — | — | — |
+| fibonacci | 待测 | — | — | 依赖 dcache flush |
 
-### 诊断进展
+### 修复记录
 
-| 实验 | 结果 | 结论 |
-|------|------|------|
-| 强制 `s2_hit=0`（每次 miss，不走缓存命中） | ✅ 通过 | refill/响应路径正确，问题在命中路径 |
-| fetch_unit `pc_current != ex_jump_pc` fix | #9169 → #10120 | 双重提交已修复；剩余 #10120 sp=0 |
-| dcache 日志：`0x1c7f007c` 仅有 s2_op=1（store）响应，无 s2_op=0（load）响应 | — | load 的 WB 提交了但 dcache 从未对 load 返回 data_ok |
-| LSU 日志：IDLE→IDLE 无缝完成（无状态转移） | — | LSU 在 IDLE 态看到 dresp.data_ok=1（来自上一个 store 的响应），立刻完成并返回 rdata_out=0（默认值） |
+#### Bug 8: load→branch 转发窗口错过（2026-07-24, b43ffec）
 
-### 已知问题
+stream difftest 在 #3942292 处失败：FLUSH_DCACHE 函数中 `ld.w $r12, $r12, 0` → `beq $r12, $r0, target` 序列，load 在 MEM 等待 dcache 返回期间整个流水线被 lsu_not_ready 停滞。当 load 完成进入 WB 时 branch 仍在 IF/ID，需额外 1 周期到达 EX，此时 load 已从 WB 退休（mem_wb_out.valid=0），转发失败。register file 的 rd1/rd2 输出无写旁路，branch 在 ID 阶段读到 regfile 旧值并 latch 进 id_ex_out，导致 EX 阶段 forward_a 为旧值 → branch 判定错误。
 
-#### 问题一（已修复）：WB 双重提交（28f3546）
+**修复**：`regfile.sv` 的 `rd1`/`rd2` 增加 write-bypass：`assign rd1 = (wen && wa == ra) ? wd : regs[ra]`。load 在 WB 写寄存器时，同一周期 branch 在 ID 读到新值并 latch，EX 阶段转发正确。
 
-JAL/BL 的 `do_id_jump`（ID 级）和 `do_ex_flush`（EX 级）先后将 PC 设到同一跳转目标。`do_ex_flush` 在目标指令从 icache 到达的同一周期重复设置 next_pc = ex_jump_pc，if-else 优先级高于默认的 `pc+4` 自增，导致 fetch_unit 重复请求同一地址，同一条指令两次进入流水线 → 两次 WB 提交。difftest 每次 posedge 捕获一次 commit，NEMU 执行两条指令而 DUT 只执行一条，t1 寄存器不匹配。
+**效果**：difftest stream 3.9M 条指令全部通过。⚠ 自校验 4084 处 mismatch 为 dcache flush 缺失导致，非本修复范围。
 
-**修复**：`fetch_unit.sv` 中 `do_ex_flush` 和 `do_id_jump` 仅在 `pc_current != jump_target` 时生效。
-
-**效果**：simple difftest 从 #9169 推进至 #10120。
-
-#### 问题二（已修复）：dcache store 响应污染后续 load（Bug 7, 7639ae4）
+#### Bug 7: dcache store 命中后 s1_valid 未清零 → 幽灵 hit 污染 load（2026-07-24, 7639ae4）
 
 dcache 在 store 命中 S2 时，`else if (s2_valid)` 路径仅清零 `s2_valid`，未清零 `s1_valid`。s1_valid 保留为 stale 值（store 地址/origin），下个周期 s1_stall 降为 0 后 stale S1 推进到 S2 形成幽灵 store hit。若 LSU 恰在此周期发起 load 请求，误将幽灵 hit 的 `data_ok=1` 当 load 完成信号 → `rdata_out=0`（stores 不返回 data）→ sp=0。
 
@@ -94,15 +89,13 @@ dcache 在 store 命中 S2 时，`else if (s2_valid)` 路径仅清零 `s2_valid`
 
 **效果**：difftest simple 从 #10120 → 通过（~170 条指令）。
 
-### 修复记录
+#### Bug 6: fetch_unit 双重跳转提交（2026-07-24, 28f3546）
 
-#### Bug 7: dcache store 命中后 s1_valid 未清零 → 幽灵 hit 污染 load（2026-07-24）
+JAL/BL 的 `do_id_jump`（ID 级）和 `do_ex_flush`（EX 级）先后将 PC 设到同一跳转目标。`do_ex_flush` 在目标指令从 icache 到达的同一周期重复设置 next_pc = ex_jump_pc，if-else 优先级高于默认的 `pc+4` 自增，导致 fetch_unit 重复请求同一地址，同一条指令两次进入流水线 → 两次 WB 提交。difftest 每次 posedge 捕获一次 commit，NEMU 执行两条指令而 DUT 只执行一条，t1 寄存器不匹配。
 
-见"问题二（已修复）"。
+**修复**：`fetch_unit.sv` 中 `do_ex_flush` 和 `do_id_jump` 仅在 `pc_current != jump_target` 时生效。
 
-#### Bug 6: fetch_unit 双重跳转提交（2026-07-24）
-
-见"问题一（已修复）"。
+**效果**：simple difftest 从 #9169 推进至 #10120。
 
 #### Bug 5: dCache load 命中后 s2_valid 未清零 → 幽灵命中（2026-07-24）
 
@@ -110,15 +103,7 @@ dCache 流水线在 load 命中 S2 后，时序逻辑无条件执行 `s2_valid <
 
 **修复**：当 `s2_valid && s2_hit && !s2_op && is_cachable(s2_addr)` 时，同时清零 `s2_valid` 和 `s1_valid`。与 icache Bug 4 修复一致。
 
-**效果**：diffest simple 从 #198 错误推进至 #9169，t1 寄存器 mismach（0x1c7f0080）已消除。
-
-### Bug 7: dCache store 命中后 s1_valid 未清零 → 幽灵 store hit 污染 load（2026-07-24, 7639ae4）
-
-store 命中 S2 时 `else if (s2_valid)` 路径仅清零 `s2_valid`，未清零 `s1_valid`。s1_valid 保留为 stale 值，下周期推进到 S2 形成幽灵 store hit，LSU 误消费其 `data_ok=1` 使 load 返回 rdata=0。
-
-**修复**：在 `else if (s2_valid)` 路径中增加 `s1_valid <= 1'b0`，与 Bug 5（load hit）对称。
-
-**效果**：difftest simple #10120 → 通过。⚠ 向 load hit 的负载负载对称。
+**效果**：diffest simple 从 #198 错误推进至 #9169，t1 寄存器 mismatch（0x1c7f0080）已消除。
 
 ---
 

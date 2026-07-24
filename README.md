@@ -41,9 +41,15 @@
 ### 架构
 
 - **流水线**：五级经典流水线 (IF → ID → EX → MEM → WB)，含数据转发与流水线冒险控制
-- **寄存器文件**：32 个 32 位通用寄存器 (r0 恒为 0)
+- **寄存器文件**：32 个 32 位通用寄存器 (r0 恒为 0)，含 write-bypass
 - **总线接口**：AXI4 Master（通过 `core_top` 封装 SoC 接口）
 - **特权级**：支持 DMW 直接映射地址翻译 (DA/PG 模式切换)，CRMD/DMW0/DMW1 可编程
+
+### Cache 系统
+
+- **icache**：2 路组相联、256 组、16 字节行、8KB、只读、PLRU、关键字优先
+- **dcache**：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先
+- **暂缺**：dcache CACOP 写回冲刷，导致数据比对失败和 fibonacci I/D 一致性问题
 
 ### 指令集覆盖
 
@@ -64,7 +70,7 @@
 | `common.sv` | LA32R 基础类型定义 |
 | `core.sv` | 五级流水线顶层，例化全部子模块 |
 | `pipeline_reg.sv` | 通用流水线寄存器 (stall/flush) |
-| `regfile.sv` | 32×32 位寄存器文件 (r0=0) |
+| `regfile.sv` | 32×32 位寄存器文件 (r0=0)，含 write-bypass |
 | `csr_regfile.sv` | 26 个 CSR 寄存器文件 + DMW 存储 |
 | `decode.sv` | 指令译码 |
 | `alu.sv` | 32 位 ALU |
@@ -102,9 +108,8 @@
 
 > **注**：阶段 1 为裸机测试，不使用 supervisor 和 dcache，指令级 difftest 通过。
 > 阶段 2-5 的 supervisor 依赖 dcache FLUSH_DCACHE 写回脏行，当前未实现，导致 ExtRAM 数据比对失败。
-> fibonacci 测试因 I/D 一致性（dcache store 未刷回 SRAM → icache/ireq 取到 0x00000000）无法通过。实现 FLUSH_DCACHE + icache inv_all 后将修复。
-> supervisor simple 测试 difftest：已通过（dcache 幽灵 store hit 修复, 7639ae4）。
-> supervisor stream 测试 difftest：待修复，DUT/NEMU commit 对齐但 NEMU idle_pc 跳变（#3942292）。
+> fibonacci 测试因 I/D 一致性（dcache store 未刷回 SRAM → icache/ireq 取到 0x00000000）无法通过。实现 FLUSH_DCACHE 后将修复。
+> supervisor simple / stream 测试 difftest：均已通过（Bug 7 + Bug 8 修复）。
 
 ## 5. 开发环境搭建
 
