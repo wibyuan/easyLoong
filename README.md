@@ -72,6 +72,8 @@
 | `npc.sv` | 下一 PC 计算 |
 | `fetch_unit.sv` | 取指单元 |
 | `lsu.sv` | 访存单元 |
+| `dcache.sv` | 数据 Cache（2 路组相联、8KB、写回） |
+| `icache.sv` | 指令 Cache（2 路组相联、8KB、只读） |
 | `hazard_unit.sv` | 流水线冒险控制 |
 | `axibus_arbiter.sv` | ibus/dbus AXI4 仲裁 |
 | `core_top.sv` | AXI Master 接口封装 |
@@ -90,13 +92,17 @@
 
 ## 4. 评测阶段
 
-| 阶段 | 类型 | 说明 | 状态 |
-|------|------|------|------|
-| 1 | 功能测试 | 斐波那契数列（裸机） | ✅ DIFF=1 通过 |
-| 2 | MATRIX | 矩阵乘加 (96×96, 64KB) | ✅ DIFF=1 通过 |
-| 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=1 通过 |
-| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=1 通过 |
-| 5 | MIXED | 混合运算 | ✅ DIFF=1 通过 |
+| 阶段 | 类型 | 说明 | 指令级 difftest | 数据比对 |
+|------|------|------|----------------|----------|
+| 1 | 功能测试 | 斐波那契数列（裸机） | ✅ DIFF=1 通过 | N/A |
+| 2 | MATRIX | 矩阵乘加 (96×96, 64KB) | ✅ DIFF=1 通过 | ❌ 缺 dcache flush |
+| 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=1 通过 | ❌ 缺 dcache flush |
+| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=1 通过 | ❌ 缺 dcache flush |
+| 5 | MIXED | 混合运算 | ✅ DIFF=1 通过 | ❌ 缺 dcache flush |
+
+> **注**：阶段 1 为裸机测试，不使用 supervisor 和 dcache，指令级 difftest 通过。
+> 阶段 2-5 的 supervisor 依赖 dcache FLUSH_DCACHE 写回脏行，当前未实现，导致 ExtRAM 数据比对失败。
+> fibonacci 测试因 I/D 一致性（dcache store 未刷回 SRAM → icache/ireq 取到 0x00000000）无法通过。实现 FLUSH_DCACHE + icache inv_all 后将修复。
 
 ## 5. 开发环境搭建
 
