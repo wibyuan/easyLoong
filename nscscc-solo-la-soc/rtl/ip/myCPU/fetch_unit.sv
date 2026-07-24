@@ -89,9 +89,9 @@ module fetch_unit import la32_common::*; (
         next_pc = pc_current + 32'd4;
         if (wb_jump_req)
             next_pc = wb_jump_pc;
-        else if (do_ex_flush)
+        else if (do_ex_flush && pc_current != ex_jump_pc)
             next_pc = ex_jump_pc;
-        else if (do_id_jump)
+        else if (do_id_jump && pc_current != id_jump_pc)
             next_pc = id_jump_pc;
         else if (pc_stall)
             next_pc = pc_current;
