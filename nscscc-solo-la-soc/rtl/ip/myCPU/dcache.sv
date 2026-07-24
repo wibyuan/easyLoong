@@ -384,15 +384,20 @@ module dcache import la32_common::*; (
                 s1_idx   <= cpu_req.addr[11:4];
                 s1_tag   <= cpu_req.addr[31:12];
 
-                s2_valid <= s1_valid;
-                s2_addr  <= s1_addr;
-                s2_op    <= s1_op;
-                s2_size  <= s1_size;
-                s2_wdata <= s1_wdata;
-                s2_wstrb <= s1_wstrb;
-                s2_wo    <= s1_wo;
-                s2_idx   <= s1_idx;
-                s2_tag   <= s1_tag;
+                if (s2_valid && s2_hit && !s2_op && is_cachable(s2_addr)) begin
+                    s2_valid <= 1'b0;
+                    s1_valid <= 1'b0;
+                end else begin
+                    s2_valid <= s1_valid;
+                    s2_addr  <= s1_addr;
+                    s2_op    <= s1_op;
+                    s2_size  <= s1_size;
+                    s2_wdata <= s1_wdata;
+                    s2_wstrb <= s1_wstrb;
+                    s2_wo    <= s1_wo;
+                    s2_idx   <= s1_idx;
+                    s2_tag   <= s1_tag;
+                end
             end else if (state != S_IDLE) begin
                 s1_valid <= 1'b0;
                 s2_valid <= 1'b0;
