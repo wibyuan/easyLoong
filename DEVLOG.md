@@ -63,7 +63,7 @@ fibonacci 用 UART（A 命令）加载程序到 ExtRAM（0x1c300000，cachable �
 
 | 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 根因 |
 |------|-----------------|----------|--------|------|
-| simple | ❌ @ #198 | N/A | ~198 | t1 在 `ld.w` 返回错误数据（0x1c7f0080 vs 0x1f000000） |
+| simple | ❌ @ #9169 | N/A | ~9169 | WB 重复提交：流水线停顿时 WB 级 valid 多周期保持，difftest 捕获同一指令两次导致 NEMU/DUT 不同步 |
 
 ### 诊断进展
 
@@ -72,12 +72,23 @@ fibonacci 用 UART（A 命令）加载程序到 ExtRAM（0x1c300000，cachable �
 | 强制 `s2_hit=0`（每次 miss，不走缓存命中） | ✅ 通过 | refill/响应路径正确，问题在命中路径 |
 | 临时移除 dCache（`TEMP_NO_DCACHE`） | ❌ 同样失败 | 非纯 dCache 交互问题 |
 | `is_cachable` 返回 0（dCache 绕行） | ✅ 通过 | dCache + icache 命中组合触发 |
-| BRAM 数据打印验证 | 正确（wo=2 → 4c000180） | BRAM 写入逻辑正确 |
-| 流水线幽灵命中修复 | 从 #3 → #198 | 修复有效但未完全解决 |
+| dCache load 命中后清 s1/s2（修复 Bug 5） | #198 → #9169 | 幽灵命中已消除，剩余问题在 difftest 重复提交 |
 
 ### 已知问题
 
-icache 命中时返回的 BRAM 数据（经 `$display` 验证）与 AXI refill 数据一致，但 difftest 在 #198 指令处出现 t1 寄存器不匹配。`s2_hit` 强制 0（全 miss 模式）通过 difftest，说明取指响应和 refill 逻辑正确。问题出在 icache 缓存命中路径与 dCache 缓存模式组合时的数据准确性，具体根因待进一步调试。
+difftest 重复提交：流水线因 if_not_ready 停顿时，MEM→WB 寄存器无 stall 控制（`stall=1'b0`），导致同一指令在 WB 级多周期保持 valid，difftest 每次时钟边沿均捕获一次提交。NEMU 随之步进多条指令，超前 DUT 导致寄存器不匹配。
+
+### 修复记录
+
+#### Bug 5: dCache load 命中后 s2_valid 未清零 → 幽灵命中（2026-07-24）
+
+dCache 流水线在 load 命中 S2 后，时序逻辑无条件执行 `s2_valid <= s1_valid`（`!s1_stall` 为真），导致 `s2_valid` 额外保持 1 周期。下一周期 LSU 已切换到新请求，却收到幽灵 `data_ok=1` 和旧数据。
+
+**修复**：当 `s2_valid && s2_hit && !s2_op && is_cachable(s2_addr)` 时，同时清零 `s2_valid` 和 `s1_valid`。与 icache Bug 4 修复一致。
+
+**效果**：diffest simple 从 #198 错误推进至 #9169，t1 寄存器 mismach（0x1c7f0080）已消除。
+
+---
 
 ## dcache bug 修复记录（2026-07-24）
 
