@@ -403,6 +403,7 @@ module dcache import la32_common::*; (
                 s2_valid <= 1'b0;
             end else if (s2_valid) begin
                 s2_valid <= 1'b0;
+                s1_valid <= 1'b0;
             end
 
             if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr)) begin
