@@ -70,6 +70,8 @@ module core_top #(
     dbus_resp_t dresp;
     dbus_req_t  dreq_mem;
     dbus_resp_t dresp_mem;
+    ibus_req_t  icache_mem_req;
+    ibus_resp_t icache_mem_resp;
 
     logic [31:0] core_debug_wb_pc;
     logic [31:0] core_debug_wb_inst;
@@ -100,11 +102,21 @@ module core_top #(
         .mem_resp(dresp_mem)
     );
 
+    icache u_icache (
+        .clk,
+        .reset(~aresetn),
+        .inv_all(1'b0),
+        .cpu_req(ireq),
+        .cpu_resp(iresp),
+        .mem_req(icache_mem_req),
+        .mem_resp(icache_mem_resp)
+    );
+
     axibus_arbiter u_arbiter (
         .clk,
         .resetn(aresetn),
-        .ireq,
-        .iresp,
+        .ireq(icache_mem_req),
+        .iresp(icache_mem_resp),
         .dreq(dreq_mem),
         .dresp(dresp_mem),
         .arid,     .araddr,   .arlen,   .arsize, .arburst,
