@@ -103,7 +103,7 @@
 > **注**：阶段 1 为裸机测试，不使用 supervisor 和 dcache，指令级 difftest 通过。
 > 阶段 2-5 的 supervisor 依赖 dcache FLUSH_DCACHE 写回脏行，当前未实现，导致 ExtRAM 数据比对失败。
 > fibonacci 测试因 I/D 一致性（dcache store 未刷回 SRAM → icache/ireq 取到 0x00000000）无法通过。实现 FLUSH_DCACHE + icache inv_all 后将修复。
-> supervisor simple 测试的 difftest 因 WB 重复提交（流水线停顿时 difftest 捕获同一提交多次）暂未通过，待修复。
+> supervisor simple 测试的 difftest：WB 双重提交（fetch_unit 双重跳转）已修复（28f3546），推进至 #10120（LSU 误消费 dcache store 响应 → load 返回 0），待修复。
 
 ## 5. 开发环境搭建
 
