@@ -33,18 +33,30 @@
 - [x] dcache 流水线 stall 修复：`s2_valid` 未在 hit 后清零导致重复命中、`s1_valid` 在 miss 处理期间保留旧值导致 miss 结束后虚假 hit
 - [x] dcache refill rf_cnt 递增时机修复：从 `S_REFILL_REQ.addr_ok` 移至 `S_REFILL_WAIT.data_ok`，避免 rf_buf 错位
 - [x] dcache refill fmask 完成判定修复：`(&rf_fmask)` 仅看寄存器旧值，改用 `(&(rf_fmask | (4'd1 << rf_cnt)))` 预判完成
-- [ ] dcache CACOP / 写回冲刷：supervisor FLUSH_DCACHE 需将脏行写回内存，当前不支持，导致 STREAM/MATRIX/MIXED/CRYPTONIGHT ExtRAM 数据比对失败
+- [ ] dcache CACOP / 写回冲刷：supervisor FLUSH_DCACHE 需将脏行写回内存。当前不支持，导致 (1) stream/matrix/mixed/cryptonight 数据比对失败 (2) fibonacci UART 加载代码到 ExtRAM 后取指失败（详见"dcache 已知问题"）
 
 ## dcache difftest 状态（2026-07-24）
 
-| 测试 | DIFF=1 Verilator | 说明 |
-|------|-------------------|------|
-| simple | ✅ 通过 | supervisor init + GOT 加载 + BSS 清零完整执行 |
-| stream | ✅ difftest 通过 | 寄存器级一致，但 ExtRAM 数据比对失败（缺 flush） |
-| fibonacci | ❓ 未测 | — |
-| matrix | ❓ 未测 | — |
-| mixed | ❓ 未测 | — |
-| cryptonight | ❓ 未测 | — |
+| 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 根因 |
+|------|-----------------|----------|--------|------|
+| simple | ✅ 通过 | N/A | ~170 | — |
+| stream | ✅ 通过 | ❌ 4084 处不匹配 | ~390 万 | 缺 flush |
+| matrix | ✅ 通过 | ❌ 3786 处不匹配 | ~560 万 | 缺 flush |
+| mixed | ✅ 通过 | ❌ 15 处不匹配 | ~30 万 | 缺 flush |
+| cryptonight | ✅ 通过 | ❌ 2001 处不匹配 | ~2300 万 | 缺 flush |
+| fibonacci | ❌ @ #14845 | — | 14.8K | 缺 flush |
+
+## dcache 已知问题（2026-07-24）
+
+### 问题一：数据比对失败（stream / matrix / mixed / cryptonight）
+
+测试结束前 supervisor 调用 FLUSH_DCACHE 将脏行写回 SRAM 后再 dump ExtRAM 比对。dcache 无 CACOP 接口，FLUSH_DCACHE 是空操作，脏行留在 cache 中未写回 SRAM，导致 ExtRAM dump 与预期不符。
+
+### 问题二：fibonacci difftest 失败
+
+fibonacci 用 UART（A 命令）加载程序到 ExtRAM（0x1c300000，cachable 范围）。store 进了 dcache data BRAM 但未达 SRAM。随后 supervisor 跳转至 0x1c300000 取指执行——指令 fetch 走 `ireq`（不经 dcache）→ AXI bus → SRAM，SRAM 中为 0x00000000。同时 NEMU 侧 ExtRAM 也为空（无 MIF、非 MMIO 不注入），取到同样 0x00000000，但 NOP 行为差异导致 t0 寄存器不一致。
+
+**结论**：两类失败根因相同——dcache 缺写回/冲刷机制。指令级 difftest（2300 万条）验证了 cache 核心逻辑正确，但 FLUSH_DCACHE 未实现导致脏数据无法写入 SRAM。
 
 ## dcache bug 修复记录（2026-07-24）
 
