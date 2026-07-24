@@ -28,6 +28,8 @@
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
+- [x] dcache 模块创建：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先、两级流水、插入 core_top 的 dreq/dresp 路径
+- [ ] dcache tag BRAM 初始化：Verilator 中 BRAM 初始值为 `'x`，tag valid bit 为 `'x` 导致 `s2_hit` 为 `'x`，`if(s2_hit)` 和 `else` 分支均不触发，dcache 永不对 CPU 请求响应。需加冷启动清零 FSM（256 个 tag 条目依次写 0）
 
 ## Vivado FPGA 构建状态（2026-07-23）
 
