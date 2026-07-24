@@ -23,16 +23,17 @@
 - [x] Vivado XSim 行为仿真通过：simple supervisor 测试在 XSim RTL 仿真中完整通过（2026-07-23）
 - [x] Post-Implementation 仿真基础设施就绪：TCL 脚本 + Python runner + 无 XMR 门级 testbench
 - [x] Vivado Makefile 工作流：`make build-bitstream` / `make vivado-sim-behavioral` / `make vivado-sim-post-impl`
+- [x] icache 模块创建：2 路组相联、256 组、16 字节行、8KB（只读）、PLRU、关键字优先、两级流水、插入 core_top 的 ireq/iresp 路径
+- [x] icache tag BRAM 初始化：`S_INIT` 冷启动 FSM 同时写两路 tag = 0（valid=0），256 周期完成
+- [x] icache 流水线幽灵命中修复：命中后 `s2_valid` 和 `s1_valid` 同时清零，避免旧请求参数推进到 S2 形成错误命中
+- [x] icache 与 dCache 接口隔离：iCache miss 通过 arbiter 现有 `ireq` 端口访存，与 dCache 的 `dreq` 端口独立仲裁
 
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
-- [x] dcache 模块创建：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先、两级流水、插入 core_top 的 dreq/dresp 路径
-- [x] dcache tag BRAM 初始化：`S_INIT` 冷启动 FSM 在复位后依次写入 256 组 × 2 路 tag = 0（valid=0），共 512 周期
-- [x] dcache 流水线 stall 修复：`s2_valid` 未在 hit 后清零导致重复命中、`s1_valid` 在 miss 处理期间保留旧值导致 miss 结束后虚假 hit
-- [x] dcache refill rf_cnt 递增时机修复：从 `S_REFILL_REQ.addr_ok` 移至 `S_REFILL_WAIT.data_ok`，避免 rf_buf 错位
-- [x] dcache refill fmask 完成判定修复：`(&rf_fmask)` 仅看寄存器旧值，改用 `(&(rf_fmask | (4'd1 << rf_cnt)))` 预判完成
+- [ ] dcache CACOP / 写回冲刷：supervisor FLUSH_DCACHE 需将脏行写回内存。当前不支持，导致 (1) stream/matrix/mixed/cryptonight 数据比对失败 (2) fibonacci UART 加载代码到 ExtRAM 后取指失败（详见"dcache 已知问题"）
+- [ ] icache simple difftest 修复：仅 difftest stream / fibonacci 通过后才需要修复，当前 simple 无法通过（#198 指令 dCache 读取数据错误）
 - [ ] dcache CACOP / 写回冲刷：supervisor FLUSH_DCACHE 需将脏行写回内存。当前不支持，导致 (1) stream/matrix/mixed/cryptonight 数据比对失败 (2) fibonacci UART 加载代码到 ExtRAM 后取指失败（详见"dcache 已知问题"）
 
 ## dcache difftest 状态（2026-07-24）
@@ -57,6 +58,26 @@
 fibonacci 用 UART（A 命令）加载程序到 ExtRAM（0x1c300000，cachable 范围）。store 进了 dcache data BRAM 但未达 SRAM。随后 supervisor 跳转至 0x1c300000 取指执行——指令 fetch 走 `ireq`（不经 dcache）→ AXI bus → SRAM，SRAM 中为 0x00000000。同时 NEMU 侧 ExtRAM 也为空（无 MIF、非 MMIO 不注入），取到同样 0x00000000，但 NOP 行为差异导致 t0 寄存器不一致。
 
 **结论**：两类失败根因相同——dcache 缺写回/冲刷机制。指令级 difftest（2300 万条）验证了 cache 核心逻辑正确，但 FLUSH_DCACHE 未实现导致脏数据无法写入 SRAM。
+
+## icache difftest 状态（2026-07-24）
+
+| 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 根因 |
+|------|-----------------|----------|--------|------|
+| simple | ❌ @ #198 | N/A | ~198 | t1 在 `ld.w` 返回错误数据（0x1c7f0080 vs 0x1f000000） |
+
+### 诊断进展
+
+| 实验 | 结果 | 结论 |
+|------|------|------|
+| 强制 `s2_hit=0`（每次 miss，不走缓存命中） | ✅ 通过 | refill/响应路径正确，问题在命中路径 |
+| 临时移除 dCache（`TEMP_NO_DCACHE`） | ❌ 同样失败 | 非纯 dCache 交互问题 |
+| `is_cachable` 返回 0（dCache 绕行） | ✅ 通过 | dCache + icache 命中组合触发 |
+| BRAM 数据打印验证 | 正确（wo=2 → 4c000180） | BRAM 写入逻辑正确 |
+| 流水线幽灵命中修复 | 从 #3 → #198 | 修复有效但未完全解决 |
+
+### 已知问题
+
+icache 命中时返回的 BRAM 数据（经 `$display` 验证）与 AXI refill 数据一致，但 difftest 在 #198 指令处出现 t1 寄存器不匹配。`s2_hit` 强制 0（全 miss 模式）通过 difftest，说明取指响应和 refill 逻辑正确。问题出在 icache 缓存命中路径与 dCache 缓存模式组合时的数据准确性，具体根因待进一步调试。
 
 ## dcache bug 修复记录（2026-07-24）
 
@@ -101,6 +122,23 @@ Tag BRAM 在 Verilator 中初始值为 `'x`，导致 `s2_hit` 解析为 `'x`，`
 | 插入位置 | lsu ↔ axibus_arbiter | core_top.sv 中 dreq/dresp 路径 |
 | 缓存范围 | 0x1c000000 – 0x1cffffff | BaseRAM + ExtRAM |
 | BRAM 资源 | data: 8 × 256×32, tag: 2 × 256×21 | 约 4.5 BRAM36K |
+
+## icache 参数（2026-07-24）
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 行大小 | 16 字节 (4 words) | offset = addr[3:0] |
+| 路数 | 2 路组相联 | |
+| 组数 | 256 组 | index = addr[11:4] |
+| 总容量 | 8KB (2 × 256 × 16) | 满足比赛 ≥ 8KB 要求 |
+| tag | 20 位 | addr[31:12] |
+| 写策略 | 无关（只读） | 无 dirty / 写回机制 |
+| 替换策略 | PLRU | 2 路时等价真 LRU |
+| 关键字优先 | 是 | refill 时关键字词最先取回并转发 |
+| 流水级 | 2 级 (TAG + DATA) | S1 发 BRAM 读地址，S2 比较 tag 并响应 |
+| 插入位置 | fetch_unit ↔ axibus_arbiter | core_top.sv 中 ireq/iresp 路径 |
+| 缓存范围 | 0x1c000000 – 0x1cffffff | 全覆盖，无 uncached 路径 |
+| inv_all | 256 周期全失效 | 同时写两路 tag = 0（valid=0） |
 
 ## Vivado FPGA 构建状态（2026-07-23）
 
