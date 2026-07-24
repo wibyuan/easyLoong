@@ -31,6 +31,24 @@
 - [x] dcache 模块创建：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先、两级流水、插入 core_top 的 dreq/dresp 路径
 - [ ] dcache tag BRAM 初始化：Verilator 中 BRAM 初始值为 `'x`，tag valid bit 为 `'x` 导致 `s2_hit` 为 `'x`，`if(s2_hit)` 和 `else` 分支均不触发，dcache 永不对 CPU 请求响应。需加冷启动清零 FSM（256 个 tag 条目依次写 0）
 
+## Dcache 设计参数
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 行大小 | 16 字节 (4 words) | offset = addr[3:0] |
+| 路数 | 2 路组相联 | |
+| 组数 | 256 组 | index = addr[11:4] |
+| 总容量 | 8KB (2 × 256 × 16) | 满足比赛 ≥ 8KB 要求 |
+| tag | 20 位 | addr[31:12] |
+| 写策略 | 写回 + 写分配 | dirty 位 per line |
+| 替换策略 | PLRU | 2 路时等价真 LRU |
+| 关键字优先 | 是 | refill 时关键字词最先取回并转发 |
+| 写回缓冲区 | 无 | 先写回再 refill，共用 AXI 接口 |
+| 流水级 | 2 级 (TAG + DATA) | S1 发 BRAM 读地址，S2 比较 tag 并响应 |
+| 插入位置 | lsu ↔ axibus_arbiter | core_top.sv 中 dreq/dresp 路径 |
+| 缓存范围 | 0x1c000000 – 0x1cffffff | BaseRAM + ExtRAM |
+| BRAM 资源 | data: 8 × 256×32, tag: 2 × 256×21 | 约 4.5 BRAM36K |
+
 ## Vivado FPGA 构建状态（2026-07-23）
 
 ### RTL 可综合性
