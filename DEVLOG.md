@@ -60,20 +60,30 @@ fibonacci 用 UART（A 命令）加载程序到 ExtRAM（0x1c300000，cachable �
 
 **结论**：两类失败根因相同——dcache 缺写回/冲刷机制。指令级 difftest（2300 万条）验证了 cache 核心逻辑正确，但 FLUSH_DCACHE 未实现导致脏数据无法写入 SRAM。
 
-## icache difftest 状态（2026-07-24）
+## icache difftest 状态（2026-07-25）
 
 | 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 根因 |
 |------|-----------------|----------|--------|------|
-| simple | ✅ 通过 | N/A | ~170 | dcache 幽灵 store hit 修复（Bug 7, 7639ae4） |
-| stream | ✅ 通过 | N/A | ~390 万 | regfile 写旁路修复（Bug 8, b43ffec） |
-| matrix | 待测 | — | — | — |
-| mixed | 待测 | — | — | — |
-| cryptonight | 待测 | — | — | — |
-| fibonacci | 待测 | — | — | 依赖 dcache flush |
+| simple | ✅ 通过 | N/A | ~170 | — |
+| stream | ✅ 通过 | N/A | ~390 万 | — |
+| matrix | ✅ 通过 | N/A | ~560 万 | dcache 写回 addr_ok/data_ok 泄漏修复（Bug 9） |
+| mixed | ✅ 通过 | N/A | ~3.6 万 | dcache 写回 addr_ok/data_ok 泄漏修复（Bug 9） |
+| cryptonight | ✅ 通过 | N/A | ~2300 万 | dcache 写回 addr_ok/data_ok 泄漏修复（Bug 9） |
+| fibonacci | ❌ @ #14845 | — | 14.8K | I/D 一致性：dcache store 未 flush，icache 从 SRAM 读到 0 |
 
 ### 修复记录
 
-#### Bug 8: load→branch 转发窗口错过（2026-07-24, b43ffec）
+#### Bug 9: dcache 写回泄漏 addr_ok/data_ok 到后续 refill 导致 load 返回 0（2026-07-25, 95ba59d + 7e70198）
+
+matrix/mixed/cryptonight 三个测试中 load 指令均返回 0x00000000。根因：dcache 写回脏行时，arbiter 的 write addr_ok 在写回结束后仍保持 1，dcache 误判为 refill read 的 addr_ok，提前进入 S_REFILL_WAIT。随后 write bvalid 触发 w_dresp_data_ok=1，被 dresp.data_ok 合并传递，dcache 误认为 refill 数据到达 → 关键字转发 data=0（r_dresp_data 默认 0）。
+
+##### 修复 1：dcache 拆分 S_REFILL_REQ（95ba59d）
+
+将 S_REFILL_REQ 拆分为 S_REFILL_SEND（无条件发请求 + 延迟一周期）+ S_REFILL_ACK（检查 addr_ok）。确保 write addr_ok 在进入 ack 检查前已释放，消除写回→refill 临界区的 addr_ok 泄漏。
+
+##### 修复 2：arbiter 抑制写 data_ok（7e70198）
+
+增加 `dreq_read_pending` 标志：接受 dreq 读请求时置 1，读数据返回时清 0。在 pending 期间，`dresp.data_ok` 仅包含 `r_dresp_data_ok`，不合并 `w_dresp_data_ok`。防止 write bvalid 冒充 read data_ok。\n\n##### 效果：5/6 测试 difftest 通过，fibonacci 仍因 I/D 一致性（dcache flush 缺失）失败，见下方已知问题。
 
 stream difftest 在 #3942292 处失败：FLUSH_DCACHE 函数中 `ld.w $r12, $r12, 0` → `beq $r12, $r0, target` 序列，load 在 MEM 等待 dcache 返回期间整个流水线被 lsu_not_ready 停滞。当 load 完成进入 WB 时 branch 仍在 IF/ID，需额外 1 周期到达 EX，此时 load 已从 WB 退休（mem_wb_out.valid=0），转发失败。register file 的 rd1/rd2 输出无写旁路，branch 在 ID 阶段读到 regfile 旧值并 latch 进 id_ex_out，导致 EX 阶段 forward_a 为旧值 → branch 判定错误。
 
