@@ -25,7 +25,7 @@
 - [x] Vivado Makefile 工作流：`make build-bitstream` / `make vivado-sim-behavioral` / `make vivado-sim-post-impl`
 - [x] icache 模块创建：2 路组相联、256 组、16 字节行、8KB（只读）、PLRU、关键字优先、两级流水、插入 core_top 的 ireq/iresp 路径
 - [x] icache tag BRAM 初始化：`S_INIT` 冷启动 FSM 同时写两路 tag = 0（valid=0），256 周期完成
-- [x] icache 流水线幽灵命中修复：命中后 `s2_valid` 和 `s1_valid` 同时清零，避免旧请求参数推进到 S2 形成错误命中
+- [x] icache 流水线幽灵命中修复：命中后 `s2_valid` 和 `s1_valid` 同时清零，避免旧请求参数推进到 S2 形成错误命中（⚠ workaround，见待完成列表）
 - [x] icache 与 dCache 接口隔离：iCache miss 通过 arbiter 现有 `ireq` 端口访存，与 dCache 的 `dreq` 端口独立仲裁
 - [x] fetch_unit 双重跳转修复：JAL/BL 在 ID 级的 `do_id_jump` 和 EX 级的 `do_ex_flush` 先后将 PC 设到同一跳转目标。`do_ex_flush` 在目标指令从 icache 到达的同一周期重复设置 next_pc，覆盖了本应发生的 `pc+4` 自增，导致 fetch_unit 重复请求同一地址 → 双重提交到 WB。修复：`do_ex_flush` / `do_id_jump` 仅在 `pc_current != jump_target` 时生效（2026-07-24）
 - [x] icache difftest simple 通过：dcache 幽灵 store hit 修复（Bug 7, 7639ae4）解决 #10120 sp=0。simple difftest DIFF=1 通过
@@ -41,6 +41,7 @@
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
+- [ ] Cache 幽灵命中修复去幽灵化：Bug 4/5 的 "修复" 本质是每次 hit 后强制空泡 1 周期（清空 s1_valid），等效于人为阻塞。正确的做法是在 BRAM 读延迟后的 S2 阶段做组合逻辑 tag 比较，而非靠丢弃 S1 请求避错。当前 workaround 导致 cache 流水线出现无谓的吞吐空洞。
 
 ## 当前 difftest 状态（2026-07-25，CACOP/IBAR/cacheable 实现后）
 
@@ -97,6 +98,8 @@ dCache 流水线在 load 命中 S2 后，时序逻辑无条件执行 `s2_valid <
 
 **效果**：diffest simple 从 #198 错误推进至 #9169，t1 寄存器 mismatch（0x1c7f0080）已消除。
 
+⚠ **已知：此修复是 workaround**。清空 `s1_valid` 导致每次 hit 后强制 1 周期空泡，等效于人为阻塞，降低 cache 吞吐。正确修法应为在 S2 用组合逻辑直接从 BRAM 读出的 tag 做比较（而非依赖流水线移位），天然消除跨级数据依赖。见待完成列表。
+
 ---
 
 ## dcache bug 修复记录（2026-07-24）
@@ -126,6 +129,8 @@ Tag BRAM 在 Verilator 中初始值为 `'x`，导致 `s2_hit` 解析为 `'x`，`
 **修复**：
 - 增加 `else if (s2_valid) s2_valid <= 1'b0` 在 `S_IDLE` 中 hit 后清零
 - 在 `state != S_IDLE` 期间同时清零 `s1_valid <= 1'b0`，防止旧值传播
+
+⚠ **已知：此修复是 workaround**。清空 `s2_valid`/`s1_valid` 导致每次 hit 后强制 1 周期空泡。正确修法见待完成列表。
 
 | 参数 | 值 | 说明 |
 |------|-----|------|

@@ -53,6 +53,8 @@
 - **IBAR**：支持 hint=0 流水线冲刷
 - **Cacheability**：基于 CRMD/DMW 区分 cacheable/uncacheable，支持 auto 和 uncache 两种 kernel 构建
 
+> **已知 Workaround**：ICache/DCache 的幽灵命中修复目前通过每次 hit 后强清 S1 流水级实现，等效于 hit 后 1 周期强制空泡，降低 cache 吞吐。正确做法应取消 `s1_valid` 清零，改为在 S2 阶段直接对 BRAM 读出做组合逻辑 tag 比较。见 DEVLOG 待完成列表。
+
 ### 指令集覆盖
 
 | 类别 | 已实现指令 |
