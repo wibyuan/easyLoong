@@ -9,7 +9,10 @@ module icache import la32_common::*; (
     output ibus_resp_t cpu_resp,
 
     output ibus_req_t  mem_req,
-    input  ibus_resp_t mem_resp
+    input  ibus_resp_t mem_resp,
+
+    input  cacop_req_t cacop_req,
+    output logic       cacop_done
 );
 
     localparam NR_SETS  = 256;
@@ -73,7 +76,8 @@ module icache import la32_common::*; (
         S_INIT,
         S_IDLE,
         S_MISS,
-        S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE
+        S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE,
+        S_CACOP_ST
     } state, next_state;
 
     ibus_req_t  mem_req_next;
@@ -138,6 +142,8 @@ module icache import la32_common::*; (
             s1_stall = 1'b1;
         else if (state != S_IDLE)
             s1_stall = 1'b1;
+        else if (cacop_req.valid && cacop_req.code[2:0] == 3'd0 && !s2_valid)
+            s1_stall = 1'b1;
     end
 
     // ==================== BRAM read control ====================
@@ -169,6 +175,8 @@ module icache import la32_common::*; (
         cpu_resp.data_ok = 1'b0;
         cpu_resp.data    = 32'd0;
 
+        cacop_done = 1'b0;
+
         mem_req_next.valid = 1'b0;
         mem_req_next.addr  = 32'd0;
 
@@ -195,7 +203,9 @@ module icache import la32_common::*; (
             end
 
             S_IDLE: begin
-                if (s2_valid) begin
+                if (cacop_req.valid && cacop_req.code[2:0] == 3'd0 && !s2_valid) begin
+                    next_state = S_CACOP_ST;
+                end else if (s2_valid) begin
                     if (s2_hit) begin
                         cpu_resp.addr_ok = 1'b1;
                         cpu_resp.data_ok = 1'b1;
@@ -243,6 +253,14 @@ module icache import la32_common::*; (
                 next_state = (rf_cnt == 2'd3)
                     ? S_IDLE
                     : S_REFILL_WRITE;
+            end
+
+            S_CACOP_ST: begin
+                tag_wr_ena[cacop_req.addr[0]]   = 1'b1;
+                tag_wr_addr                      = cacop_req.addr[11:4];
+                tag_wr_data[cacop_req.addr[0]]   = 21'd0;
+                cacop_done = 1'b1;
+                next_state = S_IDLE;
             end
 
             default: next_state = S_IDLE;
