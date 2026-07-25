@@ -1,7 +1,6 @@
 
 #clock
 set_property -dict {PACKAGE_PIN K21 IOSTANDARD LVCMOS33} [get_ports clk_50M]
-create_clock -period 20.000 -name clk -waveform {0.000 10.000} [get_ports clk_50M]
 
 #reset
 set_property -dict {PACKAGE_PIN U5 IOSTANDARD LVCMOS33} [get_ports reset_btn]
@@ -226,40 +225,3 @@ set_property -dict {PACKAGE_PIN AD19 IOSTANDARD LVCMOS33} [get_ports ext_ram_we_
 set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
-
-create_generated_clock -name cpu_clk [get_pins -hierarchical -filter {NAME =~ "*/u_clk_pll/inst/plle2_adv_inst/CLKOUT0"}]
-create_generated_clock -name sys_clk [get_pins -hierarchical -filter {NAME =~ "*/u_clk_pll/inst/plle2_adv_inst/CLKOUT1"}]
-
-set_clock_groups -asynchronous -group [get_clocks cpu_clk] -group [get_clocks sys_clk]
-
-set_input_delay -clock sys_clk -max 3   [get_ports {base_ram_data[*]}]
-set_input_delay -clock sys_clk -min 2   [get_ports {base_ram_data[*]}]
-
-set_output_delay -clock sys_clk -max 0.3  [get_ports {base_ram_data[*]}]
-set_output_delay -clock sys_clk -min -0.3 [get_ports {base_ram_data[*]}]
-set_output_delay -clock sys_clk -max 0.3  [get_ports {base_ram_addr[*]}]
-set_output_delay -clock sys_clk -min -0.3 [get_ports {base_ram_addr[*]}]
-set_output_delay -clock sys_clk -max 0.3  [get_ports {base_ram_be_n[*]}]
-set_output_delay -clock sys_clk -min -0.3 [get_ports {base_ram_be_n[*]}]
-set_output_delay -clock sys_clk -max 0.3  [get_ports  base_ram_ce_n]
-set_output_delay -clock sys_clk -min -0.3 [get_ports  base_ram_ce_n]
-set_output_delay -clock sys_clk -max 0.3  [get_ports  base_ram_oe_n]
-set_output_delay -clock sys_clk -min -0.3 [get_ports  base_ram_oe_n]
-set_output_delay -clock sys_clk -max 0.3  [get_ports  base_ram_we_n]
-set_output_delay -clock sys_clk -min -0.3 [get_ports  base_ram_we_n]
-
-set_input_delay -clock sys_clk -max 3   [get_ports {ext_ram_data[*]}]
-set_input_delay -clock sys_clk -min 2   [get_ports {ext_ram_data[*]}]
-
-set_output_delay -clock sys_clk -max 0.3  [get_ports {ext_ram_data[*]}]
-set_output_delay -clock sys_clk -min -0.3 [get_ports {ext_ram_data[*]}]
-set_output_delay -clock sys_clk -max 0.3  [get_ports {ext_ram_addr[*]}]
-set_output_delay -clock sys_clk -min -0.3 [get_ports {ext_ram_addr[*]}]
-set_output_delay -clock sys_clk -max 0.3  [get_ports {ext_ram_be_n[*]}]
-set_output_delay -clock sys_clk -min -0.3 [get_ports {ext_ram_be_n[*]}]
-set_output_delay -clock sys_clk -max 0.3  [get_ports  ext_ram_ce_n]
-set_output_delay -clock sys_clk -min -0.3 [get_ports  ext_ram_ce_n]
-set_output_delay -clock sys_clk -max 0.3  [get_ports  ext_ram_oe_n]
-set_output_delay -clock sys_clk -min -0.3 [get_ports  ext_ram_oe_n]
-set_output_delay -clock sys_clk -max 0.3  [get_ports  ext_ram_we_n]
-set_output_delay -clock sys_clk -min -0.3 [get_ports  ext_ram_we_n]
