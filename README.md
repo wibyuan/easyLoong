@@ -49,7 +49,9 @@
 
 - **icache**：2 路组相联、256 组、16 字节行、8KB、只读、PLRU、关键字优先
 - **dcache**：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先
-- **暂缺**：dcache CACOP 写回冲刷，导致数据比对失败和 fibonacci I/D 一致性问题
+- **CACOP**：支持 `cacop 0x00` (I$ 索引无效)、`cacop 0x01` (D$ 索引无效)、`cacop 0x09` (D$ 索引写回无效)
+- **IBAR**：支持 hint=0 流水线冲刷
+- **暂缺**：dcache 未区分 cacheable/uncacheable 属性（始终按地址范围 0x1c 缓存），导致 forced-uncache 构建不兼容
 
 ### 指令集覆盖
 
@@ -62,6 +64,7 @@
 | 访存 | `ld.b`, `ld.h`, `ld.w`, `ld.bu`, `ld.hu`, `st.b`, `st.h`, `st.w` |
 | 跳转/分支 | `b`, `bl`, `beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu`, `jirl` |
 | 系统/CSR | `csrrd`, `csrwr`, `csrxchg`, `cpucfg` |
+| Cache 维护 | `cacop 0x00/0x01/0x09`, `ibar` |
 
 ### 模块清单 (`nscscc-solo-la-soc/rtl/ip/myCPU/`)
 
@@ -101,15 +104,14 @@
 | 阶段 | 类型 | 说明 | 指令级 difftest | 数据比对 |
 |------|------|------|----------------|----------|
 | 1 | 功能测试 | 斐波那契数列（裸机） | ✅ DIFF=1 通过 | N/A |
-| 2 | MATRIX | 矩阵乘加 (96×96, 64KB) | ✅ DIFF=1 通过 | ❌ 缺 dcache flush |
-| 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=1 通过 | ❌ 缺 dcache flush |
-| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=1 通过 | ❌ 缺 dcache flush |
-| 5 | MIXED | 混合运算 | ✅ DIFF=1 通过 | ❌ 缺 dcache flush |
+| 2 | MATRIX | 矩阵乘加 (96×96, 64KB) | ✅ DIFF=1 通过 | ✅ 通过 |
+| 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=1 通过 | ✅ 通过 |
+| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=1 通过 | ✅ 通过 |
+| 5 | MIXED | 混合运算 | ✅ DIFF=1 通过 | ✅ 通过 |
 
 > **注**：阶段 1 为裸机测试，不使用 supervisor 和 dcache，指令级 difftest 通过。
-> 阶段 2-5 的 supervisor 依赖 dcache FLUSH_DCACHE 写回脏行，当前未实现，导致 ExtRAM 数据比对失败。
-> fibonacci 测试因 I/D 一致性（dcache store 未刷回 SRAM → icache/ireq 取到 0x00000000）无法通过。实现 FLUSH_DCACHE 后将修复。
-> supervisor simple / stream 测试 difftest：均已通过（Bug 7 + Bug 8 修复）。
+> 阶段 2-5 的 difftest + 数据比对均已通过（含 dcache FLUSH_DCACHE 写回脏行）。
+> fibonacci difftest 仍失败，因使用 forced-uncache kernel 构建，dcache 未区分 cacheable 属性导致 I/D 一致性未解决。
 
 ## 5. 开发环境搭建
 

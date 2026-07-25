@@ -30,46 +30,27 @@
 - [x] fetch_unit 双重跳转修复：JAL/BL 在 ID 级的 `do_id_jump` 和 EX 级的 `do_ex_flush` 先后将 PC 设到同一跳转目标。`do_ex_flush` 在目标指令从 icache 到达的同一周期重复设置 next_pc，覆盖了本应发生的 `pc+4` 自增，导致 fetch_unit 重复请求同一地址 → 双重提交到 WB。修复：`do_ex_flush` / `do_id_jump` 仅在 `pc_current != jump_target` 时生效（2026-07-24）
 - [x] icache difftest simple 通过：dcache 幽灵 store hit 修复（Bug 7, 7639ae4）解决 #10120 sp=0。simple difftest DIFF=1 通过
 - [x] icache difftest stream 通过：regfile 写旁路修复（Bug 8, b43ffec）解决 load→branch 转发窗口错过问题。stream 3.9M 条指令 DIFF=1 通过（2026-07-24）
+- [x] CACOP 指令实现：decode + core pipeline 集成 + dcache code 0x01/0x09 + icache code 0x00（2026-07-25）
+- [x] IBAR 指令实现：hint=0 流水线冲刷（2026-07-25）
+- [x] CPUCFG 修复：0x10 报告 I/D cache 存在，0x11/0x12 返回 cache 几何参数，NEMU ref 同步更新（2026-07-25）
+- [x] dcache FLUSH_DCACHE 通过：stage 2-5 全量数据比对通过（2026-07-25）
 
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
-- [ ] dcache CACOP / 写回冲刷：supervisor FLUSH_DCACHE 需将脏行写回内存。当前不支持，导致 (1) stream/matrix/mixed/cryptonight 数据比对失败 (2) fibonacci UART 加载代码到 ExtRAM 后取指失败（详见"dcache 已知问题"）
+- [ ] dcache cacheable 属性支持：当前 dcache 始终按地址范围 0x1c 缓存，不区分 DMW MAT 属性，导致 forced-uncache 构建不兼容（fibonacci 使用 uncache kernel 仍失败）
 
-## dcache difftest 状态（2026-07-24）
+## 当前 difftest 状态（2026-07-25，CACOP/IBAR 实现后）
 
-| 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 根因 |
+| 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 备注 |
 |------|-----------------|----------|--------|------|
 | simple | ✅ 通过 | N/A | ~170 | — |
-| stream | ✅ 通过 | ❌ 4084 处不匹配 | ~390 万 | 缺 flush |
-| matrix | ✅ 通过 | ❌ 3786 处不匹配 | ~560 万 | 缺 flush |
-| mixed | ✅ 通过 | ❌ 15 处不匹配 | ~30 万 | 缺 flush |
-| cryptonight | ✅ 通过 | ❌ 2001 处不匹配 | ~2300 万 | 缺 flush |
-| fibonacci | ❌ @ #14845 | — | 14.8K | 缺 flush |
-
-## dcache 已知问题（2026-07-24）
-
-### 问题一：数据比对失败（stream / matrix / mixed / cryptonight）
-
-测试结束前 supervisor 调用 FLUSH_DCACHE 将脏行写回 SRAM 后再 dump ExtRAM 比对。dcache 无 CACOP 接口，FLUSH_DCACHE 是空操作，脏行留在 cache 中未写回 SRAM，导致 ExtRAM dump 与预期不符。
-
-### 问题二：fibonacci difftest 失败
-
-fibonacci 用 UART（A 命令）加载程序到 ExtRAM（0x1c300000，cachable 范围）。store 进了 dcache data BRAM 但未达 SRAM。随后 supervisor 跳转至 0x1c300000 取指执行——指令 fetch 走 `ireq`（不经 dcache）→ AXI bus → SRAM，SRAM 中为 0x00000000。同时 NEMU 侧 ExtRAM 也为空（无 MIF、非 MMIO 不注入），取到同样 0x00000000，但 NOP 行为差异导致 t0 寄存器不一致。
-
-**结论**：两类失败根因相同——dcache 缺写回/冲刷机制。指令级 difftest（2300 万条）验证了 cache 核心逻辑正确，但 FLUSH_DCACHE 未实现导致脏数据无法写入 SRAM。
-
-## icache difftest 状态（2026-07-25）
-
-| 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 根因 |
-|------|-----------------|----------|--------|------|
-| simple | ✅ 通过 | N/A | ~170 | — |
-| stream | ✅ 通过 | N/A | ~390 万 | — |
-| matrix | ✅ 通过 | N/A | ~560 万 | dcache 写回 addr_ok/data_ok 泄漏修复（Bug 9） |
-| mixed | ✅ 通过 | N/A | ~3.6 万 | dcache 写回 addr_ok/data_ok 泄漏修复（Bug 9） |
-| cryptonight | ✅ 通过 | N/A | ~2300 万 | dcache 写回 addr_ok/data_ok 泄漏修复（Bug 9） |
-| fibonacci | ❌ @ #14845 | — | 14.8K | I/D 一致性：dcache store 未 flush，icache 从 SRAM 读到 0 |
+| stream | ✅ 通过 | ✅ 通过 | ~390 万 | FLUSH_DCACHE 写回成功 |
+| matrix | ✅ 通过 | ✅ 通过 | ~560 万 | FLUSH_DCACHE 写回成功 |
+| mixed | ✅ 通过 | ✅ 通过 | ~30 万 | FLUSH_DCACHE 写回成功 |
+| cryptonight | ✅ 通过 | ✅ 通过 | ~2300 万 | FLUSH_DCACHE 写回成功 |
+| fibonacci | ❌ @ #34489 | — | 34.5K | forced-uncache kernel：dcache 不区分 cacheable 属性 |
 
 ### 修复记录
 
