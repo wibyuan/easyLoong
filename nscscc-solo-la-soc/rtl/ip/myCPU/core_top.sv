@@ -85,6 +85,7 @@ module core_top #(
     logic       icache_cacop_done;
 
     logic [63:0] icache_access, icache_hit, icache_miss;
+    logic [63:0] icache_wa_clear, icache_s1_accept, icache_cyc;
     logic [63:0] dcache_access, dcache_hit, dcache_miss, dcache_wb;
 
     core u_core (
@@ -130,7 +131,10 @@ module core_top #(
         .cacop_done(icache_cacop_done),
         .perf_access(icache_access),
         .perf_hit(icache_hit),
-        .perf_miss(icache_miss)
+        .perf_miss(icache_miss),
+        .perf_wa_clear(icache_wa_clear),
+        .perf_s1_accept(icache_s1_accept),
+        .perf_cyc(icache_cyc)
     );
 
     assign core_cacop_done = dcache_cacop_done || icache_cacop_done ||
@@ -166,6 +170,9 @@ module core_top #(
         .icache_access(icache_access),
         .icache_hit(icache_hit),
         .icache_miss(icache_miss),
+        .icache_wa_clear(icache_wa_clear),
+        .icache_s1_accept(icache_s1_accept),
+        .icache_cyc(icache_cyc),
         .dcache_access(dcache_access),
         .dcache_hit(dcache_hit),
         .dcache_miss(dcache_miss),

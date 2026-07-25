@@ -109,6 +109,9 @@ void v_difftest_CacheState(
     long long icache_access,
     long long icache_hit,
     long long icache_miss,
+    long long icache_wa_clear,
+    long long icache_s1_accept,
+    long long icache_cyc,
     long long dcache_access,
     long long dcache_hit,
     long long dcache_miss,
@@ -117,6 +120,9 @@ void v_difftest_CacheState(
     dut_cache.icache_access    = (uint64_t)icache_access;
     dut_cache.icache_hit       = (uint64_t)icache_hit;
     dut_cache.icache_miss      = (uint64_t)icache_miss;
+    dut_cache.icache_wa_clear  = (uint64_t)icache_wa_clear;
+    dut_cache.icache_s1_accept = (uint64_t)icache_s1_accept;
+    dut_cache.icache_cyc       = (uint64_t)icache_cyc;
     dut_cache.dcache_access    = (uint64_t)dcache_access;
     dut_cache.dcache_hit       = (uint64_t)dcache_hit;
     dut_cache.dcache_miss      = (uint64_t)dcache_miss;

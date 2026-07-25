@@ -61,6 +61,9 @@ struct difftest_cache_state_t {
     uint64_t icache_access;
     uint64_t icache_hit;
     uint64_t icache_miss;
+    uint64_t icache_wa_clear;
+    uint64_t icache_s1_accept;
+    uint64_t icache_cyc;
     uint64_t dcache_access;
     uint64_t dcache_hit;
     uint64_t dcache_miss;

@@ -348,6 +348,13 @@ static void display_cache_metrics() {
         fprintf(stdout, "[difftest] ICache: no accesses recorded\n");
     }
 
+    fprintf(stdout, "[difftest] ICache Debug: cycles=%lu, s1_accept=%lu, wa_clear=%lu, wa_pct=%.2f%%\n",
+            cs->icache_cyc, cs->icache_s1_accept, cs->icache_wa_clear,
+            cs->icache_cyc > 0 ? (double)(cs->icache_wa_clear) / (double)(cs->icache_cyc) * 100.0 : 0.0);
+    fprintf(stdout, "[difftest] ICache Efficiency: s1_accept/cycle=%.4f, access/s1_accept=%.4f\n",
+            cs->icache_cyc > 0 ? (double)(cs->icache_s1_accept) / (double)(cs->icache_cyc) : 0.0,
+            cs->icache_s1_accept > 0 ? (double)(cs->icache_access) / (double)(cs->icache_s1_accept) : 0.0);
+
     if (cs->dcache_access > 0) {
         double dh_rate = (double)(cs->dcache_hit) / (double)(cs->dcache_access) * 100.0;
         fprintf(stdout, "[difftest] DCache: access=%lu, hit=%lu, miss=%lu, hit_rate=%.2f%%\n",

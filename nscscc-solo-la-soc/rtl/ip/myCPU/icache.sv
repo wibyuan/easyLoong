@@ -16,7 +16,10 @@ module icache import la32_common::*; (
 
     output logic [63:0] perf_access,
     output logic [63:0] perf_hit,
-    output logic [63:0] perf_miss
+    output logic [63:0] perf_miss,
+    output logic [63:0] perf_wa_clear,
+    output logic [63:0] perf_s1_accept,
+    output logic [63:0] perf_cyc
 );
 
     localparam NR_SETS  = 256;
@@ -320,13 +323,6 @@ module icache import la32_common::*; (
                 s2_idx   <= s1_idx;
                 s2_tag   <= s1_tag;
             end else begin
-                // WORKAROUND (ghost hit): clearing s1_valid on hit forces 1-cycle
-                // bubble between consecutive hits. BRAM read has 1-cycle latency
-                // (addr issued in S1, data arrives in S2). When S2 hits, the
-                // *next* S1 request's BRAM read is already in flight—its data
-                // will arrive at the *next* S2, not the current one. Therefore
-                // no cross-contamination can occur; no need to kill s1_valid.
-                // Correct fix: remove this branch, let s1→s2 shift naturally.
                 s2_valid <= 1'b0;
                 if (!s1_stall && s2_hit)
                     s1_valid <= 1'b0;
@@ -373,22 +369,37 @@ module icache import la32_common::*; (
     assign mem_req = mem_req_r;
 
     logic [63:0] access_cnt, hit_cnt, miss_cnt;
-    assign perf_access = access_cnt;
-    assign perf_hit    = hit_cnt;
-    assign perf_miss   = miss_cnt;
+    logic [63:0] wa_clear_cnt, s1_accept_cnt, cyc_cnt;
+    assign perf_access    = access_cnt;
+    assign perf_hit       = hit_cnt;
+    assign perf_miss      = miss_cnt;
+    assign perf_wa_clear  = wa_clear_cnt;
+    assign perf_s1_accept = s1_accept_cnt;
+    assign perf_cyc       = cyc_cnt;
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            access_cnt <= 64'd0;
-            hit_cnt    <= 64'd0;
-            miss_cnt   <= 64'd0;
+            access_cnt    <= 64'd0;
+            hit_cnt       <= 64'd0;
+            miss_cnt      <= 64'd0;
+            wa_clear_cnt  <= 64'd0;
+            s1_accept_cnt <= 64'd0;
+            cyc_cnt       <= 64'd0;
         end else begin
-            if (state == S_IDLE && s2_valid) begin
-                access_cnt <= access_cnt + 64'd1;
-                if (s2_hit)
-                    hit_cnt <= hit_cnt + 64'd1;
-                else
-                    miss_cnt <= miss_cnt + 64'd1;
+            cyc_cnt <= cyc_cnt + 64'd1;
+
+            if (state == S_IDLE) begin
+                if (s2_valid) begin
+                    access_cnt <= access_cnt + 64'd1;
+                    if (s2_hit)
+                        hit_cnt <= hit_cnt + 64'd1;
+                    else
+                        miss_cnt <= miss_cnt + 64'd1;
+                end
+                if (!s1_stall && s2_hit)
+                    wa_clear_cnt <= wa_clear_cnt + 64'd1;
+                if (!s1_stall && cpu_req.valid)
+                    s1_accept_cnt <= s1_accept_cnt + 64'd1;
             end
         end
     end

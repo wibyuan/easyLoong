@@ -119,6 +119,9 @@ module DifftestCacheState (
     input  logic [63:0] icache_access,
     input  logic [63:0] icache_hit,
     input  logic [63:0] icache_miss,
+    input  logic [63:0] icache_wa_clear,
+    input  logic [63:0] icache_s1_accept,
+    input  logic [63:0] icache_cyc,
     input  logic [63:0] dcache_access,
     input  logic [63:0] dcache_hit,
     input  logic [63:0] dcache_miss,
@@ -128,6 +131,9 @@ module DifftestCacheState (
         input longint icache_access,
         input longint icache_hit,
         input longint icache_miss,
+        input longint icache_wa_clear,
+        input longint icache_s1_accept,
+        input longint icache_cyc,
         input longint dcache_access,
         input longint dcache_hit,
         input longint dcache_miss,
@@ -135,6 +141,7 @@ module DifftestCacheState (
     );
     always @(posedge clock) begin
         v_difftest_CacheState(icache_access, icache_hit, icache_miss,
+                              icache_wa_clear, icache_s1_accept, icache_cyc,
                               dcache_access, dcache_hit, dcache_miss,
                               dcache_writeback);
     end
