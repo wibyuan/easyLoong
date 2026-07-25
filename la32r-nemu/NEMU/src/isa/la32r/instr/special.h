@@ -61,7 +61,13 @@ def_EHelper(cpucfg) {
   word_t cfg_val = 0;
   switch (*dsrc1) {
     case 0x10:
-      cfg_val = 0x00000010;
+      cfg_val = 0x00000015;
+      break;
+    case 0x11:
+      cfg_val = 0x04080001;
+      break;
+    case 0x12:
+      cfg_val = 0x04080001;
       break;
     default:
       cfg_val = 0;
@@ -72,18 +78,14 @@ def_EHelper(cpucfg) {
 
 def_EHelper(cacop) { 
     if((id_src1->imm) & (0x10)){
-        // printf("PC: 0x%x [NEMU]: this is CACOP HIT inst.\n",cpu.pc);
         vaddr_t addr = *ddest + id_src2->simm ;
         isa_mmu_translate(addr, 4, MEM_TYPE_READ);
     }
 
     if(CRMD->plv == 0x3){
       if((id_src1->imm) & (0x10)){
-        //printf("PC: 0x%x [DEBUG]: this is CACOP HIT inst.\n",cpu.pc);
       }else{
-        // printf("PC: 0x%x [NEMU]: this is CACOP inst but plv is %d, exception.\n",cpu.pc,CRMD->plv);
         longjmp_exception(EX_IPE);
       }
     }
-    printf("[NEMU] this is CACOP instruction\n"); 
 }
