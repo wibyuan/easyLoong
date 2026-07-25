@@ -5,11 +5,13 @@
 static difftest_core_state_t dut_state;
 static difftest_commit_t    dut_commit;
 static difftest_trap_t      dut_trap;
+static difftest_cache_state_t dut_cache;
 static uint64_t             sim_cycle = 0;
 
 uint32_t* difftest_state_buf()   { return (uint32_t*)&dut_state; }
 difftest_commit_t* difftest_get_commit() { return &dut_commit; }
 difftest_trap_t* difftest_get_trap()     { return &dut_trap; }
+difftest_cache_state_t* difftest_get_cache_state() { return &dut_cache; }
 uint64_t* difftest_cycle_ptr()  { return &sim_cycle; }
 
 extern "C" {
@@ -101,6 +103,24 @@ void v_difftest_TrapEvent(
     dut_trap.pc       = pc;
     dut_trap.cycleCnt = cycleCnt;
     dut_trap.instrCnt = instrCnt;
+}
+
+void v_difftest_CacheState(
+    long long icache_access,
+    long long icache_hit,
+    long long icache_miss,
+    long long dcache_access,
+    long long dcache_hit,
+    long long dcache_miss,
+    long long dcache_writeback
+) {
+    dut_cache.icache_access    = (uint64_t)icache_access;
+    dut_cache.icache_hit       = (uint64_t)icache_hit;
+    dut_cache.icache_miss      = (uint64_t)icache_miss;
+    dut_cache.dcache_access    = (uint64_t)dcache_access;
+    dut_cache.dcache_hit       = (uint64_t)dcache_hit;
+    dut_cache.dcache_miss      = (uint64_t)dcache_miss;
+    dut_cache.dcache_writeback = (uint64_t)dcache_writeback;
 }
 
 } // extern "C"

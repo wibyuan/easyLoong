@@ -1452,6 +1452,9 @@ int main(int argc, char** argv) {
     }
 
     top.final();
+    if (difftest_on) {
+        difftest_finish();
+    }
     if (wave_enable) {
         wave.close();
     }
@@ -1460,6 +1463,7 @@ int main(int argc, char** argv) {
     }
     if (!term_mode && main_time >= max_time) {
         std::cerr << "[TB] Timeout at t=" << main_time << "\n";
+        if (difftest_on) difftest_finish();
         difftest_dump_state();
         return 1;
     }

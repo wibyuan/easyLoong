@@ -113,4 +113,30 @@ module DifftestTrapEvent (
         v_difftest_TrapEvent(valid, code, pc, cycleCnt, instrCnt);
     end
 endmodule
+
+module DifftestCacheState (
+    input  logic        clock,
+    input  logic [63:0] icache_access,
+    input  logic [63:0] icache_hit,
+    input  logic [63:0] icache_miss,
+    input  logic [63:0] dcache_access,
+    input  logic [63:0] dcache_hit,
+    input  logic [63:0] dcache_miss,
+    input  logic [63:0] dcache_writeback
+);
+    import "DPI-C" function void v_difftest_CacheState(
+        input longint icache_access,
+        input longint icache_hit,
+        input longint icache_miss,
+        input longint dcache_access,
+        input longint dcache_hit,
+        input longint dcache_miss,
+        input longint dcache_writeback
+    );
+    always @(posedge clock) begin
+        v_difftest_CacheState(icache_access, icache_hit, icache_miss,
+                              dcache_access, dcache_hit, dcache_miss,
+                              dcache_writeback);
+    end
+endmodule
 `endif

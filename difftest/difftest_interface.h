@@ -57,9 +57,20 @@ struct difftest_trap_t {
     uint64_t instrCnt;
 };
 
+struct difftest_cache_state_t {
+    uint64_t icache_access;
+    uint64_t icache_hit;
+    uint64_t icache_miss;
+    uint64_t dcache_access;
+    uint64_t dcache_hit;
+    uint64_t dcache_miss;
+    uint64_t dcache_writeback;
+};
+
 uint32_t* difftest_state_buf();
 difftest_commit_t* difftest_get_commit();
 difftest_trap_t* difftest_get_trap();
+difftest_cache_state_t* difftest_get_cache_state();
 uint64_t* difftest_cycle_ptr();
 
 #endif

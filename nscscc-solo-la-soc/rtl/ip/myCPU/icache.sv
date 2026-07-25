@@ -12,7 +12,11 @@ module icache import la32_common::*; (
     input  ibus_resp_t mem_resp,
 
     input  cacop_req_t cacop_req,
-    output logic       cacop_done
+    output logic       cacop_done,
+
+    output logic [63:0] perf_access,
+    output logic [63:0] perf_hit,
+    output logic [63:0] perf_miss
 );
 
     localparam NR_SETS  = 256;
@@ -360,5 +364,26 @@ module icache import la32_common::*; (
     end
 
     assign mem_req = mem_req_r;
+
+    logic [63:0] access_cnt, hit_cnt, miss_cnt;
+    assign perf_access = access_cnt;
+    assign perf_hit    = hit_cnt;
+    assign perf_miss   = miss_cnt;
+
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            access_cnt <= 64'd0;
+            hit_cnt    <= 64'd0;
+            miss_cnt   <= 64'd0;
+        end else begin
+            if (state == S_IDLE && s2_valid) begin
+                access_cnt <= access_cnt + 64'd1;
+                if (s2_hit)
+                    hit_cnt <= hit_cnt + 64'd1;
+                else
+                    miss_cnt <= miss_cnt + 64'd1;
+            end
+        end
+    end
 
 endmodule

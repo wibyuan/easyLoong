@@ -11,7 +11,12 @@ module dcache import la32_common::*; (
     input  dbus_resp_t mem_resp,
 
     input  cacop_req_t cacop_req,
-    output logic       cacop_done
+    output logic       cacop_done,
+
+    output logic [63:0] perf_access,
+    output logic [63:0] perf_hit,
+    output logic [63:0] perf_miss,
+    output logic [63:0] perf_writeback
 );
 
     localparam NR_SETS  = 256;
@@ -575,5 +580,32 @@ module dcache import la32_common::*; (
     end
 
     assign mem_req = mem_req_r;
+
+    logic [63:0] access_cnt, hit_cnt, miss_cnt, wb_cnt64;
+    assign perf_access    = access_cnt;
+    assign perf_hit       = hit_cnt;
+    assign perf_miss      = miss_cnt;
+    assign perf_writeback = wb_cnt64;
+
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            access_cnt <= 64'd0;
+            hit_cnt    <= 64'd0;
+            miss_cnt   <= 64'd0;
+            wb_cnt64   <= 64'd0;
+        end else begin
+            if (state == S_IDLE && s2_valid && is_cachable(s2_addr, s2_cacheable)) begin
+                access_cnt <= access_cnt + 64'd1;
+                if (s2_hit)
+                    hit_cnt <= hit_cnt + 64'd1;
+                else
+                    miss_cnt <= miss_cnt + 64'd1;
+            end
+            if (state == S_WB_WRITE && mem_resp.addr_ok)
+                wb_cnt64 <= wb_cnt64 + 64'd1;
+            if (state == S_CACOP_WB_WRITE && mem_resp.addr_ok)
+                wb_cnt64 <= wb_cnt64 + 64'd1;
+        end
+    end
 
 endmodule

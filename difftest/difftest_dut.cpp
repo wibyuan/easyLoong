@@ -334,9 +334,54 @@ void DifftestEngine::step() {
     }
 }
 
+static const double kCpuClockMhz = 33.0;
+
+static void display_cache_metrics() {
+    difftest_cache_state_t *cs = difftest_get_cache_state();
+    fprintf(stdout, "\n[difftest] ============== Cache Metrics ==============\n");
+
+    if (cs->icache_access > 0) {
+        double ih_rate = (double)(cs->icache_hit) / (double)(cs->icache_access) * 100.0;
+        fprintf(stdout, "[difftest] ICache: access=%lu, hit=%lu, miss=%lu, hit_rate=%.2f%%\n",
+                cs->icache_access, cs->icache_hit, cs->icache_miss, ih_rate);
+    } else {
+        fprintf(stdout, "[difftest] ICache: no accesses recorded\n");
+    }
+
+    if (cs->dcache_access > 0) {
+        double dh_rate = (double)(cs->dcache_hit) / (double)(cs->dcache_access) * 100.0;
+        fprintf(stdout, "[difftest] DCache: access=%lu, hit=%lu, miss=%lu, hit_rate=%.2f%%\n",
+                cs->dcache_access, cs->dcache_hit, cs->dcache_miss, dh_rate);
+    } else {
+        fprintf(stdout, "[difftest] DCache: no accesses recorded\n");
+    }
+
+    if (cs->dcache_writeback > 0) {
+        fprintf(stdout, "[difftest] DCache: writeback words=%lu\n",
+                cs->dcache_writeback);
+    }
+    fflush(stdout);
+}
+
 void DifftestEngine::finish() {
     if (!proxy_.loaded()) return;
     fprintf(stdout, "[difftest] finished, %lu instructions checked\n", instr_count_);
+    fprintf(stdout, "[difftest] total cycles: %lu\n", ticks_);
+    if (ticks_ > 0) {
+        fprintf(stdout, "[difftest] IPC: %.4f\n",
+                (double)instr_count_ / (double)ticks_);
+        double runtime_us = (double)ticks_ / kCpuClockMhz;
+        if (runtime_us >= 1e6)
+            fprintf(stdout, "[difftest] estimated FPGA runtime (33MHz): %.3f s\n",
+                    runtime_us / 1e6);
+        else if (runtime_us >= 1e3)
+            fprintf(stdout, "[difftest] estimated FPGA runtime (33MHz): %.3f ms\n",
+                    runtime_us / 1e3);
+        else
+            fprintf(stdout, "[difftest] estimated FPGA runtime (33MHz): %.2f us\n",
+                    runtime_us);
+    }
+    display_cache_metrics();
 }
 
 void DifftestEngine::dump_state() {

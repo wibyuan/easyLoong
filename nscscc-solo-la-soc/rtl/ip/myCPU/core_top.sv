@@ -84,6 +84,9 @@ module core_top #(
     logic       dcache_cacop_done;
     logic       icache_cacop_done;
 
+    logic [63:0] icache_access, icache_hit, icache_miss;
+    logic [63:0] dcache_access, dcache_hit, dcache_miss, dcache_wb;
+
     core u_core (
         .clk,
         .reset(~aresetn),
@@ -108,7 +111,11 @@ module core_top #(
         .mem_req(dreq_mem),
         .mem_resp(dresp_mem),
         .cacop_req(core_cacop_req),
-        .cacop_done(dcache_cacop_done)
+        .cacop_done(dcache_cacop_done),
+        .perf_access(dcache_access),
+        .perf_hit(dcache_hit),
+        .perf_miss(dcache_miss),
+        .perf_writeback(dcache_wb)
     );
 
     icache u_icache (
@@ -120,7 +127,10 @@ module core_top #(
         .mem_req(icache_mem_req),
         .mem_resp(icache_mem_resp),
         .cacop_req(core_cacop_req),
-        .cacop_done(icache_cacop_done)
+        .cacop_done(icache_cacop_done),
+        .perf_access(icache_access),
+        .perf_hit(icache_hit),
+        .perf_miss(icache_miss)
     );
 
     assign core_cacop_done = dcache_cacop_done || icache_cacop_done ||
@@ -149,5 +159,18 @@ module core_top #(
     assign debug0_wb_rf_wnum = core_debug_wb_rf_wnum;
     assign debug0_wb_rf_wdata = core_debug_wb_rf_wdata;
     assign debug0_wb_inst    = core_debug_wb_inst;
+
+`ifdef VERILATOR
+    DifftestCacheState u_difftest_cache (
+        .clock(clk),
+        .icache_access(icache_access),
+        .icache_hit(icache_hit),
+        .icache_miss(icache_miss),
+        .dcache_access(dcache_access),
+        .dcache_hit(dcache_hit),
+        .dcache_miss(dcache_miss),
+        .dcache_writeback(dcache_wb)
+    );
+`endif
 
 endmodule
