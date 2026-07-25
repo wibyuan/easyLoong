@@ -7,6 +7,8 @@ module core import la32_common::*; (
     input  ibus_resp_t iresp,
     output dbus_req_t  dreq,
     input  dbus_resp_t dresp,
+    output cacop_req_t cacop_req,
+    input  logic       cacop_done,
     output logic [31:0] debug_wb_pc,
     output logic [31:0] debug_wb_inst,
     output logic        debug_wb_rf_wen,
@@ -39,6 +41,8 @@ module core import la32_common::*; (
         logic      is_csrrd;
         logic      is_csrwr;
         logic      is_csrxchg;
+        logic      is_cacop;
+        logic      is_ibar;
     } id_ex_ctrl_t;
     typedef struct packed {
         logic [31:0] pc;
@@ -157,7 +161,7 @@ module core import la32_common::*; (
     logic       dec_rf_we, dec_alu_src_sel;
     logic       dec_mem_re, dec_mem_we, dec_mem_unsigned;
     logic       dec_is_branch, dec_is_jal, dec_is_jalr, dec_is_pcadd, dec_is_cpucfg, dec_is_illegal;
-    logic       dec_is_csrrd, dec_is_csrwr, dec_is_csrxchg;
+    logic       dec_is_csrrd, dec_is_csrwr, dec_is_csrxchg, dec_is_cacop, dec_is_ibar, dec_is_illegal;
     logic [31:0] dec_imm;
     alu_op_t    dec_alu_op;
     br_type_t   dec_br_type;
@@ -178,6 +182,8 @@ module core import la32_common::*; (
         .is_csrrd(dec_is_csrrd),
         .is_csrwr(dec_is_csrwr),
         .is_csrxchg(dec_is_csrxchg),
+        .is_cacop(dec_is_cacop),
+        .is_ibar(dec_is_ibar),
         .is_illegal(dec_is_illegal)
     );
 
@@ -209,6 +215,8 @@ module core import la32_common::*; (
     assign id_ex_in.ctrl.is_csrrd   = dec_is_csrrd & id_valid;
     assign id_ex_in.ctrl.is_csrwr   = dec_is_csrwr & id_valid;
     assign id_ex_in.ctrl.is_csrxchg = dec_is_csrxchg & id_valid;
+    assign id_ex_in.ctrl.is_cacop   = dec_is_cacop & id_valid;
+    assign id_ex_in.ctrl.is_ibar    = dec_is_ibar  & id_valid;
 
     assign id_ex_in.data.fw_a_ex_hit  = (dec_rs1 != 5'd0) && (dec_rs1 == id_ex_out.data.rd);
     assign id_ex_in.data.fw_a_mem_hit = (dec_rs1 != 5'd0) && (dec_rs1 == ex_mem_out.data.rd);
@@ -279,10 +287,19 @@ module core import la32_common::*; (
         .is_branch(id_ex_out.ctrl.is_branch),
         .is_jal(id_ex_out.ctrl.is_jal),
         .is_jalr(id_ex_out.ctrl.is_jalr),
+        .is_ibar(id_ex_out.ctrl.is_ibar),
         .br_taken(br_taken),
         .next_pc(ex_jump_pc),
         .flush_req(ex_jump_flush)
     );
+
+    logic cacop_not_ready;
+    logic cacop_in_ex;
+    assign cacop_in_ex = id_ex_out.ctrl.is_cacop && id_ex_out.ctrl.valid;
+    assign cacop_req.valid = cacop_in_ex;
+    assign cacop_req.code  = id_ex_out.data.instr[4:0];
+    assign cacop_req.addr  = alu_result;
+    assign cacop_not_ready = cacop_in_ex && !cacop_done;
 
     // ==================== CSR REGISTER FILE ====================
     logic [13:0] csr_num;
@@ -431,6 +448,7 @@ module core import la32_common::*; (
         .if_not_ready(!iresp.data_ok),
         .ex_not_ready(ex_stage_busy),
         .lsu_not_ready(!lsu_ready),
+        .cacop_not_ready(cacop_not_ready),
         .id_ex_rd(id_ex_out.data.rd),
         .id_ex_mem_re(id_ex_out.ctrl.mem_re),
         .dec_rs1(dec_rs1), .dec_rs2(dec_rs2),
