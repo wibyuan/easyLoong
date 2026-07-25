@@ -215,6 +215,30 @@ make clean-vivado
 
 引脚约束文件：`nscscc-solo-la-soc/fpga/constraints/soc.xdc`。
 
-## 9. DEVLOG
+## 9. GitLab CI
+
+通过组委会 GitLab 平台 (`GITLAB_HOST_REDACTED:18002`) 自动综合生成比特流。
+
+```bash
+# 一键提交
+./scripts/submit-ci.sh
+
+# 指定分支名
+./scripts/submit-ci.sh submit-v4
+```
+
+CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比特流。
+
+提交记录：
+
+| 分支 | 结果 | WNS | Critical Warnings | 日期 |
+|------|------|-----|-------------------|------|
+| submit-v1 | ❌ 时序失败 | -1.274 ns | 34 | 2026-07-25 |
+| submit-v3 | ✅ 通过 | 7.811 ns | 0 | 2026-07-25 |
+| submit-v4 | ✅ 通过 | — | 0 | 2026-07-25 |
+
+详细工作流见 [docs/CI-WORKFLOW.md](docs/CI-WORKFLOW.md)。
+
+## 10. DEVLOG
 
 开发进度与已知问题见 [DEVLOG.md](DEVLOG.md)。

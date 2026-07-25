@@ -240,9 +240,19 @@ Vivado 2019.2 Docker 镜像基于 Ubuntu 18.04（Python 3.6），修复了以下
 
 分支 `submit-v2`，XDC 改为仅保留管脚分配（`f1b5498`），移除全部时钟和时序约束。**时序仍失败**。无 `set_clock_groups -asynchronous`，CDC 跨域路径仍被 Vivado 报时序违约。
 
-### submit-v3
+### submit-v3 ✅ PASSED (2026-07-25)
 
-分支 `submit-v3`，XDC 用 `create_clock -name clk_50M`（与 PLL 同名合并）、`get_pins -hierarchical *CLKOUT*` 动态发现 PLL 时钟、补回 `set_clock_groups -asynchronous`。**结果未确认**。此举因修约束未经 Vivado 验证，事后回退（`57afe71`、`f1b5498` 已 revert）。
+分支 `submit-v3`，XDC 用 `create_clock -name clk_50M`（与 PLL 同名合并，仅 1 Warning）、`get_pins -hierarchical *CLKOUT*` 动态发现 PLL 时钟、补回 `set_clock_groups -asynchronous`。**全流程通过**：
+
+- HDL Lint：passed
+- Synthesis + Implementation：passed（`route_design Complete!`）
+- **0 Critical Warnings**（对比 submit-v1 的 34 条）
+- **WNS=7.811 ns, TNS=0, WHS=0.084 ns**
+- phys_opt_design 跳过（WNS ≥ 0.25 ns，无需物理优化）
+
+### submit-v4
+
+分支 `submit-v4`，XDC 与 submit-v3 相同。预期结果一致。
 
 ### 当前结论
 
