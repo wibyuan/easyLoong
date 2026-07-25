@@ -38,6 +38,7 @@ package la32_common;
         msize_t      size;
         logic [3:0]  strobe;
         word_t       data;
+        logic        cacheable;
     } dbus_req_t;
 
     typedef struct packed {
