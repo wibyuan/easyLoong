@@ -226,6 +226,36 @@ Vivado 2019.2 Docker 镜像基于 Ubuntu 18.04（Python 3.6），修复了以下
 - `shlex.join()` → `' '.join(shlex.quote())`
 - `is_wsl()` + `has_wslpath()` 判断，避免 Docker-on-WSL2 内误调用 wslpath
 
+## GitLab CI 提交记录 (2026-07-25)
+
+### submit-v1
+
+分支 `submit-v1`，基于 `gitlab/main`。HDL Lint 通过，综合+实现通过，**时序失败（WNS=-1.274 ns）**。
+
+失败原因：`run_vivado/constraints/soc.xdc` 中 `create_clock -name clk` 覆盖了 PLL board XDC 的 `clk_50M` 时钟名，`create_generated_clock` 的 hierarchical filter `*u_clk_pll*` 在 `thinpad_top` 包装器层级下匹配不到 PLL 管脚，`set_clock_groups` 引用的时钟名无效，导致 `cpu_clk`/`sys_clk` 间 CDC 路径被当成同步路径报时序。
+
+另：`thinpad_top.v` 中 `rxd`/`txd` 声明为 `input`/`output`，而 `soc_top` 中 `UART_RX`/`UART_TX` 为 `inout`，导致 Verilator `ASSIGNIN` 错误。已在 `adfd535` 修复。
+
+### submit-v2
+
+分支 `submit-v2`，XDC 改为仅保留管脚分配（`f1b5498`），移除全部时钟和时序约束。**时序仍失败**。无 `set_clock_groups -asynchronous`，CDC 跨域路径仍被 Vivado 报时序违约。
+
+### submit-v3
+
+分支 `submit-v3`，XDC 用 `create_clock -name clk_50M`（与 PLL 同名合并）、`get_pins -hierarchical *CLKOUT*` 动态发现 PLL 时钟、补回 `set_clock_groups -asynchronous`。**结果未确认**。此举因修约束未经 Vivado 验证，事后回退（`57afe71`、`f1b5498` 已 revert）。
+
+### 当前结论
+
+- XCI（`clk_pll.xci`）自首次提交 `69feb88` 以来从未变更，全程一致
+- 时钟约束与 PLL IP XDC 冲突是时序失败的直接原因，非设计本身问题
+- DEVLOG 记载 PLL 输出 66/50 MHz，XCI 中 `CLKOUT1_REQUESTED`/`CLKOUT2_REQUESTED` 分别为 33/25 MHz，未用 Vivado 确认实际值
+
+### 工作流
+
+- 开发分支 `master`，`src/soc/` 通过相对路径符号链接指向 `nscscc-solo-la-soc/rtl/`
+- CI 提交用 `scripts/submit-ci.sh`，自动解析符号链接、创建基于 `gitlab/main` 的分支并推送
+- 文档见 `docs/CI-WORKFLOW.md`
+
 ## 已知局限
 
 - MMIO 注入目前覆盖 0x1f000000-0x1f000fff，若后续阶段访问其他设备地址需扩展 is_mmio_addr。
