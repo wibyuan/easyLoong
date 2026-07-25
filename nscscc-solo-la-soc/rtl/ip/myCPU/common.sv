@@ -57,6 +57,12 @@ package la32_common;
         word_t data;
     } ibus_resp_t;
 
+    typedef struct packed {
+        logic       valid;
+        logic [4:0] code;
+        word_t      addr;
+    } cacop_req_t;
+
 endpackage
 
 `endif
