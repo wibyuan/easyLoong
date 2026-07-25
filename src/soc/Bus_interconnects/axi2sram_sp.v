@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/Bus_interconnects/axi2sram_sp.v
+../../../nscscc-solo-la-soc/rtl/ip/Bus_interconnects/axi2sram_sp.v

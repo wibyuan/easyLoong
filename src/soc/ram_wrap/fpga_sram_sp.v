@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/ram_wrap/fpga_sram_sp.v
+../../../nscscc-solo-la-soc/rtl/ip/ram_wrap/fpga_sram_sp.v

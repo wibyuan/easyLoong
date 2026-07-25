@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/myCPU/lsu.sv
+../../../nscscc-solo-la-soc/rtl/ip/myCPU/lsu.sv

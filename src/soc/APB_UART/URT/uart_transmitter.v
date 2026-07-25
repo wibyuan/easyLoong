@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/APB_UART/URT/uart_transmitter.v
+../../../../nscscc-solo-la-soc/rtl/ip/APB_UART/URT/uart_transmitter.v

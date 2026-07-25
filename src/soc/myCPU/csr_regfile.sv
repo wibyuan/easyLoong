@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/myCPU/csr_regfile.sv
+../../../nscscc-solo-la-soc/rtl/ip/myCPU/csr_regfile.sv

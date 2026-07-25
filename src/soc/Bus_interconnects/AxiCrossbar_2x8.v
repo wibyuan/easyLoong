@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/Bus_interconnects/AxiCrossbar_2x8.v
+../../../nscscc-solo-la-soc/rtl/ip/Bus_interconnects/AxiCrossbar_2x8.v

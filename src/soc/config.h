@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/config.h
+../../nscscc-solo-la-soc/rtl/config.h

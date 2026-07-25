@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/APB_UART/axi_uart_controller.v
+../../../nscscc-solo-la-soc/rtl/ip/APB_UART/axi_uart_controller.v

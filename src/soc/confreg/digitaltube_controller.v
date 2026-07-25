@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/confreg/digitaltube_controller.v
+../../../nscscc-solo-la-soc/rtl/ip/confreg/digitaltube_controller.v

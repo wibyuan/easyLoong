@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/ram_wrap/cache_sram.v
+../../../nscscc-solo-la-soc/rtl/ip/ram_wrap/cache_sram.v

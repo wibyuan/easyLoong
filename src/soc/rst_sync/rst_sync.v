@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/rst_sync/rst_sync.v
+../../../nscscc-solo-la-soc/rtl/ip/rst_sync/rst_sync.v

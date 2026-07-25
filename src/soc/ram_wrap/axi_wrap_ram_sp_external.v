@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/ram_wrap/axi_wrap_ram_sp_external.v
+../../../nscscc-solo-la-soc/rtl/ip/ram_wrap/axi_wrap_ram_sp_external.v

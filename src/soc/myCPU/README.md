@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/myCPU/README.md
+../../../nscscc-solo-la-soc/rtl/ip/myCPU/README.md

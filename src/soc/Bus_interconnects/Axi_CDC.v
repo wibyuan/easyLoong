@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/Bus_interconnects/Axi_CDC.v
+../../../nscscc-solo-la-soc/rtl/ip/Bus_interconnects/Axi_CDC.v

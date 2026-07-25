@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/APB_UART/URT/raminfr.v
+../../../../nscscc-solo-la-soc/rtl/ip/APB_UART/URT/raminfr.v

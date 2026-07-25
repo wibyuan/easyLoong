@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/APB_UART/URT/uart_tfifo.v
+../../../../nscscc-solo-la-soc/rtl/ip/APB_UART/URT/uart_tfifo.v

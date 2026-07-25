@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/confreg/key_debounce.v
+../../../nscscc-solo-la-soc/rtl/ip/confreg/key_debounce.v
