@@ -426,7 +426,7 @@ module dcache import la32_common::*; (
             rf_cnt     <= 2'd0;
             rf_wr_cnt  <= 2'd0;
             rf_kw_sent <= 1'b0;
-            mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0};
+            mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0, cacheable: 1'b0};
             init_addr    <= 8'd0;
             init_wr_way  <= 1'b0;
         end else begin
