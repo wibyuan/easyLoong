@@ -101,6 +101,7 @@ module dcache import la32_common::*; (
     woffset_t   s1_wo;
     index_t     s1_idx;
     tag_t       s1_tag;
+    logic       s1_cacheable;
 
     logic       s2_valid;
     word_t      s2_addr;
@@ -111,6 +112,7 @@ module dcache import la32_common::*; (
     woffset_t   s2_wo;
     index_t     s2_idx;
     tag_t       s2_tag;
+    logic       s2_cacheable;
 
     // ==================== Miss context ====================
     logic       m_op;
@@ -145,8 +147,8 @@ module dcache import la32_common::*; (
     logic   init_wr_way;
 
     // ==================== Helper functions ====================
-    function automatic logic is_cachable(input word_t a);
-        return (a[31:24] == 8'h1c);
+    function automatic logic is_cachable(input word_t a, input logic c);
+        return c && (a[31:24] == 8'h1c);
     endfunction
 
     function automatic logic victim_way(input index_t i);
@@ -165,8 +167,8 @@ module dcache import la32_common::*; (
 
     always_comb begin
         automatic logic h0, h1;
-        h0 = s2_valid && tag_r_v[0] && (tag_r_tag[0] == s2_tag) && is_cachable(s2_addr);
-        h1 = s2_valid && tag_r_v[1] && (tag_r_tag[1] == s2_tag) && is_cachable(s2_addr);
+        h0 = s2_valid && tag_r_v[0] && (tag_r_tag[0] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
+        h1 = s2_valid && tag_r_v[1] && (tag_r_tag[1] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
         s2_hit = h0 || h1;
         s2_hit_way = h0 ? 1'b0 : 1'b1;
     end
@@ -179,7 +181,7 @@ module dcache import la32_common::*; (
             s1_stall = 1'b1;
         else if (state != S_IDLE)
             s1_stall = 1'b1;
-        else if (s2_valid && s2_hit && s2_op && is_cachable(s2_addr))
+        else if (s2_valid && s2_hit && s2_op && is_cachable(s2_addr, s2_cacheable))
             s1_stall = 1'b1;
         else if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !s2_valid)
             s1_stall = 1'b1;
@@ -192,7 +194,7 @@ module dcache import la32_common::*; (
         tag_rd_ena  = 1'b0;
         tag_rd_addr  = 8'd0;
 
-        if (state == S_IDLE && s1_valid && is_cachable(s1_addr)) begin
+        if (state == S_IDLE && s1_valid && is_cachable(s1_addr, s1_cacheable)) begin
             data_rd_ena = 1'b1;
             data_rd_addr = s1_idx;
             tag_rd_ena  = 1'b1;
@@ -258,7 +260,7 @@ module dcache import la32_common::*; (
                     else if (cacop_req.code[4:3] == 2'b01)
                         next_state = S_CACOP_WB_READ;
                 end else if (s2_valid) begin
-                    if (!is_cachable(s2_addr)) begin
+                    if (!is_cachable(s2_addr, s2_cacheable)) begin
                         mem_req_next.valid  = 1'b1;
                         mem_req_next.addr   = {s2_addr[31:2], 2'b00};
                         mem_req_next.strobe = s2_op ? s2_wstrb : 4'd0;
@@ -447,8 +449,9 @@ module dcache import la32_common::*; (
                 s1_wo    <= cpu_req.addr[3:2];
                 s1_idx   <= cpu_req.addr[11:4];
                 s1_tag   <= cpu_req.addr[31:12];
+                s1_cacheable <= cpu_req.cacheable;
 
-                if (s2_valid && s2_hit && !s2_op && is_cachable(s2_addr)) begin
+                if (s2_valid && s2_hit && !s2_op && is_cachable(s2_addr, s2_cacheable)) begin
                     s2_valid <= 1'b0;
                     s1_valid <= 1'b0;
                 end else begin
@@ -461,6 +464,7 @@ module dcache import la32_common::*; (
                     s2_wo    <= s1_wo;
                     s2_idx   <= s1_idx;
                     s2_tag   <= s1_tag;
+                    s2_cacheable <= s1_cacheable;
                 end
             end else if (state != S_IDLE) begin
                 s1_valid <= 1'b0;
@@ -470,13 +474,13 @@ module dcache import la32_common::*; (
                 s1_valid <= 1'b0;
             end
 
-            if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr)) begin
+            if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
                 plru[s2_idx] <= s2_hit_way;
                 if (s2_op)
                     dirty[s2_hit_way][s2_idx] <= 1'b1;
             end
 
-            if (state == S_IDLE && s2_valid && !s2_hit && is_cachable(s2_addr)
+            if (state == S_IDLE && s2_valid && !s2_hit && is_cachable(s2_addr, s2_cacheable)
                 && next_state == S_MISS) begin
                 m_op     <= s2_op;
                 m_size   <= s2_size;
