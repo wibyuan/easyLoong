@@ -103,6 +103,10 @@ module icache import la32_common::*; (
     index_t     s2_idx;
     tag_t       s2_tag;
 
+    // ==================== Ghost hit prevention ====================
+    logic       just_hit;
+    word_t      last_hit_addr;
+
     // ==================== Miss context ====================
     woffset_t   m_wo;
     index_t     m_idx;
@@ -280,6 +284,7 @@ module icache import la32_common::*; (
             state       <= S_INIT;
             s1_valid    <= 1'b0;
             s2_valid    <= 1'b0;
+            just_hit    <= 1'b0;
             plru        <= '0;
             rf_fmask    <= 4'd0;
             rf_cnt      <= 2'd0;
@@ -316,17 +321,23 @@ module icache import la32_common::*; (
                 s2_valid <= 1'b0;
             end
 
-            if (!s1_stall && !s2_hit) begin
-                s2_valid <= s1_valid;
-                s2_addr  <= s1_addr;
-                s2_wo    <= s1_wo;
-                s2_idx   <= s1_idx;
-                s2_tag   <= s1_tag;
+            if (!s1_stall) begin
+                if (s2_hit || (just_hit && s1_addr == last_hit_addr)) begin
+                    s2_valid <= 1'b0;
+                end else begin
+                    s2_valid <= s1_valid;
+                    s2_addr  <= s1_addr;
+                    s2_wo    <= s1_wo;
+                    s2_idx   <= s1_idx;
+                    s2_tag   <= s1_tag;
+                end
             end else begin
                 s2_valid <= 1'b0;
-                if (!s1_stall && s2_hit)
-                    s1_valid <= 1'b0;
             end
+
+            just_hit <= s2_valid && s2_hit;
+            if (s2_valid && s2_hit)
+                last_hit_addr <= s2_addr;
 
             if (state == S_IDLE && s2_valid && s2_hit) begin
                 plru[s2_idx] <= s2_hit_way;
