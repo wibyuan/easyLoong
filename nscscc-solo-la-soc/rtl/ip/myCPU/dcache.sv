@@ -79,7 +79,7 @@ module dcache import la32_common::*; (
         S_UNCACHED,
         S_MISS,
         S_WB_READ, S_WB_WRITE,
-        S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE,
+        S_REFILL_SEND, S_REFILL_ACK, S_REFILL_WAIT, S_REFILL_WRITE,
         S_STORE_FINAL
     } state, next_state;
 
@@ -277,7 +277,7 @@ module dcache import la32_common::*; (
             end
 
             S_MISS: begin
-                next_state = m_edirty ? S_WB_READ : S_REFILL_REQ;
+                next_state = m_edirty ? S_WB_READ : S_REFILL_SEND;
             end
 
             S_WB_READ: begin
@@ -290,10 +290,16 @@ module dcache import la32_common::*; (
                 mem_req_next.strobe = 4'b1111;
                 mem_req_next.data   = wb_buf[wb_cnt];
                 if (mem_resp.addr_ok)
-                    next_state = (wb_cnt == 2'd3) ? S_REFILL_REQ : S_WB_WRITE;
+                    next_state = (wb_cnt == 2'd3) ? S_REFILL_SEND : S_WB_WRITE;
             end
 
-            S_REFILL_REQ: begin
+            S_REFILL_SEND: begin
+                mem_req_next.valid = 1'b1;
+                mem_req_next.addr  = {m_tag, m_idx, rf_cnt, 2'b00};
+                next_state = S_REFILL_ACK;
+            end
+
+            S_REFILL_ACK: begin
                 mem_req_next.valid = 1'b1;
                 mem_req_next.addr  = {m_tag, m_idx, rf_cnt, 2'b00};
                 if (mem_resp.addr_ok)
@@ -308,7 +314,7 @@ module dcache import la32_common::*; (
                         cpu_resp.data    = mem_resp.data;
                     end
                     next_state = (&(rf_fmask | (4'd1 << rf_cnt)))
-                        ? S_REFILL_WRITE : S_REFILL_REQ;
+                        ? S_REFILL_WRITE : S_REFILL_SEND;
                 end
             end
 
@@ -427,11 +433,12 @@ module dcache import la32_common::*; (
                             ? tag_r_tag[0] : tag_r_tag[1];
             end
 
-            if (state == S_MISS && next_state == S_REFILL_REQ) begin
+            if (state == S_MISS && next_state == S_REFILL_SEND) begin
                 rf_cnt     <= m_wo;
                 rf_fmask   <= 4'd0;
                 rf_kw_sent <= 1'b0;
             end
+
 
             if (state == S_MISS && next_state == S_WB_READ)
                 wb_cnt <= 2'd0;
