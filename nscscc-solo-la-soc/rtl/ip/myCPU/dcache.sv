@@ -188,7 +188,11 @@ module dcache import la32_common::*; (
             s1_stall = 1'b1;
         else if (s2_valid && s2_hit && s2_op && is_cachable(s2_addr, s2_cacheable))
             // WORKAROUND: store hit unnecessarily stalls pipeline for 1 cycle.
-            // Write to BRAM does not conflict with concurrent read on next request.
+            // BRAM write completes in the *same* clock cycle (zero write latency);
+            // a new request entering S1 in this cycle issues its read address in
+            // parallel, and BRAM read data arrives 1 cycle later in S2. There is
+            // no read-after-write conflict: the write commits at cycle end, well
+            // before the next S2 consumes read results. This stall is pure waste.
             s1_stall = 1'b1;
         else if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !s2_valid)
             s1_stall = 1'b1;
@@ -459,10 +463,11 @@ module dcache import la32_common::*; (
                 s1_cacheable <= cpu_req.cacheable;
 
                 if (s2_valid && s2_hit && !s2_op && is_cachable(s2_addr, s2_cacheable)) begin
-                    // WORKAROUND (ghost hit): clearing s1_valid on load hit forces
-                    // 1-cycle bubble between consecutive cache accesses.
-                    // Correct fix: do tag comparison combinationally on BRAM readout
-                    // in S2, eliminating the cross-stage dependency.
+                    // WORKAROUND (ghost hit): same as icache. BRAM read latency
+                    // is 1 cycle; the next S1 request's read is already launched.
+                    // Its result arrives at the *next* S2, not this one. Clearing
+                    // s1_valid here only discards a valid in-flight request,
+                    // wasting 1 cycle per hit. Correct fix: remove this branch.
                     s2_valid <= 1'b0;
                     s1_valid <= 1'b0;
                 end else begin
@@ -481,9 +486,10 @@ module dcache import la32_common::*; (
                 s1_valid <= 1'b0;
                 s2_valid <= 1'b0;
             end else if (s2_valid) begin
-                // WORKAROUND: fallback clear of s1_valid/s2_valid when stalled and
-                // s2_valid lingers. Combined with store-hit stall above, this
-                // creates unnecessary pipeline bubbles.
+                // WORKAROUND: when s1_stall stops s1→s2 shift, s2_valid lingers
+                // with stale data. Clearing both here is a brute-force reset;
+                // with the store-hit stall removed and ghost-hit branch removed,
+                // this path becomes unreachable for normal operation.
                 s2_valid <= 1'b0;
                 s1_valid <= 1'b0;
             end

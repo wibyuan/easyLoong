@@ -321,9 +321,12 @@ module icache import la32_common::*; (
                 s2_tag   <= s1_tag;
             end else begin
                 // WORKAROUND (ghost hit): clearing s1_valid on hit forces 1-cycle
-                // bubble between consecutive hits. Correct fix: do tag comparison
-                // combinationally on BRAM readout in S2, removing the s1→s2
-                // cross-stage dependency that creates the ghost hit window.
+                // bubble between consecutive hits. BRAM read has 1-cycle latency
+                // (addr issued in S1, data arrives in S2). When S2 hits, the
+                // *next* S1 request's BRAM read is already in flight—its data
+                // will arrive at the *next* S2, not the current one. Therefore
+                // no cross-contamination can occur; no need to kill s1_valid.
+                // Correct fix: remove this branch, let s1→s2 shift naturally.
                 s2_valid <= 1'b0;
                 if (!s1_stall && s2_hit)
                     s1_valid <= 1'b0;
