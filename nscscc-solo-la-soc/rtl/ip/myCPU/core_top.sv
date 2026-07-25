@@ -79,6 +79,11 @@ module core_top #(
     logic [4:0]  core_debug_wb_rf_wnum;
     logic [31:0] core_debug_wb_rf_wdata;
 
+    cacop_req_t core_cacop_req;
+    logic       core_cacop_done;
+    logic       dcache_cacop_done;
+    logic       icache_cacop_done;
+
     core u_core (
         .clk,
         .reset(~aresetn),
@@ -86,6 +91,8 @@ module core_top #(
         .iresp,
         .dreq,
         .dresp,
+        .cacop_req(core_cacop_req),
+        .cacop_done(core_cacop_done),
         .debug_wb_pc      (core_debug_wb_pc),
         .debug_wb_inst    (core_debug_wb_inst),
         .debug_wb_rf_wen  (core_debug_wb_rf_wen),
@@ -99,7 +106,9 @@ module core_top #(
         .cpu_req(dreq),
         .cpu_resp(dresp),
         .mem_req(dreq_mem),
-        .mem_resp(dresp_mem)
+        .mem_resp(dresp_mem),
+        .cacop_req(core_cacop_req),
+        .cacop_done(dcache_cacop_done)
     );
 
     icache u_icache (
@@ -109,8 +118,13 @@ module core_top #(
         .cpu_req(ireq),
         .cpu_resp(iresp),
         .mem_req(icache_mem_req),
-        .mem_resp(icache_mem_resp)
+        .mem_resp(icache_mem_resp),
+        .cacop_req(core_cacop_req),
+        .cacop_done(icache_cacop_done)
     );
+
+    assign core_cacop_done = dcache_cacop_done || icache_cacop_done ||
+        (core_cacop_req.valid && core_cacop_req.code[2:0] != 3'd0 && core_cacop_req.code[2:0] != 3'd1);
 
     axibus_arbiter u_arbiter (
         .clk,
