@@ -500,7 +500,6 @@ module dcache import la32_common::*; (
                 end
                 if (cacop_req.code[4:3] == 2'b01) begin
                     cacop_edirty <= dirty[cacop_req.addr[0]][cacop_req.addr[11:4]];
-                    cacop_etag   <= tag_r_tag[cacop_req.addr[0]];
                     cacop_wb_cnt <= 2'd0;
                 end
             end
@@ -554,6 +553,7 @@ module dcache import la32_common::*; (
                 dirty[m_eway][m_idx] <= 1'b1;
 
             if (state == S_CACOP_WB_READ) begin
+                cacop_etag      <= tag_r_tag[cacop_way];
                 cacop_wb_buf[0] <= data_rd_out[cacop_way][0];
                 cacop_wb_buf[1] <= data_rd_out[cacop_way][1];
                 cacop_wb_buf[2] <= data_rd_out[cacop_way][2];
