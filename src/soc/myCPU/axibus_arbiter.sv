@@ -1,0 +1,1 @@
+/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/myCPU/axibus_arbiter.sv

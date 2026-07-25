@@ -1,0 +1,1 @@
+/home/wibyu/easyLoong/nscscc-solo-la-soc/rtl/ip/APB_UART/apb_mux2.v
