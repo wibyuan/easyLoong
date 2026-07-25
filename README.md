@@ -112,6 +112,29 @@
 
 > 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过。
 
+### 当前性能指标（Verilator difftest 估测 vs 实板）
+
+| 测试 | 指令数 | 周期数 | IPC | 估测耗时 | 实板耗时 | 偏差 |
+|------|--------|--------|-----|----------|----------|------|
+| Mixed | 328K | 2.94M | 0.112 | 89 ms | 88 ms | +1.1% |
+| Matrix | 5.64M | 44.42M | 0.127 | 1346 ms | 1391 ms | -3.2% |
+| Stream | 3.95M | 48.91M | 0.081 | 1482 ms | 1524 ms | -2.8% |
+| Cryptonight | 23.09M | 261.72M | 0.088 | 7931 ms | 8387 ms | -5.4% |
+
+> 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
+> 偏差系统性为负（Verilator 无 bus contention、无跨时钟域延迟、无物理走线延迟）。
+
+### Cache 命中率（Verilator 仿真）
+
+| 测试 | ICache 访问 | ICache 命中率 | DCache 访问 | DCache 命中率 | DCache 写回 |
+|------|------------|--------------|------------|--------------|------------|
+| Mixed | 732K | 99.98% | 66K | 70.46% | 62K words |
+| Matrix | 11.10M | 100.00% | 2.66M | 91.26% | 885K words |
+| Stream | 12.23M | 100.00% | 1.57M | 75.00% | 787K words |
+| Cryptonight | 65.43M | 100.00% | 4.72M | 52.95% | 8.88M words |
+
+> Cryptonight 的 DCache 命中率仅 53%，大量随机访存导致频繁 miss + 写回，与算法特征一致。
+
 ## 5. 开发环境搭建
 
 ### Clone
