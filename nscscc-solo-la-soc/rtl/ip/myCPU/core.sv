@@ -79,6 +79,7 @@ module core import la32_common::*; (
         logic [31:0] mem_addr;
         msize_t      mem_size;
         logic        mem_unsigned;
+        logic        mem_cacheable;
     } ex_mem_data_t;
     typedef struct packed {
         ex_mem_ctrl_t ctrl;
@@ -383,19 +384,24 @@ module core import la32_common::*; (
     assign ex_mem_in.data.rs2_val   = forward_b;
 
     logic [31:0] ex_mem_addr;
+    logic        ex_mem_cacheable;
     always_comb begin
         ex_mem_addr = alu_result;
+        ex_mem_cacheable = 1'b0;
         if (!csr_crmd[3] && csr_crmd[4]) begin
-            if (alu_result[31:29] == csr_dmw0[31:29] && csr_dmw0[0])
+            if (alu_result[31:29] == csr_dmw0[31:29] && csr_dmw0[0]) begin
                 ex_mem_addr = {csr_dmw0[27:25], alu_result[28:0]};
-            else if (alu_result[31:29] == csr_dmw1[31:29] && csr_dmw1[0])
+                ex_mem_cacheable = 1'b1;
+            end else if (alu_result[31:29] == csr_dmw1[31:29] && csr_dmw1[0]) begin
                 ex_mem_addr = {csr_dmw1[27:25], alu_result[28:0]};
+            end
         end
     end
 
     assign ex_mem_in.data.mem_addr  = ex_mem_addr;
     assign ex_mem_in.data.mem_size  = id_ex_out.data.mem_size;
     assign ex_mem_in.data.mem_unsigned = id_ex_out.data.mem_unsigned;
+    assign ex_mem_in.data.mem_cacheable = ex_mem_cacheable;
 
     pipeline_reg #($bits(ex_mem_ctrl_t)) reg_ex_mem_ctrl (
         .clk, .reset, .stall(ex_mem_stall), .flush(1'b0),
@@ -416,6 +422,7 @@ module core import la32_common::*; (
         .mem_re(ex_mem_out.ctrl.mem_re), .mem_we(ex_mem_out.ctrl.mem_we),
         .mem_size(ex_mem_out.data.mem_size), .mem_unsigned(ex_mem_out.data.mem_unsigned),
         .addr(ex_mem_out.data.mem_addr), .wdata(ex_mem_out.data.rs2_val),
+        .cacheable(ex_mem_out.data.mem_cacheable),
         .rdata_out(lsu_rdata), .lsu_ready,
         .dreq, .dresp
     );
