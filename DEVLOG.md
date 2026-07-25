@@ -34,23 +34,24 @@
 - [x] IBAR 指令实现：hint=0 流水线冲刷（2026-07-25）
 - [x] CPUCFG 修复：0x10 报告 I/D cache 存在，0x11/0x12 返回 cache 几何参数，NEMU ref 同步更新（2026-07-25）
 - [x] dcache FLUSH_DCACHE 通过：stage 2-5 全量数据比对通过（2026-07-25）
+- [x] dcache cacheable 属性支持：基于 CRMD/DMW 计算 cacheability，dcache 门控 is_cachable（2026-07-25）
+- [x] fibonacci difftest 通过：uncache kernel（DA 模式）下 dcache bypass，store 直写 SRAM，I/D 一致性正确（2026-07-25）
 
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
-- [ ] dcache cacheable 属性支持：当前 dcache 始终按地址范围 0x1c 缓存，不区分 DMW MAT 属性，导致 forced-uncache 构建不兼容（fibonacci 使用 uncache kernel 仍失败）
 
-## 当前 difftest 状态（2026-07-25，CACOP/IBAR 实现后）
+## 当前 difftest 状态（2026-07-25，CACOP/IBAR/cacheable 实现后）
 
-| 测试 | DIFF=1 difftest | 数据比对 | 指令数 | 备注 |
-|------|-----------------|----------|--------|------|
-| simple | ✅ 通过 | N/A | ~170 | — |
-| stream | ✅ 通过 | ✅ 通过 | ~390 万 | FLUSH_DCACHE 写回成功 |
-| matrix | ✅ 通过 | ✅ 通过 | ~560 万 | FLUSH_DCACHE 写回成功 |
-| mixed | ✅ 通过 | ✅ 通过 | ~30 万 | FLUSH_DCACHE 写回成功 |
-| cryptonight | ✅ 通过 | ✅ 通过 | ~2300 万 | FLUSH_DCACHE 写回成功 |
-| fibonacci | ❌ @ #34489 | — | 34.5K | forced-uncache kernel：dcache 不区分 cacheable 属性 |
+| 测试 | DIFF=1 difftest | 数据比对 | 指令数 |
+|------|-----------------|----------|--------|
+| simple | ✅ 通过 | N/A | ~170 |
+| stream | ✅ 通过 | ✅ 通过 | ~390 万 |
+| matrix | ✅ 通过 | ✅ 通过 | ~560 万 |
+| mixed | ✅ 通过 | ✅ 通过 | ~30 万 |
+| cryptonight | ✅ 通过 | ✅ 通过 | ~2300 万 |
+| fibonacci | ✅ 通过 | ✅ 通过 | ~34.5K |
 
 ### 修复记录
 

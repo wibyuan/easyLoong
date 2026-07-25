@@ -51,7 +51,7 @@
 - **dcache**：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先
 - **CACOP**：支持 `cacop 0x00` (I$ 索引无效)、`cacop 0x01` (D$ 索引无效)、`cacop 0x09` (D$ 索引写回无效)
 - **IBAR**：支持 hint=0 流水线冲刷
-- **暂缺**：dcache 未区分 cacheable/uncacheable 属性（始终按地址范围 0x1c 缓存），导致 forced-uncache 构建不兼容
+- **Cacheability**：基于 CRMD/DMW 区分 cacheable/uncacheable，支持 auto 和 uncache 两种 kernel 构建
 
 ### 指令集覆盖
 
@@ -108,10 +108,9 @@
 | 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=1 通过 | ✅ 通过 |
 | 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=1 通过 | ✅ 通过 |
 | 5 | MIXED | 混合运算 | ✅ DIFF=1 通过 | ✅ 通过 |
+| fibonacci | 自修改代码 | UART 加载 + FLUSH_DCACHE + 执行 | ✅ DIFF=1 通过 | ✅ 通过 |
 
-> **注**：阶段 1 为裸机测试，不使用 supervisor 和 dcache，指令级 difftest 通过。
-> 阶段 2-5 的 difftest + 数据比对均已通过（含 dcache FLUSH_DCACHE 写回脏行）。
-> fibonacci difftest 仍失败，因使用 forced-uncache kernel 构建，dcache 未区分 cacheable 属性导致 I/D 一致性未解决。
+> 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过。
 
 ## 5. 开发环境搭建
 
