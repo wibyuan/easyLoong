@@ -8,6 +8,7 @@ if {![file exists $project_file]} {
 
 open_project $project_file
 update_compile_order -fileset sources_1
+set_param general.maxThreads 16
 
 proc require_run_complete {run_name phase} {
     set run [get_runs $run_name]
@@ -21,11 +22,11 @@ proc require_run_complete {run_name phase} {
 }
 
 reset_run synth_1
-launch_runs synth_1 -jobs 4
+launch_runs synth_1 -jobs 8
 wait_on_run synth_1
 require_run_complete synth_1 Synthesis
 
-launch_runs impl_1 -to_step write_bitstream -jobs 4
+launch_runs impl_1 -to_step write_bitstream -jobs 8
 wait_on_run impl_1
 require_run_complete impl_1 Implementation
 
