@@ -360,7 +360,9 @@ module core import la32_common::*; (
     always_comb begin
         cpucfg_result = 32'd0;
         case (forward_a)
-            32'd16: cpucfg_result = 32'h00000010;
+            32'd16: cpucfg_result = 32'h00000015;
+            32'd17: cpucfg_result = 32'h04080001;
+            32'd18: cpucfg_result = 32'h04080001;
             default: cpucfg_result = 32'd0;
         endcase
     end
