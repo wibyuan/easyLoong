@@ -160,7 +160,7 @@ module core import la32_common::*; (
     logic [4:0] dec_rs1, dec_rs2, dec_rd;
     logic       dec_rf_we, dec_alu_src_sel;
     logic       dec_mem_re, dec_mem_we, dec_mem_unsigned;
-    logic       dec_is_branch, dec_is_jal, dec_is_jalr, dec_is_pcadd, dec_is_cpucfg, dec_is_illegal;
+    logic       dec_is_branch, dec_is_jal, dec_is_jalr, dec_is_pcadd, dec_is_cpucfg;
     logic       dec_is_csrrd, dec_is_csrwr, dec_is_csrxchg, dec_is_cacop, dec_is_ibar, dec_is_illegal;
     logic [31:0] dec_imm;
     alu_op_t    dec_alu_op;
