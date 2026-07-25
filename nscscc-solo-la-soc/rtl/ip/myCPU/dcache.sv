@@ -187,6 +187,8 @@ module dcache import la32_common::*; (
         else if (state != S_IDLE)
             s1_stall = 1'b1;
         else if (s2_valid && s2_hit && s2_op && is_cachable(s2_addr, s2_cacheable))
+            // WORKAROUND: store hit unnecessarily stalls pipeline for 1 cycle.
+            // Write to BRAM does not conflict with concurrent read on next request.
             s1_stall = 1'b1;
         else if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !s2_valid)
             s1_stall = 1'b1;
@@ -457,6 +459,10 @@ module dcache import la32_common::*; (
                 s1_cacheable <= cpu_req.cacheable;
 
                 if (s2_valid && s2_hit && !s2_op && is_cachable(s2_addr, s2_cacheable)) begin
+                    // WORKAROUND (ghost hit): clearing s1_valid on load hit forces
+                    // 1-cycle bubble between consecutive cache accesses.
+                    // Correct fix: do tag comparison combinationally on BRAM readout
+                    // in S2, eliminating the cross-stage dependency.
                     s2_valid <= 1'b0;
                     s1_valid <= 1'b0;
                 end else begin
@@ -475,6 +481,9 @@ module dcache import la32_common::*; (
                 s1_valid <= 1'b0;
                 s2_valid <= 1'b0;
             end else if (s2_valid) begin
+                // WORKAROUND: fallback clear of s1_valid/s2_valid when stalled and
+                // s2_valid lingers. Combined with store-hit stall above, this
+                // creates unnecessary pipeline bubbles.
                 s2_valid <= 1'b0;
                 s1_valid <= 1'b0;
             end

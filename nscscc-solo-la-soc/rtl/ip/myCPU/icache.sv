@@ -320,6 +320,10 @@ module icache import la32_common::*; (
                 s2_idx   <= s1_idx;
                 s2_tag   <= s1_tag;
             end else begin
+                // WORKAROUND (ghost hit): clearing s1_valid on hit forces 1-cycle
+                // bubble between consecutive hits. Correct fix: do tag comparison
+                // combinationally on BRAM readout in S2, removing the s1→s2
+                // cross-stage dependency that creates the ghost hit window.
                 s2_valid <= 1'b0;
                 if (!s1_stall && s2_hit)
                     s1_valid <= 1'b0;
