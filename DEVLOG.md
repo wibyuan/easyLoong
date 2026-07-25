@@ -198,9 +198,9 @@ Docker 容器内 Vivado 2019.2 on Ubuntu 18.04 一次性综合/实现成功，�
 | 2026-07-25 (优化后) | 6:57 | **11:43** | **18:40** | `-jobs 8`, maxThreads=16 |
 
 > 优化后 route_design 从 13:16 降至 4:23（~3x 提速）；综合 + 实现总耗时从 ~28min 降至 ~19min。
-> 最新 bitstream 时序：WNS=4.330ns, WHS=0.075ns (66MHz)。
+> 最新 bitstream 时序：WNS=4.330ns, WHS=0.075ns (33MHz cpu_clk)。
 
-**PLL 配置**：CLKIN1=50MHz → cpu_clk=66MHz (CLKOUT0), sys_clk=50MHz (CLKOUT1)。
+**PLL 配置**：CLKIN1=50MHz → cpu_clk=33MHz (CLKOUT0), sys_clk=25MHz (CLKOUT1)（经 XCI 确认，非之前错误记载的 66/50MHz）。
 
 ### Vivado 仿真工作流
 
@@ -258,7 +258,7 @@ Vivado 2019.2 Docker 镜像基于 Ubuntu 18.04（Python 3.6），修复了以下
 
 - XCI（`clk_pll.xci`）自首次提交 `69feb88` 以来从未变更，全程一致
 - 时钟约束与 PLL IP XDC 冲突是时序失败的直接原因，非设计本身问题
-- DEVLOG 记载 PLL 输出 66/50 MHz，XCI 中 `CLKOUT1_REQUESTED`/`CLKOUT2_REQUESTED` 分别为 33/25 MHz，未用 Vivado 确认实际值
+- DEVLOG 此前错误记载 PLL 输出 66/50 MHz，经 XCI 确认实际为 33/25 MHz，已于 2026-07-25 修正。
 
 ### 工作流
 
