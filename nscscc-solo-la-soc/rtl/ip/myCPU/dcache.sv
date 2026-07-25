@@ -8,7 +8,10 @@ module dcache import la32_common::*; (
     output dbus_resp_t cpu_resp,
 
     output dbus_req_t  mem_req,
-    input  dbus_resp_t mem_resp
+    input  dbus_resp_t mem_resp,
+
+    input  cacop_req_t cacop_req,
+    output logic       cacop_done
 );
 
     localparam NR_SETS  = 256;
@@ -80,7 +83,9 @@ module dcache import la32_common::*; (
         S_MISS,
         S_WB_READ, S_WB_WRITE,
         S_REFILL_SEND, S_REFILL_ACK, S_REFILL_WAIT, S_REFILL_WRITE,
-        S_STORE_FINAL
+        S_STORE_FINAL,
+        S_CACOP_ST,
+        S_CACOP_WB_READ, S_CACOP_WB_WRITE, S_CACOP_INV
     } state, next_state;
 
     dbus_req_t mem_req_next;
@@ -128,6 +133,13 @@ module dcache import la32_common::*; (
     word_t      rf_buf [0:3];
     word_t      wb_buf [0:3];
 
+    logic       cacop_way;
+    index_t     cacop_idx;
+    tag_t       cacop_etag;
+    logic       cacop_edirty;
+    logic [1:0] cacop_wb_cnt;
+    word_t      cacop_wb_buf [0:3];
+
     // ==================== Init registers ====================
     index_t init_addr;
     logic   init_wr_way;
@@ -169,6 +181,8 @@ module dcache import la32_common::*; (
             s1_stall = 1'b1;
         else if (s2_valid && s2_hit && s2_op && is_cachable(s2_addr))
             s1_stall = 1'b1;
+        else if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !s2_valid)
+            s1_stall = 1'b1;
     end
 
     // ==================== BRAM read control ====================
@@ -190,6 +204,12 @@ module dcache import la32_common::*; (
             tag_rd_ena  = 1'b1;
             tag_rd_addr  = m_idx;
         end
+        if (state == S_IDLE && cacop_req.valid && cacop_req.code[2:0] == 3'd1 && cacop_req.code[4:3] == 2'b01) begin
+            data_rd_ena = 1'b1;
+            data_rd_addr = cacop_req.addr[11:4];
+            tag_rd_ena  = 1'b1;
+            tag_rd_addr  = cacop_req.addr[11:4];
+        end
     end
 
     // ==================== FSM combinational ====================
@@ -199,6 +219,8 @@ module dcache import la32_common::*; (
         cpu_resp.addr_ok = 1'b0;
         cpu_resp.data_ok = 1'b0;
         cpu_resp.data    = 32'd0;
+
+        cacop_done = 1'b0;
 
         mem_req_next.valid  = 1'b0;
         mem_req_next.addr   = 32'd0;
@@ -230,7 +252,12 @@ module dcache import la32_common::*; (
             end
 
             S_IDLE: begin
-                if (s2_valid) begin
+                if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !s2_valid) begin
+                    if (cacop_req.code[4:3] == 2'b00)
+                        next_state = S_CACOP_ST;
+                    else if (cacop_req.code[4:3] == 2'b01)
+                        next_state = S_CACOP_WB_READ;
+                end else if (s2_valid) begin
                     if (!is_cachable(s2_addr)) begin
                         mem_req_next.valid  = 1'b1;
                         mem_req_next.addr   = {s2_addr[31:2], 2'b00};
@@ -348,6 +375,37 @@ module dcache import la32_common::*; (
                 next_state = S_IDLE;
             end
 
+            S_CACOP_ST: begin
+                tag_wr_ena  = 1'b1;
+                tag_wr_way  = cacop_way;
+                tag_wr_addr = cacop_idx;
+                tag_wr_data = 21'd0;
+                cacop_done  = 1'b1;
+                next_state  = S_IDLE;
+            end
+
+            S_CACOP_WB_READ: begin
+                next_state = cacop_edirty ? S_CACOP_WB_WRITE : S_CACOP_INV;
+            end
+
+            S_CACOP_WB_WRITE: begin
+                mem_req_next.valid  = 1'b1;
+                mem_req_next.addr   = {cacop_etag, cacop_idx, cacop_wb_cnt, 2'b00};
+                mem_req_next.strobe = 4'b1111;
+                mem_req_next.data   = cacop_wb_buf[cacop_wb_cnt];
+                if (mem_resp.addr_ok)
+                    next_state = (cacop_wb_cnt == 2'd3) ? S_CACOP_INV : S_CACOP_WB_WRITE;
+            end
+
+            S_CACOP_INV: begin
+                tag_wr_ena  = 1'b1;
+                tag_wr_way  = cacop_way;
+                tag_wr_addr = cacop_idx;
+                tag_wr_data = 21'd0;
+                cacop_done  = 1'b1;
+                next_state  = S_IDLE;
+            end
+
             default: next_state = S_IDLE;
         endcase
     end
@@ -433,6 +491,20 @@ module dcache import la32_common::*; (
                             ? tag_r_tag[0] : tag_r_tag[1];
             end
 
+            if (state == S_IDLE && cacop_req.valid
+                && cacop_req.code[2:0] == 3'd1 && !s2_valid) begin
+                cacop_way <= cacop_req.addr[0];
+                cacop_idx <= cacop_req.addr[11:4];
+                if (cacop_req.code[4:3] == 2'b00) begin
+                    dirty[cacop_req.addr[0]][cacop_req.addr[11:4]] <= 1'b0;
+                end
+                if (cacop_req.code[4:3] == 2'b01) begin
+                    cacop_edirty <= dirty[cacop_req.addr[0]][cacop_req.addr[11:4]];
+                    cacop_etag   <= tag_r_tag[cacop_req.addr[0]];
+                    cacop_wb_cnt <= 2'd0;
+                end
+            end
+
             if (state == S_MISS && next_state == S_REFILL_SEND) begin
                 rf_cnt     <= m_wo;
                 rf_fmask   <= 4'd0;
@@ -480,6 +552,21 @@ module dcache import la32_common::*; (
 
             if (state == S_STORE_FINAL)
                 dirty[m_eway][m_idx] <= 1'b1;
+
+            if (state == S_CACOP_WB_READ) begin
+                cacop_wb_buf[0] <= data_rd_out[cacop_way][0];
+                cacop_wb_buf[1] <= data_rd_out[cacop_way][1];
+                cacop_wb_buf[2] <= data_rd_out[cacop_way][2];
+                cacop_wb_buf[3] <= data_rd_out[cacop_way][3];
+            end
+
+            if (state == S_CACOP_WB_WRITE && mem_resp.addr_ok) begin
+                cacop_wb_cnt <= cacop_wb_cnt + 1;
+            end
+
+            if (state == S_CACOP_INV) begin
+                dirty[cacop_way][cacop_idx] <= 1'b0;
+            end
         end
     end
 
