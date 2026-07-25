@@ -10,6 +10,7 @@ module lsu import la32_common::*; (
     input  logic        mem_unsigned,
     input  logic [31:0] addr,
     input  logic [31:0] wdata,
+    input  logic        cacheable,
     output logic [31:0] rdata_out,
     output logic        lsu_ready,
     output dbus_req_t   dreq,
@@ -56,6 +57,7 @@ module lsu import la32_common::*; (
         dreq.size   = MSIZE4;
         dreq.strobe = 4'd0;
         dreq.data   = 32'd0;
+        dreq.cacheable = 1'b0;
 
         case (state)
             IDLE: begin
@@ -63,9 +65,10 @@ module lsu import la32_common::*; (
                     dreq.valid  = 1'b1;
                     dreq.addr   = {addr[31:2], 2'b00};
                     dreq.size   = MSIZE4;
-                    dreq.strobe = mem_we ? strobe : 4'd0;
-                    dreq.data   = wdata_shifted;
-                end
+                dreq.strobe = mem_we ? strobe : 4'd0;
+                dreq.data   = wdata_shifted;
+                dreq.cacheable = cacheable;
+            end
             end
             WAIT: begin
                 dreq.valid  = 1'b0;
