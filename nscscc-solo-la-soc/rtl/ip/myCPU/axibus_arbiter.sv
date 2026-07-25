@@ -64,6 +64,7 @@ module axibus_arbiter import la32_common::*; (
     logic r_iresp_addr_ok, r_iresp_data_ok;
     logic [31:0] r_dresp_data, r_iresp_data;
     logic w_dresp_addr_ok, w_dresp_data_ok;
+    logic dreq_read_pending;
 
     always_comb begin
 
@@ -215,7 +216,7 @@ module axibus_arbiter import la32_common::*; (
         iresp.data    = r_iresp_data;
 
         dresp.addr_ok = r_dresp_addr_ok || w_dresp_addr_ok;
-        dresp.data_ok = r_dresp_data_ok || w_dresp_data_ok;
+        dresp.data_ok = r_dresp_data_ok || (w_dresp_data_ok && !dreq_read_pending);
         dresp.data    = r_dresp_data;
     end
 
@@ -237,6 +238,17 @@ module axibus_arbiter import la32_common::*; (
                 r_for_d_r <= 1'b1;
                 r_addr_r  <= dreq.addr;
             end
+        end
+    end
+
+    always_ff @(posedge clk) begin
+        if (!resetn) begin
+            dreq_read_pending <= 1'b0;
+        end else begin
+            if (r_dresp_addr_ok && dreq.valid && dreq.strobe == 4'd0)
+                dreq_read_pending <= 1'b1;
+            else if (r_dresp_data_ok)
+                dreq_read_pending <= 1'b0;
         end
     end
 
