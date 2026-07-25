@@ -198,6 +198,16 @@ FORCE_VERILATOR_REBUILD=1 make test-simple
 | `DifftestCSRState` | CSR 字段 |
 | `DifftestIdlePC` | regcpy 缓冲区对齐 |
 | `DifftestTrapEvent` | 陷阱事件（已定义，待接入） |
+| `DifftestCacheState` | ICache/DCache 性能计数器（hit/miss/access/writeback） |
+
+### 仿真结束时输出
+
+difftest 正常退出时自动输出：
+
+- **IPC**：`指令数 / 总周期数`
+- **FPGA 运行时估测**：`总周期数 / 33MHz`（cpu_clk 频率）
+- **ICache 指标**：访问数 / hit / miss / 命中率
+- **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数
 
 ### Mismatch 时输出
 
