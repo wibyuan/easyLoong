@@ -21,6 +21,8 @@ module decode import la32_common::*; (
     output logic        is_csrrd,
     output logic        is_csrwr,
     output logic        is_csrxchg,
+    output logic        is_cacop,
+    output logic        is_ibar,
     output logic        is_illegal
 );
 
@@ -54,6 +56,8 @@ module decode import la32_common::*; (
         is_csrrd    = 1'b0;
         is_csrwr    = 1'b0;
         is_csrxchg  = 1'b0;
+        is_cacop    = 1'b0;
+        is_ibar     = 1'b0;
         is_illegal  = 1'b1;
 
         casez (instr)
@@ -375,6 +379,22 @@ module decode import la32_common::*; (
                 rf_we = 1'b1;
                 is_csrxchg = 1'b1;
                 rs2 = instr[4:0];
+            end
+
+            // ==================== CACOP ====================
+            32'b0000011000_????????????_?????_?????: begin // CACOP
+                is_illegal = 1'b0;
+                is_cacop = 1'b1;
+                rs1 = instr[9:5];
+                alu_op = ALU_ADD;
+                alu_src_sel = 1'b1;
+                imm = {{20{instr[21]}}, instr[21:10]};
+            end
+
+            // ==================== IBAR ====================
+            32'b00111000011100101_??????????????? : begin // IBAR
+                is_illegal = 1'b0;
+                is_ibar = 1'b1;
             end
 
             default: ;
