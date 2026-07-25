@@ -189,6 +189,17 @@ Docker 容器内 Vivado 2019.2 on Ubuntu 18.04 一次性综合/实现成功，�
 
 **最终时序**：WNS=11.859ns, TNS=0.000, WHS=0.012ns, THS=0.000 — setup/hold 均无违例。
 
+### Bitstream 构建耗时
+
+| 日期 | 综合 | 实现 | 总计 | 关键参数 |
+|------|------|------|------|----------|
+| 2026-07-23 | ~7min | ~20min | ~27min | `-jobs 4`, maxThreads 默认 |
+| 2026-07-25 (CACOP后) | 7:31 | 20:41 | 28:12 | `-jobs 4`, maxThreads 默认 |
+| 2026-07-25 (优化后) | 6:57 | **11:43** | **18:40** | `-jobs 8`, maxThreads=16 |
+
+> 优化后 route_design 从 13:16 降至 4:23（~3x 提速）；综合 + 实现总耗时从 ~28min 降至 ~19min。
+> 最新 bitstream 时序：WNS=4.330ns, WHS=0.075ns (66MHz)。
+
 **PLL 配置**：CLKIN1=50MHz → cpu_clk=66MHz (CLKOUT0), sys_clk=50MHz (CLKOUT1)。
 
 ### Vivado 仿真工作流
