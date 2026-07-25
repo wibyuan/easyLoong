@@ -17,3 +17,4 @@ Thumbs.db
 
 # Downloaded packages
 *.deb
+.env
