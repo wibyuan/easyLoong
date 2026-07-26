@@ -1,6 +1,9 @@
 `include "common.sv"
 
-module core import la32_common::*; (
+module core import la32_common::*; #(
+    parameter int ICACHE_SETS = 256,
+    parameter int DCACHE_SETS = 256
+)(
     input  logic       clk,
     input  logic       reset,
     output ibus_req_t  ireq,
@@ -388,12 +391,14 @@ module core import la32_common::*; (
     assign ex_mem_in.data.rd        = id_ex_out.data.rd;
 
     logic [31:0] cpucfg_result;
+    localparam ICACHE_CFG = 32'h04000001 | ($clog2(ICACHE_SETS) << 16);
+    localparam DCACHE_CFG = 32'h04000001 | ($clog2(DCACHE_SETS) << 16);
     always_comb begin
         cpucfg_result = 32'd0;
         case (forward_a)
             32'd16: cpucfg_result = 32'h00000015;
-            32'd17: cpucfg_result = 32'h04080001;
-            32'd18: cpucfg_result = 32'h04080001;
+            32'd17: cpucfg_result = ICACHE_CFG;
+            32'd18: cpucfg_result = DCACHE_CFG;
             default: cpucfg_result = 32'd0;
         endcase
     end
