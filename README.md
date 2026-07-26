@@ -123,6 +123,8 @@
 
 > 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
 > 偏差系统性为负（Verilator 无 bus contention、无跨时钟域延迟、无物理走线延迟）。
+> 
+> dcache 的 load-hit ghost workaround 和 store-hit stall workaround 已于 2026-07-26 移除（架构修正，IPC 无变化——瓶颈在 in-order 流水线的 ex_mem_out 寄存器延迟，非 dcache stall。详见 [DEVLOG.md](DEVLOG.md)）。下一步方向：dcache 写缓冲消除 MEM 级延迟、分支预测器消除跳转空泡。
 
 ### Cache 命中率（Verilator 仿真）
 

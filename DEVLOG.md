@@ -38,14 +38,16 @@
 - [x] fibonacci difftest 通过：uncache kernel（DA 模式）下 dcache bypass，store 直写 SRAM，I/D 一致性正确（2026-07-25）
 - [x] icache ghost hit workaround 修复（2026-07-26）：用 `just_hit` + `last_hit_addr` 寄存器精确检测 S1 stale 地址，仅在 s1_addr 与 s2_hit 地址相同时抑制 s1→s2 推进。消除了无条件清 s1_valid 的 1 周期强制空泡，icache 管道效率 access/s1_accept 从 33% 提升至 50%。
 - [x] fetch_unit 消除 IDLE 死周期（2026-07-26）：REQ 状态在 data_ok 后不再回 IDLE；同时抑制 data_ok、do_ex_flush、do_id_jump 活跃时的 stale 请求。结合 icache 修复后，linear 代码 IPC +0.2%~+10.9%，Matrix 循环因无分支预测器致投机取指冲刷 +4.1% 周期（见下）。
+- [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
 
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
-- [ ] dcache ghost hit workaround 修复：dcache 仍有同样的 s1_valid 无条件清零 workaround，可参照 icache stale check 方法修复
+- [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
+- [ ] dcache 写缓冲（write buffer）实现：store 命中后异步写 BRAM，消除 MEM 级寄存器延迟空泡
 
-## 当前 difftest 状态（2026-07-26，icache workaround 修复 + fetch_unit 优化后）
+## 当前 difftest 状态（2026-07-26，icache workaround + dcache workaround 修复后）
 
 | 测试 | DIFF=1 difftest | 数据比对 | 指令数 |
 |------|-----------------|----------|--------|
@@ -69,6 +71,50 @@
 > Matrix 退化原因：fetch_unit 消除 IDLE 后取指更激进（ICache access 从 11.10M → 15.37M，+38%），内层循环分支密集导致大量投机取指被冲刷浪费。`redirect_soon` 限流方案（检测 ID/ID_EX 阶段有分支时抑制取指 1 周期）曾尝试修复但造成死锁，需进一步调试 pipeline flush 时序与限流交互。
 
 ### 修复记录
+
+#### dcache workaround 修复：load hit ghost + store hit stall（2026-07-26, 750227e + 1f62308）
+
+dcache 存在三个注释标记为 WORKAROUND 的代码段，均是为修复功能 bug 而牺牲时序的错误行为。
+
+**Workaround 1（store hit stall）**：每次 store 命中时 `s1_stall=1`，声称防止 BRAM read-after-write 冲突。
+
+**Workaround 2（load hit ghost）**：每次 load 命中时同时清零 `s2_valid` 和 `s1_valid`，防止 stale S1 值推进到 S2 形成幽灵命中。每次命中浪费 1 周期。
+
+**Workaround 3（s2 linger）**：s1_stall 阻塞 s1→s2 推进时，手动清零遗留的 s2_valid/s1_valid。
+
+根本原因：LSU 在 dcache 返回 data_ok 后 dreq.valid 仍保持 1（因 valid_in 仍为同一指令高电平，state 仍为 IDLE），导致 stale 请求被 s1 重新捕获。Fetch_unit 没有此问题（data_ok 时 ireq.valid 拉低为 0）。
+
+修复分为两部分：
+
+##### 修复 1：LSU dreq.valid 拉低（750227e）
+
+在 LSU IDLE 状态下，当 `dresp.data_ok` 到达时拉低 `dreq.valid`，镜像 fetch_unit 的 `ireq.valid` 处理方式。防止 stale 请求被 dcache s1 重新捕获。
+
+##### 修复 2：dcache just_hit 机制替代 Workaround 2（750227e）
+
+参照 icache 修复，加入 `just_hit` + `last_hit_addr` 寄存器。当 s2_hit 时仅清零 s2_valid（不清零 s1_valid）。下一周期若 s1_addr 与 last_hit_addr 相同（stale），则抑制 s1→s2 推进。需要 LSU 修复配合，否则背靠背同地址 load 会被误抑制。
+
+##### 修复 3：移除 Workaround 1（1f62308）
+
+论证：store hit 时 BRAM 写入与 legitimate 新请求的 BRAM 读取无冲突。新请求进入 s1 的时机晚于 store hit 至少 1 周期（受限于 ex_mem_out 流水线寄存器延迟），此时 BRAM 写入已完成。s1 中 stale 的 store 请求由 just_hit 机制正确处理。
+
+##### IPC 分析
+
+两个 workaround 消除后，dcache 吞吐量达到 1 req/cycle（与 openLA500 持平），但 IPC 无变化。瓶颈不在 dcache，而在 in-order 五级流水线的 ex_mem_out 寄存器延迟：Load A 在 cycle N 命中，Load B 必须等 cycle N+1 的 posedge 才从 id_ex_out 进入 ex_mem_out，最早在 cycle N+1 被 dcache s1 捕获。这 1 周期间隙是流水线物理寄存器固有的，不是 workaround 引入的。
+
+未来提升方向：引入 dcache 写缓冲（write buffer），store 命中后异步写 BRAM 并立即回 data_ok，消除 ex_mem_out 延迟。参照 openLA500 的设计。
+
+##### 效果
+
+全部 6 个测试 DIFF=1 difftest 通过，IPC 不变（如下表）。
+
+| 测试 | 修复前 IPC | 修复后 IPC | 周期变化 |
+|------|-----------|-----------|---------|
+| simple | 0.1505 | 0.1505 | 0 |
+| mixed | 0.1169 | 0.1169 | 0 |
+| stream | 0.0812 | 0.0812 | 0 |
+| matrix | 0.1218 | 0.1218 | 0 |
+| fibonacci | 0.1063 | 0.1063 | 0 |
 
 #### Bug 9: dcache 写回泄漏 addr_ok/data_ok 到后续 refill 导致 load 返回 0（2026-07-25, 95ba59d + 7e70198）
 
