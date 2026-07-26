@@ -12,11 +12,18 @@ module core import la32_common::*; #(
     input  dbus_resp_t dresp,
     output cacop_req_t cacop_req,
     input  logic       cacop_done,
+    input  logic       dcache_in_refill,
+    input  logic       icache_in_refill,
     output logic [31:0] debug_wb_pc,
     output logic [31:0] debug_wb_inst,
     output logic        debug_wb_rf_wen,
     output logic [4:0]  debug_wb_rf_wnum,
-    output logic [31:0] debug_wb_rf_wdata
+    output logic [31:0] debug_wb_rf_wdata,
+    output logic [63:0] stall_dcache_refill,
+    output logic [63:0] stall_icache_refill,
+    output logic [63:0] stall_load_use,
+    output logic [63:0] stall_branch_flush,
+    output logic [63:0] stall_other
 );
 
     typedef struct packed {
@@ -487,6 +494,8 @@ module core import la32_common::*; #(
     );
 
     // ==================== HAZARD ====================
+    logic load_use_hazard;
+
     assign ex_stage_busy = 1'b0;
 
     hazard_unit hazard_ctrl (
@@ -499,6 +508,7 @@ module core import la32_common::*; #(
         .dec_rs1(dec_rs1), .dec_rs2(dec_rs2),
         .pc_stall, .if_id_stall, .id_ex_stall, .ex_mem_stall,
         .if_id_flush, .id_ex_flush,
+        .load_use_hazard,
         .jump_flush(ex_jump_flush_hazard),
         .id_jump_req(id_jump_req),
         .wb_jump_req(1'b0)
@@ -510,6 +520,29 @@ module core import la32_common::*; #(
     assign debug_wb_rf_wen  = mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid;
     assign debug_wb_rf_wnum = mem_wb_out.data.rd;
     assign debug_wb_rf_wdata = mem_wb_out.data.final_res;
+
+    // ==================== STALL COUNTERS ====================
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            stall_dcache_refill <= 64'd0;
+            stall_icache_refill <= 64'd0;
+            stall_load_use      <= 64'd0;
+            stall_branch_flush  <= 64'd0;
+            stall_other         <= 64'd0;
+        end else if (!mem_wb_out.ctrl.valid) begin
+            if (dcache_in_refill)
+                stall_dcache_refill <= stall_dcache_refill + 64'd1;
+            else if (icache_in_refill)
+                stall_icache_refill <= stall_icache_refill + 64'd1;
+            else if (load_use_hazard)
+                stall_load_use <= stall_load_use + 64'd1;
+            else if ((if_id_flush && if_id_out.ctrl.valid) ||
+                     (id_ex_flush && id_ex_out.ctrl.valid))
+                stall_branch_flush <= stall_branch_flush + 64'd1;
+            else
+                stall_other <= stall_other + 64'd1;
+        end
+    end
 
     // ==================== DIFFTEST ====================
 `ifdef VERILATOR
@@ -592,6 +625,15 @@ module core import la32_common::*; #(
         .clock(clk),
         .total_branches(difftest_total_branches),
         .mispredictions(difftest_mispredictions)
+    );
+
+    DifftestStallState u_difftest_stall (
+        .clock(clk),
+        .stall_dcache_refill(stall_dcache_refill),
+        .stall_icache_refill(stall_icache_refill),
+        .stall_load_use(stall_load_use),
+        .stall_branch_flush(stall_branch_flush),
+        .stall_other(stall_other)
     );
 `endif
 

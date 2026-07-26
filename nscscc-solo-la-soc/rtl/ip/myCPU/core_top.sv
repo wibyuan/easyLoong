@@ -90,6 +90,11 @@ module core_top #(
     logic [63:0] icache_wa_clear, icache_s1_accept, icache_cyc;
     logic [63:0] dcache_access, dcache_hit, dcache_miss, dcache_wb;
 
+    logic dcache_in_refill, icache_in_refill;
+
+    logic [63:0] stall_dcache_refill, stall_icache_refill;
+    logic [63:0] stall_load_use, stall_branch_flush, stall_other;
+
     core #(.ICACHE_SETS(ICACHE_SETS), .DCACHE_SETS(DCACHE_SETS)) u_core (
         .clk,
         .reset(~aresetn),
@@ -99,11 +104,18 @@ module core_top #(
         .dresp,
         .cacop_req(core_cacop_req),
         .cacop_done(core_cacop_done),
+        .dcache_in_refill(dcache_in_refill),
+        .icache_in_refill(icache_in_refill),
         .debug_wb_pc      (core_debug_wb_pc),
         .debug_wb_inst    (core_debug_wb_inst),
         .debug_wb_rf_wen  (core_debug_wb_rf_wen),
         .debug_wb_rf_wnum (core_debug_wb_rf_wnum),
-        .debug_wb_rf_wdata(core_debug_wb_rf_wdata)
+        .debug_wb_rf_wdata(core_debug_wb_rf_wdata),
+        .stall_dcache_refill(stall_dcache_refill),
+        .stall_icache_refill(stall_icache_refill),
+        .stall_load_use(stall_load_use),
+        .stall_branch_flush(stall_branch_flush),
+        .stall_other(stall_other)
     );
 
     dcache #(.NR_SETS(DCACHE_SETS), .NR_WAYS(2), .NR_WORDS(4)) u_dcache (
@@ -118,7 +130,8 @@ module core_top #(
         .perf_access(dcache_access),
         .perf_hit(dcache_hit),
         .perf_miss(dcache_miss),
-        .perf_writeback(dcache_wb)
+        .perf_writeback(dcache_wb),
+        .in_refill(dcache_in_refill)
     );
 
     icache #(.NR_SETS(ICACHE_SETS)) u_icache (
@@ -136,7 +149,8 @@ module core_top #(
         .perf_miss(icache_miss),
         .perf_wa_clear(icache_wa_clear),
         .perf_s1_accept(icache_s1_accept),
-        .perf_cyc(icache_cyc)
+        .perf_cyc(icache_cyc),
+        .in_refill(icache_in_refill)
     );
 
     assign core_cacop_done = dcache_cacop_done || icache_cacop_done ||
