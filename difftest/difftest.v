@@ -160,4 +160,25 @@ module DifftestCacheState (
                               dcache_writeback);
     end
 endmodule
+
+module DifftestStallState (
+    input  logic        clock,
+    input  logic [63:0] stall_dcache_refill,
+    input  logic [63:0] stall_icache_refill,
+    input  logic [63:0] stall_load_use,
+    input  logic [63:0] stall_branch_flush,
+    input  logic [63:0] stall_other
+);
+    import "DPI-C" function void v_difftest_StallState(
+        input longint stall_dcache_refill,
+        input longint stall_icache_refill,
+        input longint stall_load_use,
+        input longint stall_branch_flush,
+        input longint stall_other
+    );
+    always @(posedge clock) begin
+        v_difftest_StallState(stall_dcache_refill, stall_icache_refill,
+                              stall_load_use, stall_branch_flush, stall_other);
+    end
+endmodule
 `endif

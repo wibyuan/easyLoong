@@ -75,11 +75,20 @@ struct difftest_branch_state_t {
     uint64_t mispredictions;
 };
 
+struct difftest_stall_state_t {
+    uint64_t stall_dcache_refill;
+    uint64_t stall_icache_refill;
+    uint64_t stall_load_use;
+    uint64_t stall_branch_flush;
+    uint64_t stall_other;
+};
+
 uint32_t* difftest_state_buf();
 difftest_commit_t* difftest_get_commit();
 difftest_trap_t* difftest_get_trap();
 difftest_cache_state_t* difftest_get_cache_state();
 difftest_branch_state_t* difftest_get_branch_state();
+difftest_stall_state_t* difftest_get_stall_state();
 uint64_t* difftest_cycle_ptr();
 
 #endif
