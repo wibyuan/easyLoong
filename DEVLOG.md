@@ -36,23 +36,37 @@
 - [x] dcache FLUSH_DCACHE 通过：stage 2-5 全量数据比对通过（2026-07-25）
 - [x] dcache cacheable 属性支持：基于 CRMD/DMW 计算 cacheability，dcache 门控 is_cachable（2026-07-25）
 - [x] fibonacci difftest 通过：uncache kernel（DA 模式）下 dcache bypass，store 直写 SRAM，I/D 一致性正确（2026-07-25）
+- [x] icache ghost hit workaround 修复（2026-07-26）：用 `just_hit` + `last_hit_addr` 寄存器精确检测 S1 stale 地址，仅在 s1_addr 与 s2_hit 地址相同时抑制 s1→s2 推进。消除了无条件清 s1_valid 的 1 周期强制空泡，icache 管道效率 access/s1_accept 从 33% 提升至 50%。
+- [x] fetch_unit 消除 IDLE 死周期（2026-07-26）：REQ 状态在 data_ok 后不再回 IDLE；同时抑制 data_ok、do_ex_flush、do_id_jump 活跃时的 stale 请求。结合 icache 修复后，linear 代码 IPC +0.2%~+10.9%，Matrix 循环因无分支预测器致投机取指冲刷 +4.1% 周期（见下）。
 
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
-- [ ] Cache 幽灵命中修复去幽灵化：Bug 4/5 的 "修复" 本质是每次 hit 后强制空泡 1 周期（清空 s1_valid），等效于人为阻塞。正确的做法是在 BRAM 读延迟后的 S2 阶段做组合逻辑 tag 比较，而非靠丢弃 S1 请求避错。当前 workaround 导致 cache 流水线出现无谓的吞吐空洞。
+- [ ] dcache ghost hit workaround 修复：dcache 仍有同样的 s1_valid 无条件清零 workaround，可参照 icache stale check 方法修复
 
-## 当前 difftest 状态（2026-07-25，CACOP/IBAR/cacheable 实现后）
+## 当前 difftest 状态（2026-07-26，icache workaround 修复 + fetch_unit 优化后）
 
 | 测试 | DIFF=1 difftest | 数据比对 | 指令数 |
 |------|-----------------|----------|--------|
-| simple | ✅ 通过 | N/A | ~170 |
-| stream | ✅ 通过 | ✅ 通过 | ~390 万 |
-| matrix | ✅ 通过 | ✅ 通过 | ~560 万 |
-| mixed | ✅ 通过 | ✅ 通过 | ~30 万 |
-| cryptonight | ✅ 通过 | ✅ 通过 | ~2300 万 |
-| fibonacci | ✅ 通过 | ✅ 通过 | ~34.5K |
+| simple | ✅ 通过 | N/A | ~21K |
+| stream | ✅ 通过 | ✅ 通过 | ~395 万 |
+| matrix | ✅ 通过 | ✅ 通过 | ~564 万 |
+| mixed | ✅ 通过 | ✅ 通过 | ~33 万 |
+| cryptonight | ✅ 通过 | ✅ 通过 | ~2309 万 |
+| fibonacci | ✅ 通过 | ✅ 通过 | ~7.6 万 |
+
+### 2026-07-26 性能对比（icache workaround 修复前 vs 后）
+
+| 测试 | 旧 IPC | 新 IPC | Δ IPC | 旧周期 | 新周期 | Δ 周期 |
+|------|--------|--------|-------|--------|--------|--------|
+| simple | 0.1357 | 0.1505 | +10.9% | 154,642 | 144,243 | -6.7% |
+| mixed | 0.112 | 0.1169 | +4.4% | 2.94M | 2.81M | -4.4% |
+| stream | 0.081 | 0.0812 | +0.2% | 48.91M | 48.71M | -0.4% |
+| cryptonight | 0.088 | 0.0893 | +1.5% | 261.72M | 258.67M | -1.2% |
+| matrix | 0.127 | 0.1218 | **-4.1%** | 44.42M | 46.35M | **+4.3%** |
+
+> Matrix 退化原因：fetch_unit 消除 IDLE 后取指更激进（ICache access 从 11.10M → 15.37M，+38%），内层循环分支密集导致大量投机取指被冲刷浪费。`redirect_soon` 限流方案（检测 ID/ID_EX 阶段有分支时抑制取指 1 周期）曾尝试修复但造成死锁，需进一步调试 pipeline flush 时序与限流交互。
 
 ### 修复记录
 

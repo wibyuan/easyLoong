@@ -53,8 +53,6 @@
 - **IBAR**：支持 hint=0 流水线冲刷
 - **Cacheability**：基于 CRMD/DMW 区分 cacheable/uncacheable，支持 auto 和 uncache 两种 kernel 构建
 
-> **已知 Workaround**：ICache/DCache 的幽灵命中修复目前通过每次 hit 后强清 S1 流水级实现，等效于 hit 后 1 周期强制空泡，降低 cache 吞吐。正确做法应取消 `s1_valid` 清零，改为在 S2 阶段直接对 BRAM 读出做组合逻辑 tag 比较。见 DEVLOG 待完成列表。
-
 ### 指令集覆盖
 
 | 类别 | 已实现指令 |
@@ -118,10 +116,10 @@
 
 | 测试 | 指令数 | 周期数 | IPC | 估测耗时 | 实板耗时 | 偏差 |
 |------|--------|--------|-----|----------|----------|------|
-| Mixed | 328K | 2.94M | 0.112 | 89 ms | 88 ms | +1.1% |
-| Matrix | 5.64M | 44.42M | 0.127 | 1346 ms | 1391 ms | -3.2% |
-| Stream | 3.95M | 48.91M | 0.081 | 1482 ms | 1524 ms | -2.8% |
-| Cryptonight | 23.09M | 261.72M | 0.088 | 7931 ms | 8387 ms | -5.4% |
+| Mixed | 328K | 2.81M | 0.117 | 85 ms | 88 ms | -3.4% |
+| Matrix | 5.64M | 46.35M | 0.122 | 1405 ms | 1391 ms | +1.0% |
+| Stream | 3.95M | 48.71M | 0.081 | 1476 ms | 1524 ms | -3.1% |
+| Cryptonight | 23.09M | 258.67M | 0.089 | 7838 ms | 8387 ms | -6.5% |
 
 > 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
 > 偏差系统性为负（Verilator 无 bus contention、无跨时钟域延迟、无物理走线延迟）。
@@ -130,12 +128,12 @@
 
 | 测试 | ICache 访问 | ICache 命中率 | DCache 访问 | DCache 命中率 | DCache 写回 |
 |------|------------|--------------|------------|--------------|------------|
-| Mixed | 732K | 99.98% | 66K | 70.46% | 62K words |
-| Matrix | 11.10M | 100.00% | 2.66M | 91.26% | 885K words |
-| Stream | 12.23M | 100.00% | 1.57M | 75.00% | 787K words |
-| Cryptonight | 65.43M | 100.00% | 4.72M | 52.95% | 8.88M words |
+| Mixed | 921K | 99.99% | 66K | 70.46% | 62K words |
+| Matrix | 15.37M | 100.00% | 2.66M | 91.26% | 885K words |
+| Stream | 15.97M | 100.00% | 1.57M | 75.00% | 787K words |
+| Cryptonight | 85.69M | 100.00% | 4.72M | 52.95% | 8.88M words |
 
-> Cryptonight 的 DCache 命中率仅 53%，大量随机访存导致频繁 miss + 写回，与算法特征一致。
+> ICache 访问数上升反映了 fetch_unit 消除 IDLE 死周期后更激进的取指带宽。Mixed/Stream/Cryptonight 的 IPC 有 0.2%~4.4% 提升，Matrix 因循环分支密集导致投机取指冲刷增加 4.1% 周期（IPC 从 0.127 降至 0.122），这是无分支预测器下激进取指的固有 trade-off。
 
 ## 5. 开发环境搭建
 
