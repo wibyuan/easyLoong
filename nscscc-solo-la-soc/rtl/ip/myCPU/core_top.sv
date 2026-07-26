@@ -90,7 +90,7 @@ module core_top #(
     logic [63:0] icache_wa_clear, icache_s1_accept, icache_cyc;
     logic [63:0] dcache_access, dcache_hit, dcache_miss, dcache_wb;
 
-    core u_core (
+    core #(.ICACHE_SETS(ICACHE_SETS), .DCACHE_SETS(DCACHE_SETS)) u_core (
         .clk,
         .reset(~aresetn),
         .ireq,
