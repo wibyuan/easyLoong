@@ -146,13 +146,17 @@ void v_difftest_StallState(
     long long stall_icache_refill,
     long long stall_load_use,
     long long stall_branch_flush,
+    long long stall_dcache_hit_pipe,
+    long long stall_icache_hit_pipe,
     long long stall_other
 ) {
-    dut_stall.stall_dcache_refill = (uint64_t)stall_dcache_refill;
-    dut_stall.stall_icache_refill = (uint64_t)stall_icache_refill;
-    dut_stall.stall_load_use      = (uint64_t)stall_load_use;
-    dut_stall.stall_branch_flush  = (uint64_t)stall_branch_flush;
-    dut_stall.stall_other         = (uint64_t)stall_other;
+    dut_stall.stall_dcache_refill   = (uint64_t)stall_dcache_refill;
+    dut_stall.stall_icache_refill   = (uint64_t)stall_icache_refill;
+    dut_stall.stall_load_use        = (uint64_t)stall_load_use;
+    dut_stall.stall_branch_flush    = (uint64_t)stall_branch_flush;
+    dut_stall.stall_dcache_hit_pipe = (uint64_t)stall_dcache_hit_pipe;
+    dut_stall.stall_icache_hit_pipe = (uint64_t)stall_icache_hit_pipe;
+    dut_stall.stall_other           = (uint64_t)stall_other;
 }
 
 } // extern "C"

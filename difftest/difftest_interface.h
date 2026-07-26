@@ -80,6 +80,8 @@ struct difftest_stall_state_t {
     uint64_t stall_icache_refill;
     uint64_t stall_load_use;
     uint64_t stall_branch_flush;
+    uint64_t stall_dcache_hit_pipe;
+    uint64_t stall_icache_hit_pipe;
     uint64_t stall_other;
 };
 

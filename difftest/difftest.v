@@ -167,6 +167,8 @@ module DifftestStallState (
     input  logic [63:0] stall_icache_refill,
     input  logic [63:0] stall_load_use,
     input  logic [63:0] stall_branch_flush,
+    input  logic [63:0] stall_dcache_hit_pipe,
+    input  logic [63:0] stall_icache_hit_pipe,
     input  logic [63:0] stall_other
 );
     import "DPI-C" function void v_difftest_StallState(
@@ -174,11 +176,15 @@ module DifftestStallState (
         input longint stall_icache_refill,
         input longint stall_load_use,
         input longint stall_branch_flush,
+        input longint stall_dcache_hit_pipe,
+        input longint stall_icache_hit_pipe,
         input longint stall_other
     );
     always @(posedge clock) begin
         v_difftest_StallState(stall_dcache_refill, stall_icache_refill,
-                              stall_load_use, stall_branch_flush, stall_other);
+                              stall_load_use, stall_branch_flush,
+                              stall_dcache_hit_pipe, stall_icache_hit_pipe,
+                              stall_other);
     end
 endmodule
 `endif

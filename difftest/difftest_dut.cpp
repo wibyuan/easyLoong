@@ -388,6 +388,7 @@ static void display_stall_metrics(uint64_t ticks) {
     difftest_stall_state_t *ss = difftest_get_stall_state();
     uint64_t total_stalls = ss->stall_dcache_refill + ss->stall_icache_refill
                           + ss->stall_load_use + ss->stall_branch_flush
+                          + ss->stall_dcache_hit_pipe + ss->stall_icache_hit_pipe
                           + ss->stall_other;
 
     fprintf(stdout, "\n[difftest] ============ Stall Breakdown ============\n");
@@ -405,21 +406,31 @@ static void display_stall_metrics(uint64_t ticks) {
                 (double)ss->stall_load_use * pct_total,
                 ss->stall_branch_flush,
                 (double)ss->stall_branch_flush * pct_total);
+        fprintf(stdout, "[difftest] Stall: DCacheHitPipe=%lu (%.2f%%)"
+                " ICacheHitPipe=%lu (%.2f%%)\n",
+                ss->stall_dcache_hit_pipe,
+                (double)ss->stall_dcache_hit_pipe * pct_total,
+                ss->stall_icache_hit_pipe,
+                (double)ss->stall_icache_hit_pipe * pct_total);
         fprintf(stdout, "[difftest] Stall: Other=%lu (%.2f%%)\n",
                 ss->stall_other,
                 (double)ss->stall_other * pct_total);
 
         if (total_stalls > 0) {
             fprintf(stdout, "[difftest] Stall composition (%% of stall cycles):\n");
-            fprintf(stdout, "[difftest]   DCache Refill: %.1f%%\n",
+            fprintf(stdout, "[difftest]   DCache Refill:   %.1f%%\n",
                     (double)ss->stall_dcache_refill / (double)total_stalls * 100.0);
-            fprintf(stdout, "[difftest]   ICache Refill: %.1f%%\n",
+            fprintf(stdout, "[difftest]   ICache Refill:   %.1f%%\n",
                     (double)ss->stall_icache_refill / (double)total_stalls * 100.0);
-            fprintf(stdout, "[difftest]   Load-Use:      %.1f%%\n",
+            fprintf(stdout, "[difftest]   Load-Use:        %.1f%%\n",
                     (double)ss->stall_load_use / (double)total_stalls * 100.0);
-            fprintf(stdout, "[difftest]   Branch Flush:  %.1f%%\n",
+            fprintf(stdout, "[difftest]   Branch Flush:    %.1f%%\n",
                     (double)ss->stall_branch_flush / (double)total_stalls * 100.0);
-            fprintf(stdout, "[difftest]   Other:         %.1f%%\n",
+            fprintf(stdout, "[difftest]   DCache Hit Pipe: %.1f%%\n",
+                    (double)ss->stall_dcache_hit_pipe / (double)total_stalls * 100.0);
+            fprintf(stdout, "[difftest]   ICache Hit Pipe: %.1f%%\n",
+                    (double)ss->stall_icache_hit_pipe / (double)total_stalls * 100.0);
+            fprintf(stdout, "[difftest]   Other:           %.1f%%\n",
                     (double)ss->stall_other / (double)total_stalls * 100.0);
         }
     } else {
