@@ -106,7 +106,7 @@ module core_top #(
         .debug_wb_rf_wdata(core_debug_wb_rf_wdata)
     );
 
-    dcache #(.NR_SETS(DCACHE_SETS)) u_dcache (
+    dcache #(.NR_SETS(DCACHE_SETS), .NR_WAYS(4)) u_dcache (
         .clk,
         .reset(~aresetn),
         .cpu_req(dreq),

@@ -20,21 +20,24 @@ module dcache import la32_common::*; (
 );
 
     parameter int NR_SETS = 256;
+    parameter int NR_WAYS = 2;
     localparam NR_WORDS = 4;
     localparam INDEX_WIDTH = $clog2(NR_SETS);
     localparam TAG_WIDTH = 32 - 4 - INDEX_WIDTH;
+    localparam WAY_BITS = $clog2(NR_WAYS);
 
     typedef logic [1:0] woffset_t;
     typedef logic [INDEX_WIDTH-1:0] index_t;
     typedef logic [TAG_WIDTH-1:0] tag_t;
+    typedef logic [WAY_BITS-1:0] way_t;
 
-    // ==================== Data BRAM (registered read, 8 banks) ====================
-    (* ram_style = "block" *) logic [31:0] data_mem [0:1][0:3][NR_SETS-1:0];
+    // ==================== Data BRAM (registered read, 8 banks per way) ====================
+    (* ram_style = "block" *) logic [31:0] data_mem [0:NR_WAYS-1][0:3][NR_SETS-1:0];
     logic        data_rd_ena;
     index_t      data_rd_addr;
-    logic [31:0] data_rd_out [0:1][0:3];
+    logic [31:0] data_rd_out [0:NR_WAYS-1][0:3];
     logic        data_wr_ena;
-    logic        data_wr_way;
+    way_t        data_wr_way;
     index_t      data_wr_addr;
     logic [1:0]  data_wr_wo;
     logic [3:0]  data_wr_we;
@@ -56,16 +59,24 @@ module dcache import la32_common::*; (
             data_rd_out[1][1] <= data_mem[1][1][data_rd_addr];
             data_rd_out[1][2] <= data_mem[1][2][data_rd_addr];
             data_rd_out[1][3] <= data_mem[1][3][data_rd_addr];
+            data_rd_out[2][0] <= data_mem[2][0][data_rd_addr];
+            data_rd_out[2][1] <= data_mem[2][1][data_rd_addr];
+            data_rd_out[2][2] <= data_mem[2][2][data_rd_addr];
+            data_rd_out[2][3] <= data_mem[2][3][data_rd_addr];
+            data_rd_out[3][0] <= data_mem[3][0][data_rd_addr];
+            data_rd_out[3][1] <= data_mem[3][1][data_rd_addr];
+            data_rd_out[3][2] <= data_mem[3][2][data_rd_addr];
+            data_rd_out[3][3] <= data_mem[3][3][data_rd_addr];
         end
     end
 
-    // ==================== Tag BRAM (registered read, 2 ways) ====================
-    (* ram_style = "block" *) logic [TAG_WIDTH:0] tag_mem [0:1][NR_SETS-1:0];
+    // ==================== Tag BRAM (registered read) ====================
+    (* ram_style = "block" *) logic [TAG_WIDTH:0] tag_mem [0:NR_WAYS-1][NR_SETS-1:0];
     logic        tag_rd_ena;
     index_t      tag_rd_addr;
-    logic [TAG_WIDTH:0] tag_rd_data [0:1];
+    logic [TAG_WIDTH:0] tag_rd_data [0:NR_WAYS-1];
     logic        tag_wr_ena;
-    logic        tag_wr_way;
+    way_t        tag_wr_way;
     index_t      tag_wr_addr;
     logic [TAG_WIDTH:0] tag_wr_data;
 
@@ -75,12 +86,14 @@ module dcache import la32_common::*; (
         if (tag_rd_ena) begin
             tag_rd_data[0] <= tag_mem[0][tag_rd_addr];
             tag_rd_data[1] <= tag_mem[1][tag_rd_addr];
+            tag_rd_data[2] <= tag_mem[2][tag_rd_addr];
+            tag_rd_data[3] <= tag_mem[3][tag_rd_addr];
         end
     end
 
     // ==================== Dirty + PLRU ====================
-    logic [NR_SETS-1:0] dirty [0:1];
-    logic [NR_SETS-1:0] plru;
+    logic [NR_SETS-1:0] dirty [0:NR_WAYS-1];
+    logic [NR_SETS-1:0] plru [0:NR_WAYS-2];
 
     // ==================== State ====================
     enum logic [3:0] {
@@ -132,7 +145,7 @@ module dcache import la32_common::*; (
     woffset_t   m_wo;
     index_t     m_idx;
     tag_t       m_tag;
-    logic       m_eway;
+    way_t       m_eway;
     logic       m_edirty;
     tag_t       m_etag;
 
@@ -145,7 +158,7 @@ module dcache import la32_common::*; (
     word_t      rf_buf [0:3];
     word_t      wb_buf [0:3];
 
-    logic       cacop_way;
+    way_t       cacop_way;
     index_t     cacop_idx;
     tag_t       cacop_etag;
     logic       cacop_edirty;
@@ -154,33 +167,43 @@ module dcache import la32_common::*; (
 
     // ==================== Init registers ====================
     index_t init_addr;
-    logic   init_wr_way;
+    way_t   init_wr_way;
 
     // ==================== Helper functions ====================
     function automatic logic is_cachable(input word_t a, input logic c);
         return c && (a[31:24] == 8'h1c);
     endfunction
 
-    function automatic logic victim_way(input index_t i);
-        return ~plru[i];
+    function automatic way_t victim_way(input index_t i);
+        if (plru[0][i] == 1'b0)
+            return {1'b0, plru[1][i]};
+        else
+            return {1'b1, plru[2][i]};
     endfunction
 
     // ==================== S2 hit (uses combinational tag read) ====================
-    wire [TAG_WIDTH-1:0] tag_r_tag [0:1];
-    wire                 tag_r_v   [0:1];
+    wire [TAG_WIDTH-1:0] tag_r_tag [0:NR_WAYS-1];
+    wire                 tag_r_v   [0:NR_WAYS-1];
     assign tag_r_tag[0] = tag_rd_data[0][TAG_WIDTH:1];
     assign tag_r_tag[1] = tag_rd_data[1][TAG_WIDTH:1];
+    assign tag_r_tag[2] = tag_rd_data[2][TAG_WIDTH:1];
+    assign tag_r_tag[3] = tag_rd_data[3][TAG_WIDTH:1];
     assign tag_r_v[0] = tag_rd_data[0][0];
     assign tag_r_v[1] = tag_rd_data[1][0];
+    assign tag_r_v[2] = tag_rd_data[2][0];
+    assign tag_r_v[3] = tag_rd_data[3][0];
 
-    logic s2_hit, s2_hit_way;
+    logic s2_hit;
+    way_t  s2_hit_way;
 
     always_comb begin
-        automatic logic h0, h1;
+        automatic logic h0, h1, h2, h3;
         h0 = s2_valid && tag_r_v[0] && (tag_r_tag[0] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
         h1 = s2_valid && tag_r_v[1] && (tag_r_tag[1] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
-        s2_hit = h0 || h1;
-        s2_hit_way = h0 ? 1'b0 : 1'b1;
+        h2 = s2_valid && tag_r_v[2] && (tag_r_tag[2] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
+        h3 = s2_valid && tag_r_v[3] && (tag_r_tag[3] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
+        s2_hit = h0 || h1 || h2 || h3;
+        s2_hit_way = h0 ? 2'd0 : (h1 ? 2'd1 : (h2 ? 2'd2 : 2'd3));
     end
 
     // ==================== Stall condition ====================
@@ -239,14 +262,14 @@ module dcache import la32_common::*; (
         mem_req_next.data   = 32'd0;
 
         data_wr_ena  = 1'b0;
-        data_wr_way  = 1'b0;
+        data_wr_way  = '0;
         data_wr_addr = '0;
         data_wr_wo   = 2'd0;
         data_wr_we   = 4'd0;
         data_wr_data = 32'd0;
 
         tag_wr_ena  = 1'b0;
-        tag_wr_way  = 1'b0;
+        tag_wr_way  = '0;
         tag_wr_addr = '0;
         tag_wr_data = '0;
 
@@ -257,7 +280,7 @@ module dcache import la32_common::*; (
                 tag_wr_way  = init_wr_way;
                 tag_wr_addr = init_addr;
                 tag_wr_data = '0;
-                if (init_wr_way == 1'b1 && init_addr == NR_SETS - 1)
+                if (init_wr_way == NR_WAYS - 1 && init_addr == NR_SETS - 1)
                     next_state = S_IDLE;
             end
 
@@ -428,9 +451,10 @@ module dcache import la32_common::*; (
             s2_valid    <= 1'b0;
             just_hit    <= 1'b0;
             last_hit_addr <= 32'd0;
-            dirty[0]    <= '0;
-            dirty[1]   <= '0;
-            plru       <= '0;
+            for (int w = 0; w < NR_WAYS; w++)
+                dirty[w]  <= '0;
+            for (int p = 0; p < NR_WAYS-1; p++)
+                plru[p]  <= '0;
             rf_fmask   <= 4'd0;
             wb_cnt     <= 2'd0;
             rf_cnt     <= 2'd0;
@@ -438,15 +462,15 @@ module dcache import la32_common::*; (
             rf_kw_sent <= 1'b0;
             mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0, cacheable: 1'b0};
             init_addr    <= '0;
-            init_wr_way  <= 1'b0;
+            init_wr_way  <= '0;
         end else begin
             state <= next_state;
             mem_req_r <= mem_req_next;
 
             if (state == S_INIT) begin
-                if (init_wr_way == 1'b1)
+                if (init_wr_way == NR_WAYS - 1)
                     init_addr <= init_addr + 1;
-                init_wr_way <= ~init_wr_way;
+                init_wr_way <= init_wr_way + 1;
             end
 
             if (!s1_stall) begin
@@ -479,10 +503,6 @@ module dcache import la32_common::*; (
                 s1_valid <= 1'b0;
                 s2_valid <= 1'b0;
             end else if (s2_valid) begin
-                // WORKAROUND: when s1_stall stops s1→s2 shift, s2_valid lingers
-                // with stale data. Clearing both here is a brute-force reset;
-                // with the store-hit stall removed and ghost-hit branch removed,
-                // this path becomes unreachable for normal operation.
                 s2_valid <= 1'b0;
                 s1_valid <= 1'b0;
             end
@@ -492,7 +512,12 @@ module dcache import la32_common::*; (
                 last_hit_addr <= s2_addr;
 
             if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
-                plru[s2_idx] <= s2_hit_way;
+                case (s2_hit_way)
+                    2'd0: begin plru[0][s2_idx] <= 1'b1; plru[1][s2_idx] <= 1'b1; end
+                    2'd1: begin plru[0][s2_idx] <= 1'b1; plru[1][s2_idx] <= 1'b0; end
+                    2'd2: begin plru[0][s2_idx] <= 1'b0; plru[2][s2_idx] <= 1'b1; end
+                    2'd3: begin plru[0][s2_idx] <= 1'b0; plru[2][s2_idx] <= 1'b0; end
+                endcase
                 if (s2_op)
                     dirty[s2_hit_way][s2_idx] <= 1'b1;
             end
@@ -508,19 +533,18 @@ module dcache import la32_common::*; (
                 m_tag    <= s2_tag;
                 m_eway   <= victim_way(s2_idx);
                 m_edirty <= dirty[victim_way(s2_idx)][s2_idx];
-                m_etag   <= (victim_way(s2_idx) == 1'b0)
-                            ? tag_r_tag[0] : tag_r_tag[1];
+                m_etag   <= tag_r_tag[victim_way(s2_idx)];
             end
 
             if (state == S_IDLE && cacop_req.valid
                 && cacop_req.code[2:0] == 3'd1 && !s2_valid) begin
-                cacop_way <= cacop_req.addr[0];
+                cacop_way <= cacop_req.addr[1:0];
                 cacop_idx <= cacop_req.addr[INDEX_WIDTH+3:4];
                 if (cacop_req.code[4:3] == 2'b00) begin
-                    dirty[cacop_req.addr[0]][cacop_req.addr[INDEX_WIDTH+3:4]] <= 1'b0;
+                    dirty[cacop_req.addr[1:0]][cacop_req.addr[INDEX_WIDTH+3:4]] <= 1'b0;
                 end
                 if (cacop_req.code[4:3] == 2'b01) begin
-                    cacop_edirty <= dirty[cacop_req.addr[0]][cacop_req.addr[INDEX_WIDTH+3:4]];
+                    cacop_edirty <= dirty[cacop_req.addr[1:0]][cacop_req.addr[INDEX_WIDTH+3:4]];
                     cacop_wb_cnt <= 2'd0;
                 end
             end
@@ -566,7 +590,12 @@ module dcache import la32_common::*; (
                 rf_wr_cnt <= rf_wr_cnt + 1;
                 if (rf_wr_cnt == 2'd3) begin
                     dirty[m_eway][m_idx] <= 1'b0;
-                    plru[m_idx]          <= m_eway;
+                    case (m_eway)
+                        2'd0: begin plru[0][m_idx] <= 1'b1; plru[1][m_idx] <= 1'b1; end
+                        2'd1: begin plru[0][m_idx] <= 1'b1; plru[1][m_idx] <= 1'b0; end
+                        2'd2: begin plru[0][m_idx] <= 1'b0; plru[2][m_idx] <= 1'b1; end
+                        2'd3: begin plru[0][m_idx] <= 1'b0; plru[2][m_idx] <= 1'b0; end
+                    endcase
                 end
             end
 
