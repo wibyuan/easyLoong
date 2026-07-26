@@ -36,7 +36,7 @@ CCACHE := $(if $(shell which ccache),ccache,)
 CC := $(CCACHE) $(CC)
 LD := $(CCACHE) $(CC)
 INCLUDES = $(addprefix -I, $(INC_DIR))
-CFLAGS  := -g -MMD -Wall $(INCLUDES) $(CFLAGS)
+CFLAGS  := -g -MMD -Wall $(INCLUDES) $(CFLAGS) -DICACHE_INDEX_BITS=8 -DDCACHE_INDEX_BITS=8
 LDFLAGS := $(LDFLAGS)
 
 OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
