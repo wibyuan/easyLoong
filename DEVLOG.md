@@ -45,34 +45,7 @@
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
-- [ ] dcache 写缓冲（write buffer）：store 命中后主状态机立即回 S_IDLE + 回 data_ok，BRAM 写入由独立写缓冲状态机异步完成。这是实现非阻塞 store 的唯一正确方式（见 write buffer 分析）
-
-## write buffer 必要性分析（2026-07-26）
-
-**尝试**：不做写缓冲，通过 dcache early addr_ok + LSU addr_ok 即退休实现非阻塞 store。
-
-**失败原因**：dcache 的 `early_ack` 信号基于 `s1_reg`（已捕获的上一请求）触发 `addr_ok`，但 LSU 将此 `addr_ok` 解释为 dreq 上**当前请求**的响应。两者之间差一个寄存器周期：
-
-```
-Cycle N:   dreq = store B（当前请求）
-           s1_reg = store A（s1 寄存器，上一请求）
-           early_ack 基于 s1_reg 触发 addr_ok=1
-           
-           LSU: addr_ok=1 → 认为 store B 完成 → dreq.valid=0
-           dcache S1: capture dreq.valid=0 → store B 永远丢失
-```
-
-中间请求在 S1 被覆盖前从未进入 S2，彻底消失。
-
-**根本原因**：BRAM 存 tag 有 1-cycle 读延迟，命中检测必须在 S2 完成。store 从进入 dcache 到可回 data_ok 最少 2 周期。LSU 无法在 S2 之前确认 store 已命中。
-
-**openLA500 的解法**：写缓冲将 data_ok 返回与 BRAM 写入解耦到两个独立状态机——
-- 主状态机：store 在 LOOKUP 状态确认命中 → 回 data_ok → 立即回 IDLE
-- 写缓冲状态机：异步写入 BRAM，与主状态机的 BRAM 读做 bank 级冲突检测和 forwarding
-
-不存在"谁给谁回 data_ok"的歧义，因此正确。
-
-**结论**：不带写缓冲的非阻塞 store 在 2 级流水 dcache 上不可能正确实现。写缓冲是进一步 IPC 优化的必要前提。
+- [ ] dcache 写缓冲（write buffer）实现：store 命中后异步写 BRAM，消除 MEM 级寄存器延迟空泡
 
 ## 当前 difftest 状态（2026-07-26，icache workaround + dcache workaround 修复后）
 
