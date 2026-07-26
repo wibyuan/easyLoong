@@ -23,6 +23,8 @@ module core import la32_common::*; #(
     output logic [63:0] stall_icache_refill,
     output logic [63:0] stall_load_use,
     output logic [63:0] stall_branch_flush,
+    output logic [63:0] stall_dcache_hit_pipe,
+    output logic [63:0] stall_icache_hit_pipe,
     output logic [63:0] stall_other
 );
 
@@ -522,13 +524,18 @@ module core import la32_common::*; #(
     assign debug_wb_rf_wdata = mem_wb_out.data.final_res;
 
     // ==================== STALL COUNTERS ====================
+    logic lsu_not_ready;
+    assign lsu_not_ready = !lsu_ready;
+
     always_ff @(posedge clk) begin
         if (reset) begin
-            stall_dcache_refill <= 64'd0;
-            stall_icache_refill <= 64'd0;
-            stall_load_use      <= 64'd0;
-            stall_branch_flush  <= 64'd0;
-            stall_other         <= 64'd0;
+            stall_dcache_refill   <= 64'd0;
+            stall_icache_refill   <= 64'd0;
+            stall_load_use        <= 64'd0;
+            stall_branch_flush    <= 64'd0;
+            stall_dcache_hit_pipe <= 64'd0;
+            stall_icache_hit_pipe <= 64'd0;
+            stall_other           <= 64'd0;
         end else if (!mem_wb_out.ctrl.valid) begin
             if (dcache_in_refill)
                 stall_dcache_refill <= stall_dcache_refill + 64'd1;
@@ -539,6 +546,10 @@ module core import la32_common::*; #(
             else if ((if_id_flush && if_id_out.ctrl.valid) ||
                      (id_ex_flush && id_ex_out.ctrl.valid))
                 stall_branch_flush <= stall_branch_flush + 64'd1;
+            else if (lsu_not_ready)
+                stall_dcache_hit_pipe <= stall_dcache_hit_pipe + 64'd1;
+            else if (!iresp.data_ok)
+                stall_icache_hit_pipe <= stall_icache_hit_pipe + 64'd1;
             else
                 stall_other <= stall_other + 64'd1;
         end
@@ -633,6 +644,8 @@ module core import la32_common::*; #(
         .stall_icache_refill(stall_icache_refill),
         .stall_load_use(stall_load_use),
         .stall_branch_flush(stall_branch_flush),
+        .stall_dcache_hit_pipe(stall_dcache_hit_pipe),
+        .stall_icache_hit_pipe(stall_icache_hit_pipe),
         .stall_other(stall_other)
     );
 `endif

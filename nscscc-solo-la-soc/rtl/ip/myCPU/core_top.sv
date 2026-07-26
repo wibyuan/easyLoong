@@ -93,7 +93,9 @@ module core_top #(
     logic dcache_in_refill, icache_in_refill;
 
     logic [63:0] stall_dcache_refill, stall_icache_refill;
-    logic [63:0] stall_load_use, stall_branch_flush, stall_other;
+    logic [63:0] stall_load_use, stall_branch_flush;
+    logic [63:0] stall_dcache_hit_pipe, stall_icache_hit_pipe;
+    logic [63:0] stall_other;
 
     core #(.ICACHE_SETS(ICACHE_SETS), .DCACHE_SETS(DCACHE_SETS)) u_core (
         .clk,
@@ -115,6 +117,8 @@ module core_top #(
         .stall_icache_refill(stall_icache_refill),
         .stall_load_use(stall_load_use),
         .stall_branch_flush(stall_branch_flush),
+        .stall_dcache_hit_pipe(stall_dcache_hit_pipe),
+        .stall_icache_hit_pipe(stall_icache_hit_pipe),
         .stall_other(stall_other)
     );
 
