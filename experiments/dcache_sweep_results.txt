@@ -1,0 +1,6 @@
+=== DCache Set Count Sweep ===
+Started: Sun Jul 26 13:24:45 CST 2026
+Sizes:  256 512 1024 2048
+Tests:  simple stream matrix mixed cryptonight
+256 94.29 75.00 91.26 70.46 52.95
+512 94.29 75.00 91.26 71.88 53.12
