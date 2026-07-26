@@ -392,7 +392,7 @@ module core import la32_common::*; #(
 
     logic [31:0] cpucfg_result;
     localparam ICACHE_CFG = 32'h04000001 | ($clog2(ICACHE_SETS) << 16);
-    localparam DCACHE_CFG = 32'h04000003 | ($clog2(DCACHE_SETS) << 16);
+    localparam DCACHE_CFG = 32'h05000001 | ($clog2(DCACHE_SETS) << 16);
     always_comb begin
         cpucfg_result = 32'd0;
         case (forward_a)

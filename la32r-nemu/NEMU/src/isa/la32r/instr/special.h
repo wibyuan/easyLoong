@@ -67,7 +67,7 @@ def_EHelper(cpucfg) {
       cfg_val = 0x04000001 | (ICACHE_INDEX_BITS << 16);
       break;
     case 0x12:
-      cfg_val = 0x04000003 | (DCACHE_INDEX_BITS << 16);
+      cfg_val = 0x05000001 | (DCACHE_INDEX_BITS << 16);
       break;
     default:
       cfg_val = 0;

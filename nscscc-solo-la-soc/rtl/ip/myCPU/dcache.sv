@@ -21,25 +21,28 @@ module dcache import la32_common::*; (
 
     parameter int NR_SETS = 256;
     parameter int NR_WAYS = 2;
-    localparam NR_WORDS = 4;
+    parameter int NR_WORDS = 4;
+    localparam WORD_WIDTH  = $clog2(NR_WORDS);
+    localparam LINE_OFFSET = WORD_WIDTH + 2;
     localparam INDEX_WIDTH = $clog2(NR_SETS);
-    localparam TAG_WIDTH = 32 - 4 - INDEX_WIDTH;
-    localparam WAY_BITS = $clog2(NR_WAYS);
+    localparam TAG_WIDTH   = 32 - LINE_OFFSET - INDEX_WIDTH;
+    localparam WAY_BITS    = $clog2(NR_WAYS);
+    localparam CNT_WIDTH   = (NR_WORDS == 1) ? 1 : WORD_WIDTH;
 
-    typedef logic [1:0] woffset_t;
+    typedef logic [WORD_WIDTH-1:0] woffset_t;
     typedef logic [INDEX_WIDTH-1:0] index_t;
     typedef logic [TAG_WIDTH-1:0] tag_t;
     typedef logic [WAY_BITS-1:0] way_t;
 
-    // ==================== Data BRAM (registered read, 8 banks per way) ====================
-    (* ram_style = "block" *) logic [31:0] data_mem [0:NR_WAYS-1][0:3][NR_SETS-1:0];
+    // ==================== Data BRAM ====================
+    (* ram_style = "block" *) logic [31:0] data_mem [0:NR_WAYS-1][0:NR_WORDS-1][NR_SETS-1:0];
     logic        data_rd_ena;
     index_t      data_rd_addr;
-    logic [31:0] data_rd_out [0:NR_WAYS-1][0:3];
+    logic [31:0] data_rd_out [0:NR_WAYS-1][0:NR_WORDS-1];
     logic        data_wr_ena;
     way_t        data_wr_way;
     index_t      data_wr_addr;
-    logic [1:0]  data_wr_wo;
+    woffset_t    data_wr_wo;
     logic [3:0]  data_wr_we;
     logic [31:0] data_wr_data;
 
@@ -51,26 +54,13 @@ module dcache import la32_common::*; (
             if (data_wr_we[3]) data_mem[data_wr_way][data_wr_wo][data_wr_addr][31:24] <= data_wr_data[31:24];
         end
         if (data_rd_ena) begin
-            data_rd_out[0][0] <= data_mem[0][0][data_rd_addr];
-            data_rd_out[0][1] <= data_mem[0][1][data_rd_addr];
-            data_rd_out[0][2] <= data_mem[0][2][data_rd_addr];
-            data_rd_out[0][3] <= data_mem[0][3][data_rd_addr];
-            data_rd_out[1][0] <= data_mem[1][0][data_rd_addr];
-            data_rd_out[1][1] <= data_mem[1][1][data_rd_addr];
-            data_rd_out[1][2] <= data_mem[1][2][data_rd_addr];
-            data_rd_out[1][3] <= data_mem[1][3][data_rd_addr];
-            data_rd_out[2][0] <= data_mem[2][0][data_rd_addr];
-            data_rd_out[2][1] <= data_mem[2][1][data_rd_addr];
-            data_rd_out[2][2] <= data_mem[2][2][data_rd_addr];
-            data_rd_out[2][3] <= data_mem[2][3][data_rd_addr];
-            data_rd_out[3][0] <= data_mem[3][0][data_rd_addr];
-            data_rd_out[3][1] <= data_mem[3][1][data_rd_addr];
-            data_rd_out[3][2] <= data_mem[3][2][data_rd_addr];
-            data_rd_out[3][3] <= data_mem[3][3][data_rd_addr];
+            for (int w = 0; w < NR_WAYS; w++)
+                for (int b = 0; b < NR_WORDS; b++)
+                    data_rd_out[w][b] <= data_mem[w][b][data_rd_addr];
         end
     end
 
-    // ==================== Tag BRAM (registered read) ====================
+    // ==================== Tag BRAM ====================
     (* ram_style = "block" *) logic [TAG_WIDTH:0] tag_mem [0:NR_WAYS-1][NR_SETS-1:0];
     logic        tag_rd_ena;
     index_t      tag_rd_addr;
@@ -84,10 +74,8 @@ module dcache import la32_common::*; (
         if (tag_wr_ena)
             tag_mem[tag_wr_way][tag_wr_addr] <= tag_wr_data;
         if (tag_rd_ena) begin
-            tag_rd_data[0] <= tag_mem[0][tag_rd_addr];
-            tag_rd_data[1] <= tag_mem[1][tag_rd_addr];
-            tag_rd_data[2] <= tag_mem[2][tag_rd_addr];
-            tag_rd_data[3] <= tag_mem[3][tag_rd_addr];
+            for (int w = 0; w < NR_WAYS; w++)
+                tag_rd_data[w] <= tag_mem[w][tag_rd_addr];
         end
     end
 
@@ -150,20 +138,20 @@ module dcache import la32_common::*; (
     tag_t       m_etag;
 
     // ==================== Work registers ====================
-    logic [1:0] wb_cnt;
-    logic [1:0] rf_cnt;
-    logic [1:0] rf_wr_cnt;
-    logic [3:0] rf_fmask;
-    logic       rf_kw_sent;
-    word_t      rf_buf [0:3];
-    word_t      wb_buf [0:3];
+    logic [CNT_WIDTH-1:0] wb_cnt;
+    logic [CNT_WIDTH-1:0] rf_cnt;
+    logic [CNT_WIDTH-1:0] rf_wr_cnt;
+    logic [NR_WORDS-1:0]  rf_fmask;
+    logic                 rf_kw_sent;
+    word_t                rf_buf [0:NR_WORDS-1];
+    word_t                wb_buf [0:NR_WORDS-1];
 
-    way_t       cacop_way;
-    index_t     cacop_idx;
-    tag_t       cacop_etag;
-    logic       cacop_edirty;
-    logic [1:0] cacop_wb_cnt;
-    word_t      cacop_wb_buf [0:3];
+    way_t                 cacop_way;
+    index_t               cacop_idx;
+    tag_t                 cacop_etag;
+    logic                 cacop_edirty;
+    logic [CNT_WIDTH-1:0] cacop_wb_cnt;
+    word_t                cacop_wb_buf [0:NR_WORDS-1];
 
     // ==================== Init registers ====================
     index_t init_addr;
@@ -175,35 +163,33 @@ module dcache import la32_common::*; (
     endfunction
 
     function automatic way_t victim_way(input index_t i);
-        if (plru[0][i] == 1'b0)
-            return {1'b0, plru[1][i]};
-        else
-            return {1'b1, plru[2][i]};
+        automatic int node = 0;
+        for (int b = WAY_BITS-1; b >= 0; b--) begin
+            victim_way[b] = plru[node][i];
+            node = 2*node + 1 + int'(plru[node][i]);
+        end
     endfunction
 
-    // ==================== S2 hit (uses combinational tag read) ====================
+    // ==================== S2 hit ====================
     wire [TAG_WIDTH-1:0] tag_r_tag [0:NR_WAYS-1];
     wire                 tag_r_v   [0:NR_WAYS-1];
-    assign tag_r_tag[0] = tag_rd_data[0][TAG_WIDTH:1];
-    assign tag_r_tag[1] = tag_rd_data[1][TAG_WIDTH:1];
-    assign tag_r_tag[2] = tag_rd_data[2][TAG_WIDTH:1];
-    assign tag_r_tag[3] = tag_rd_data[3][TAG_WIDTH:1];
-    assign tag_r_v[0] = tag_rd_data[0][0];
-    assign tag_r_v[1] = tag_rd_data[1][0];
-    assign tag_r_v[2] = tag_rd_data[2][0];
-    assign tag_r_v[3] = tag_rd_data[3][0];
+    for (genvar gw = 0; gw < NR_WAYS; gw++) begin : tag_extract
+        assign tag_r_tag[gw] = tag_rd_data[gw][TAG_WIDTH:1];
+        assign tag_r_v[gw]   = tag_rd_data[gw][0];
+    end
 
     logic s2_hit;
     way_t  s2_hit_way;
 
     always_comb begin
-        automatic logic h0, h1, h2, h3;
-        h0 = s2_valid && tag_r_v[0] && (tag_r_tag[0] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
-        h1 = s2_valid && tag_r_v[1] && (tag_r_tag[1] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
-        h2 = s2_valid && tag_r_v[2] && (tag_r_tag[2] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
-        h3 = s2_valid && tag_r_v[3] && (tag_r_tag[3] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
-        s2_hit = h0 || h1 || h2 || h3;
-        s2_hit_way = h0 ? 2'd0 : (h1 ? 2'd1 : (h2 ? 2'd2 : 2'd3));
+        automatic logic [NR_WAYS-1:0] hit_vec;
+        hit_vec = '0;
+        for (int w = 0; w < NR_WAYS; w++)
+            hit_vec[w] = s2_valid && tag_r_v[w] && (tag_r_tag[w] == s2_tag) && is_cachable(s2_addr, s2_cacheable);
+        s2_hit = |hit_vec;
+        s2_hit_way = '0;
+        for (int w = 0; w < NR_WAYS; w++)
+            if (hit_vec[w]) s2_hit_way = way_t'(w);
     end
 
     // ==================== Stall condition ====================
@@ -239,9 +225,9 @@ module dcache import la32_common::*; (
         end
         if (state == S_IDLE && cacop_req.valid && cacop_req.code[2:0] == 3'd1 && cacop_req.code[4:3] == 2'b01) begin
             data_rd_ena = 1'b1;
-            data_rd_addr = cacop_req.addr[INDEX_WIDTH+3:4];
+            data_rd_addr = cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
             tag_rd_ena  = 1'b1;
-            tag_rd_addr  = cacop_req.addr[INDEX_WIDTH+3:4];
+            tag_rd_addr  = cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
         end
     end
 
@@ -264,7 +250,7 @@ module dcache import la32_common::*; (
         data_wr_ena  = 1'b0;
         data_wr_way  = '0;
         data_wr_addr = '0;
-        data_wr_wo   = 2'd0;
+        data_wr_wo   = '0;
         data_wr_we   = 4'd0;
         data_wr_data = 32'd0;
 
@@ -350,7 +336,7 @@ module dcache import la32_common::*; (
                 mem_req_next.strobe = 4'b1111;
                 mem_req_next.data   = wb_buf[wb_cnt];
                 if (mem_resp.addr_ok)
-                    next_state = (wb_cnt == 2'd3) ? S_REFILL_SEND : S_WB_WRITE;
+                    next_state = (wb_cnt == NR_WORDS - 1) ? S_REFILL_SEND : S_WB_WRITE;
             end
 
             S_REFILL_SEND: begin
@@ -373,7 +359,7 @@ module dcache import la32_common::*; (
                         cpu_resp.data_ok = 1'b1;
                         cpu_resp.data    = mem_resp.data;
                     end
-                    next_state = (&(rf_fmask | (4'd1 << rf_cnt)))
+                    next_state = (&(rf_fmask | ({{(NR_WORDS-1){1'b0}}, 1'b1} << rf_cnt)))
                         ? S_REFILL_WRITE : S_REFILL_SEND;
                 end
             end
@@ -385,13 +371,13 @@ module dcache import la32_common::*; (
                 data_wr_wo   = rf_wr_cnt;
                 data_wr_we   = 4'b1111;
                 data_wr_data = rf_buf[rf_wr_cnt];
-                if (rf_wr_cnt == 2'd0) begin
+                if (rf_wr_cnt == 0) begin
                     tag_wr_ena  = 1'b1;
                     tag_wr_way  = m_eway;
                     tag_wr_addr = m_idx;
                     tag_wr_data = {m_tag, 1'b1};
                 end
-                next_state = (rf_wr_cnt == 2'd3)
+                next_state = (rf_wr_cnt == NR_WORDS - 1)
                     ? (m_op ? S_STORE_FINAL : S_IDLE)
                     : S_REFILL_WRITE;
             end
@@ -427,7 +413,7 @@ module dcache import la32_common::*; (
                 mem_req_next.strobe = 4'b1111;
                 mem_req_next.data   = cacop_wb_buf[cacop_wb_cnt];
                 if (mem_resp.addr_ok)
-                    next_state = (cacop_wb_cnt == 2'd3) ? S_CACOP_INV : S_CACOP_WB_WRITE;
+                    next_state = (cacop_wb_cnt == NR_WORDS - 1) ? S_CACOP_INV : S_CACOP_WB_WRITE;
             end
 
             S_CACOP_INV: begin
@@ -455,10 +441,10 @@ module dcache import la32_common::*; (
                 dirty[w]  <= '0;
             for (int p = 0; p < NR_WAYS-1; p++)
                 plru[p]  <= '0;
-            rf_fmask   <= 4'd0;
-            wb_cnt     <= 2'd0;
-            rf_cnt     <= 2'd0;
-            rf_wr_cnt  <= 2'd0;
+            rf_fmask   <= '0;
+            wb_cnt     <= '0;
+            rf_cnt     <= '0;
+            rf_wr_cnt  <= '0;
             rf_kw_sent <= 1'b0;
             mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0, cacheable: 1'b0};
             init_addr    <= '0;
@@ -480,9 +466,9 @@ module dcache import la32_common::*; (
                 s1_size  <= cpu_req.size;
                 s1_wdata <= cpu_req.data;
                 s1_wstrb <= cpu_req.strobe;
-                s1_wo    <= cpu_req.addr[3:2];
-                s1_idx   <= cpu_req.addr[INDEX_WIDTH+3:4];
-                s1_tag   <= cpu_req.addr[31:INDEX_WIDTH+4];
+                s1_wo    <= cpu_req.addr[LINE_OFFSET-1:2];
+                s1_idx   <= cpu_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
+                s1_tag   <= cpu_req.addr[31:INDEX_WIDTH+LINE_OFFSET];
                 s1_cacheable <= cpu_req.cacheable;
 
                 if (s2_hit || (just_hit && s1_addr == last_hit_addr)) begin
@@ -512,12 +498,15 @@ module dcache import la32_common::*; (
                 last_hit_addr <= s2_addr;
 
             if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
-                case (s2_hit_way)
-                    2'd0: begin plru[0][s2_idx] <= 1'b1; plru[1][s2_idx] <= 1'b1; end
-                    2'd1: begin plru[0][s2_idx] <= 1'b1; plru[1][s2_idx] <= 1'b0; end
-                    2'd2: begin plru[0][s2_idx] <= 1'b0; plru[2][s2_idx] <= 1'b1; end
-                    2'd3: begin plru[0][s2_idx] <= 1'b0; plru[2][s2_idx] <= 1'b0; end
-                endcase
+                if (NR_WAYS == 2) begin
+                    plru[0][s2_idx] <= s2_hit_way;
+                end else begin
+                    int node = 0;
+                    for (int b = WAY_BITS-1; b >= 0; b--) begin
+                        plru[node][s2_idx] <= ~s2_hit_way[b];
+                        node = 2*node + 1 + int'(s2_hit_way[b]);
+                    end
+                end
                 if (s2_op)
                     dirty[s2_hit_way][s2_idx] <= 1'b1;
             end
@@ -538,39 +527,36 @@ module dcache import la32_common::*; (
 
             if (state == S_IDLE && cacop_req.valid
                 && cacop_req.code[2:0] == 3'd1 && !s2_valid) begin
-                cacop_way <= cacop_req.addr[1:0];
-                cacop_idx <= cacop_req.addr[INDEX_WIDTH+3:4];
+                cacop_way <= cacop_req.addr[WAY_BITS-1:0];
+                cacop_idx <= cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
                 if (cacop_req.code[4:3] == 2'b00) begin
-                    dirty[cacop_req.addr[1:0]][cacop_req.addr[INDEX_WIDTH+3:4]] <= 1'b0;
+                    dirty[cacop_req.addr[WAY_BITS-1:0]][cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET]] <= 1'b0;
                 end
                 if (cacop_req.code[4:3] == 2'b01) begin
-                    cacop_edirty <= dirty[cacop_req.addr[1:0]][cacop_req.addr[INDEX_WIDTH+3:4]];
-                    cacop_wb_cnt <= 2'd0;
+                    cacop_edirty <= dirty[cacop_req.addr[WAY_BITS-1:0]][cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET]];
+                    cacop_wb_cnt <= '0;
                 end
             end
 
             if (state == S_MISS && next_state == S_REFILL_SEND) begin
                 rf_cnt     <= m_wo;
-                rf_fmask   <= 4'd0;
+                rf_fmask   <= '0;
                 rf_kw_sent <= 1'b0;
             end
 
-
             if (state == S_MISS && next_state == S_WB_READ)
-                wb_cnt <= 2'd0;
+                wb_cnt <= '0;
 
             if (state == S_WB_READ) begin
-                wb_buf[0] <= data_rd_out[m_eway][0];
-                wb_buf[1] <= data_rd_out[m_eway][1];
-                wb_buf[2] <= data_rd_out[m_eway][2];
-                wb_buf[3] <= data_rd_out[m_eway][3];
+                for (int n = 0; n < NR_WORDS; n++)
+                    wb_buf[n] <= data_rd_out[m_eway][n];
             end
 
             if (state == S_WB_WRITE && mem_resp.addr_ok) begin
                 wb_cnt <= wb_cnt + 1;
-                if (wb_cnt == 2'd3) begin
+                if (wb_cnt == NR_WORDS - 1) begin
                     rf_cnt     <= m_wo;
-                    rf_fmask   <= 4'd0;
+                    rf_fmask   <= '0;
                     rf_kw_sent <= 1'b0;
                 end
             end
@@ -580,22 +566,25 @@ module dcache import la32_common::*; (
                 rf_fmask[rf_cnt]     <= 1'b1;
                 if (rf_cnt == m_wo && !rf_kw_sent && m_op == 1'b0)
                     rf_kw_sent <= 1'b1;
-                rf_cnt <= (rf_cnt == 2'd3) ? 2'd0 : (rf_cnt + 1);
+                rf_cnt <= (rf_cnt == NR_WORDS - 1) ? '0 : (rf_cnt + 1);
             end
 
             if (state == S_REFILL_WAIT && next_state == S_REFILL_WRITE)
-                rf_wr_cnt <= 2'd0;
+                rf_wr_cnt <= '0;
 
             if (state == S_REFILL_WRITE) begin
                 rf_wr_cnt <= rf_wr_cnt + 1;
-                if (rf_wr_cnt == 2'd3) begin
+                if (rf_wr_cnt == NR_WORDS - 1) begin
                     dirty[m_eway][m_idx] <= 1'b0;
-                    case (m_eway)
-                        2'd0: begin plru[0][m_idx] <= 1'b1; plru[1][m_idx] <= 1'b1; end
-                        2'd1: begin plru[0][m_idx] <= 1'b1; plru[1][m_idx] <= 1'b0; end
-                        2'd2: begin plru[0][m_idx] <= 1'b0; plru[2][m_idx] <= 1'b1; end
-                        2'd3: begin plru[0][m_idx] <= 1'b0; plru[2][m_idx] <= 1'b0; end
-                    endcase
+                    if (NR_WAYS == 2) begin
+                        plru[0][m_idx] <= m_eway;
+                    end else begin
+                        int node = 0;
+                        for (int b = WAY_BITS-1; b >= 0; b--) begin
+                            plru[node][m_idx] <= ~m_eway[b];
+                            node = 2*node + 1 + int'(m_eway[b]);
+                        end
+                    end
                 end
             end
 
@@ -604,10 +593,8 @@ module dcache import la32_common::*; (
 
             if (state == S_CACOP_WB_READ) begin
                 cacop_etag      <= tag_r_tag[cacop_way];
-                cacop_wb_buf[0] <= data_rd_out[cacop_way][0];
-                cacop_wb_buf[1] <= data_rd_out[cacop_way][1];
-                cacop_wb_buf[2] <= data_rd_out[cacop_way][2];
-                cacop_wb_buf[3] <= data_rd_out[cacop_way][3];
+                for (int n = 0; n < NR_WORDS; n++)
+                    cacop_wb_buf[n] <= data_rd_out[cacop_way][n];
             end
 
             if (state == S_CACOP_WB_WRITE && mem_resp.addr_ok) begin
