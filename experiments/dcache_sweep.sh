@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CORETOP="$PROJECT_ROOT/nscscc-solo-la-soc/rtl/ip/myCPU/core_top.sv"
 NEMU_MK="$PROJECT_ROOT/la32r-nemu/NEMU/scripts/build.mk"
+NEMU_BUILD_DIR="$PROJECT_ROOT/la32r-nemu/NEMU/build"
 RESULTS="$PROJECT_ROOT/experiments/dcache_sweep_results.txt"
 
 declare -A LOG2_MAP
@@ -11,9 +12,8 @@ LOG2_MAP[256]=8
 LOG2_MAP[512]=9
 LOG2_MAP[1024]=10
 LOG2_MAP[2048]=11
-LOG2_MAP[4096]=12
 
-SIZES=(256 512 1024 2048 4096)
+SIZES=(256 512 1024 2048)
 TESTS=(simple stream matrix mixed cryptonight)
 
 bak_coretop=$(cat "$CORETOP")
@@ -47,7 +47,8 @@ for size in "${SIZES[@]}"; do
   sed -i "s/parameter int DCACHE_SETS = [0-9]*/parameter int DCACHE_SETS = $size/" "$CORETOP"
   sed -i "s/-DDCACHE_INDEX_BITS=[0-9]*/-DDCACHE_INDEX_BITS=$index_bits/" "$NEMU_MK"
 
-  echo "  Rebuilding NEMU..."
+  echo "  Cleaning and rebuilding NEMU..."
+  rm -rf "$NEMU_BUILD_DIR"
   make -C "$PROJECT_ROOT/difftest" build -j"$(nproc)" 2>&1 | tail -3 || {
     echo "  ERROR: NEMU rebuild failed" | tee -a "$RESULTS"
     continue
