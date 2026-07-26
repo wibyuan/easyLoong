@@ -11,6 +11,8 @@ module fetch_unit import la32_common::*; (
     input  logic [31:0] ex_jump_pc,
     input  logic        do_id_jump,
     input  logic [31:0] id_jump_pc,
+    input  logic        bp_do_jump,
+    input  logic [31:0] bp_jump_pc,
     output ibus_req_t   ireq,
     input  ibus_resp_t  iresp,
     output logic [31:0] next_pc,
@@ -37,7 +39,8 @@ module fetch_unit import la32_common::*; (
                 ireq.addr  = 32'd0;
             end
             REQ: begin
-                if (iresp.data_ok || do_ex_flush || (do_id_jump && pc_current != id_jump_pc)) begin
+                if (iresp.data_ok || do_ex_flush || (do_id_jump && pc_current != id_jump_pc)
+                    || (bp_do_jump && pc_current != bp_jump_pc)) begin
                     ireq.valid = 1'b0;
                     ireq.addr  = 32'd0;
                 end else begin
@@ -98,6 +101,8 @@ module fetch_unit import la32_common::*; (
             next_pc = ex_jump_pc;
         else if (do_id_jump && pc_current != id_jump_pc)
             next_pc = id_jump_pc;
+        else if (bp_do_jump && pc_current != bp_jump_pc)
+            next_pc = bp_jump_pc;
         else if (pc_stall)
             next_pc = pc_current;
     end

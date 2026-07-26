@@ -125,6 +125,8 @@ module core import la32_common::*; (
     logic do_ex_flush;
     assign do_ex_flush = ex_jump_flush && !ex_mem_stall;
 
+    logic bp_do_jump;
+    logic [31:0] bp_jump_pc;
     assign ex_jump_flush_hazard = ex_jump_flush && !id_ex_out.ctrl.is_jal;
 
     fetch_unit if_stage (
@@ -133,6 +135,7 @@ module core import la32_common::*; (
         .wb_jump_req(1'b0), .wb_jump_pc(32'd0),
         .do_ex_flush(do_ex_flush), .ex_jump_pc,
         .do_id_jump(id_jump_req && !id_ex_stall), .id_jump_pc,
+        .bp_do_jump(bp_do_jump), .bp_jump_pc(bp_jump_pc),
         .ireq, .iresp,
         .next_pc(next_pc_reg),
         .if_pc_valid(),
@@ -197,10 +200,21 @@ module core import la32_common::*; (
 
     logic id_predict_taken;
     branch_predictor bp_unit (
-        .pc(if_id_out.data.pc),
-        .imm(dec_imm),
-        .br_type(dec_br_type),
-        .predict_taken(id_predict_taken)
+        .clk, .reset,
+        .id_pc(if_id_out.data.pc),
+        .id_imm(dec_imm),
+        .id_br_type(dec_br_type),
+        .id_is_cond_branch(dec_is_branch & id_valid & (dec_br_type != BR_NONE)),
+        .id_valid(if_id_out.ctrl.valid),
+        .id_stall(id_ex_stall),
+        .ex_br_taken(br_taken),
+        .ex_valid(id_ex_out.ctrl.valid),
+        .ex_predict_taken(id_ex_out.ctrl.predict_taken),
+        .predict_taken(id_predict_taken),
+        .bp_redirect(bp_do_jump),
+        .bp_target(bp_jump_pc),
+        .bp_mispredict(),
+        .bp_correct_pc()
     );
 
     logic [31:0] dec_rd1, dec_rd2;
@@ -304,6 +318,7 @@ module core import la32_common::*; (
         .is_jalr(id_ex_out.ctrl.is_jalr),
         .is_ibar(id_ex_out.ctrl.is_ibar),
         .br_taken(br_taken),
+        .predict_taken(id_ex_out.ctrl.predict_taken),
         .next_pc(ex_jump_pc),
         .flush_req(ex_jump_flush)
     );

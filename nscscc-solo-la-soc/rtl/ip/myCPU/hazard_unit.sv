@@ -15,6 +15,7 @@ module hazard_unit (
     output logic        id_ex_flush,
     input  logic        jump_flush,
     input  logic        id_jump_req,
+    input  logic        bp_do_jump,
     input  logic        wb_jump_req
 );
 
@@ -32,10 +33,10 @@ module hazard_unit (
         ex_mem_stall = pipeline_stall;
 
         id_ex_flush  = wb_jump_req || ( !(lsu_not_ready || cacop_not_ready || ex_not_ready) &&
-                       (jump_flush || load_use_hazard || (if_not_ready && !id_jump_req)) );
+                       (jump_flush || load_use_hazard || (if_not_ready && !id_jump_req && !bp_do_jump)) );
 
         if_id_flush  = wb_jump_req || ( !(lsu_not_ready || cacop_not_ready || ex_not_ready) &&
-                       (jump_flush || (id_jump_req && !id_ex_stall)) );
+                       (jump_flush || (id_jump_req && !id_ex_stall) || (bp_do_jump && !id_ex_stall)) );
     end
 
 endmodule

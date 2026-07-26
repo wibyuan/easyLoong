@@ -10,6 +10,7 @@ module npc import la32_common::*; (
     input  logic        is_jalr,
     input  logic        is_ibar,
     input  logic        br_taken,
+    input  logic        predict_taken,
     output logic [31:0] next_pc,
     output logic        flush_req
 );
@@ -29,8 +30,11 @@ module npc import la32_common::*; (
         end else if (is_ibar) begin
             next_pc = pc_plus_4;
             flush_req = 1'b1;
-        end else if (is_branch && br_taken) begin
+        end else if (is_branch && br_taken && !predict_taken) begin
             next_pc = target_pc;
+            flush_req = 1'b1;
+        end else if (is_branch && !br_taken && predict_taken) begin
+            next_pc = pc_plus_4;
             flush_req = 1'b1;
         end
     end
