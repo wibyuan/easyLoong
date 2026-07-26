@@ -61,7 +61,7 @@ module lsu import la32_common::*; (
 
         case (state)
             IDLE: begin
-                if (valid_in && (mem_re || mem_we)) begin
+                if (valid_in && (mem_re || mem_we) && !dresp.data_ok) begin
                     dreq.valid  = 1'b1;
                     dreq.addr   = {addr[31:2], 2'b00};
                     dreq.size   = MSIZE4;

@@ -119,6 +119,9 @@ module dcache import la32_common::*; (
     tag_t       s2_tag;
     logic       s2_cacheable;
 
+    logic       just_hit;
+    word_t      last_hit_addr;
+
     // ==================== Miss context ====================
     logic       m_op;
     msize_t     m_size;
@@ -426,10 +429,12 @@ module dcache import la32_common::*; (
     // ==================== Sequential logic ====================
     always_ff @(posedge clk) begin
         if (reset) begin
-            state      <= S_INIT;
-            s1_valid   <= 1'b0;
-            s2_valid   <= 1'b0;
-            dirty[0]   <= '0;
+            state       <= S_INIT;
+            s1_valid    <= 1'b0;
+            s2_valid    <= 1'b0;
+            just_hit    <= 1'b0;
+            last_hit_addr <= 32'd0;
+            dirty[0]    <= '0;
             dirty[1]   <= '0;
             plru       <= '0;
             rf_fmask   <= 4'd0;
@@ -462,14 +467,8 @@ module dcache import la32_common::*; (
                 s1_tag   <= cpu_req.addr[31:12];
                 s1_cacheable <= cpu_req.cacheable;
 
-                if (s2_valid && s2_hit && !s2_op && is_cachable(s2_addr, s2_cacheable)) begin
-                    // WORKAROUND (ghost hit): same as icache. BRAM read latency
-                    // is 1 cycle; the next S1 request's read is already launched.
-                    // Its result arrives at the *next* S2, not this one. Clearing
-                    // s1_valid here only discards a valid in-flight request,
-                    // wasting 1 cycle per hit. Correct fix: remove this branch.
+                if (s2_hit || (just_hit && s1_addr == last_hit_addr)) begin
                     s2_valid <= 1'b0;
-                    s1_valid <= 1'b0;
                 end else begin
                     s2_valid <= s1_valid;
                     s2_addr  <= s1_addr;
@@ -493,6 +492,10 @@ module dcache import la32_common::*; (
                 s2_valid <= 1'b0;
                 s1_valid <= 1'b0;
             end
+
+            just_hit <= s2_valid && s2_hit;
+            if (s2_valid && s2_hit)
+                last_hit_addr <= s2_addr;
 
             if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
                 plru[s2_idx] <= s2_hit_way;
