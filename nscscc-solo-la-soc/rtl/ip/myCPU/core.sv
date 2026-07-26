@@ -35,6 +35,7 @@ module core import la32_common::*; (
         logic      mem_we;
         logic      is_branch;
         logic      is_cond_branch;
+        logic      predict_taken;
         logic      is_jal;
         logic      is_jalr;
         logic      is_pcadd;
@@ -194,6 +195,14 @@ module core import la32_common::*; (
     assign id_jump_req = dec_is_jal && if_id_out.ctrl.valid;
     assign id_jump_pc  = if_id_out.data.pc + dec_imm;
 
+    logic id_predict_taken;
+    branch_predictor bp_unit (
+        .pc(if_id_out.data.pc),
+        .imm(dec_imm),
+        .br_type(dec_br_type),
+        .predict_taken(id_predict_taken)
+    );
+
     logic [31:0] dec_rd1, dec_rd2;
     logic [31:0] gpr_state [31:0];
     regfile rf_unit (
@@ -213,6 +222,7 @@ module core import la32_common::*; (
     assign id_ex_in.ctrl.mem_we     = dec_mem_we & id_valid;
     assign id_ex_in.ctrl.is_branch  = dec_is_branch & id_valid;
     assign id_ex_in.ctrl.is_cond_branch = (dec_is_branch & id_valid) && (dec_br_type != BR_NONE);
+    assign id_ex_in.ctrl.predict_taken  = id_predict_taken & id_valid;
     assign id_ex_in.ctrl.is_jal     = dec_is_jal & id_valid;
     assign id_ex_in.ctrl.is_jalr    = dec_is_jalr & id_valid;
     assign id_ex_in.ctrl.is_pcadd   = dec_is_pcadd & id_valid;
@@ -552,7 +562,8 @@ module core import la32_common::*; (
         end else begin
             if (mem_wb_out.ctrl.valid && mem_wb_out.ctrl.is_cond_branch)
                 difftest_total_branches <= difftest_total_branches + 64'd1;
-            if (id_ex_out.ctrl.valid && id_ex_out.ctrl.is_cond_branch && br_taken)
+            if (id_ex_out.ctrl.valid && id_ex_out.ctrl.is_cond_branch &&
+                br_taken != id_ex_out.ctrl.predict_taken)
                 difftest_mispredictions <= difftest_mispredictions + 64'd1;
         end
     end
