@@ -49,9 +49,12 @@
 
 - **icache**：2 路组相联、256 组、16 字节行、8KB、只读、PLRU、关键字优先
 - **dcache**：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先
+- **参数化**：dcache 支持 NR_SETS / NR_WAYS / NR_WORDS 三参数配置，组数/路数/行大小可独立调整。icache 同理（独立参数）。`core_top.sv` 中通过 `DCACHE_SETS`, `ICACHE_SETS` 及其他模组参数统一控制。
 - **CACOP**：支持 `cacop 0x00` (I$ 索引无效)、`cacop 0x01` (D$ 索引无效)、`cacop 0x09` (D$ 索引写回无效)
 - **IBAR**：支持 hint=0 流水线冲刷
 - **Cacheability**：基于 CRMD/DMW 区分 cacheable/uncacheable，支持 auto 和 uncache 两种 kernel 构建
+
+> dcache 增强实验（组数/路数/行大小扫描）结论：在当前五级顺序流水线 + 同步 refill 架构下，增大 cache 参数（组数、路数、行大小）无法有效提升 IPC——命中率虽有改善，但 miss penalty 同步增大导致净收益为负（Cryptonight 32B 行 IPC 下降 44.8%）。瓶颈在 miss 处理延迟，不在 cache 参数配置。详见 [DEVLOG.md](DEVLOG.md) 中「dcache 增强实验」章节。
 
 ### 指令集覆盖
 
