@@ -39,9 +39,11 @@
 - [x] icache ghost hit workaround 修复（2026-07-26）：用 `just_hit` + `last_hit_addr` 寄存器精确检测 S1 stale 地址，仅在 s1_addr 与 s2_hit 地址相同时抑制 s1→s2 推进。消除了无条件清 s1_valid 的 1 周期强制空泡，icache 管道效率 access/s1_accept 从 33% 提升至 50%。
 - [x] fetch_unit 消除 IDLE 死周期（2026-07-26）：REQ 状态在 data_ok 后不再回 IDLE；同时抑制 data_ok、do_ex_flush、do_id_jump 活跃时的 stale 请求。结合 icache 修复后，linear 代码 IPC +0.2%~+10.9%，Matrix 循环因无分支预测器致投机取指冲刷 +4.1% 周期（见下）。
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
+- [x] 分支预测器 BTFNT 实现（2026-07-26）：独立模块 `branch_predictor.sv`，difftest 结尾报告准确率
 
 ## 待完成
 
+- [ ] 分支预测器 ID 级重定向：当前预测仅用于 difftest 统计，尚未接入流水线重定向以提升 IPC
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
@@ -57,6 +59,19 @@
 | mixed | ✅ 通过 | ✅ 通过 | ~33 万 |
 | cryptonight | ✅ 通过 | ✅ 通过 | ~2309 万 |
 | fibonacci | ✅ 通过 | ✅ 通过 | ~7.6 万 |
+
+### 分支预测 BTFNT 准确率（2026-07-26）
+
+| 测试 | 条件分支数 | 误预测数(BTFNT) | 准确率(BTFNT) | 准确率(baseline) |
+|------|-----------|----------------|--------------|-----------------|
+| Simple | 4,874 | 819 | 83.20% | 66.82% |
+| Stream | 791,306 | 820 | 99.90% | ~100% |
+| Matrix | 244,683 | 10,132 | 95.86% | ~85% |
+| Mixed | 41,738 | 4,950 | 88.14% | ~75% |
+| Cryptonight | 1,577,738 | 821 | 99.95% | ~100% |
+| Fibonacci | 17,942 | 330 | 98.16% | ~90% |
+
+> BTFN (Backward Taken, Forward Not Taken) 静态预测器，独立模块 `branch_predictor.sv`。`DifftestBranchState` 通过 DPI-C 逐周期上报 `total_branches`（仅条件分支 BEQ/BNE/BLT/BGE/BLTU/BGEU）和 `mispredictions`（预测方向 ≠ 实际方向）。目前预测仅用于 difftest 统计，尚未接入 ID 级重定向，IPC 不变。Stream/Cryptonight 因循环密集型达 >99.9% 准确率。
 
 ### 2026-07-26 性能对比（icache workaround 修复前 vs 后）
 

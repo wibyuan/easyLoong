@@ -78,6 +78,7 @@
 | `decode.sv` | 指令译码 |
 | `alu.sv` | 32 位 ALU |
 | `bcu.sv` | 分支条件判断 |
+| `branch_predictor.sv` | 分支预测器 (BTFNT) |
 | `npc.sv` | 下一 PC 计算 |
 | `fetch_unit.sv` | 取指单元 |
 | `lsu.sv` | 访存单元 |
@@ -123,8 +124,23 @@
 
 > 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
 > 偏差系统性为负（Verilator 无 bus contention、无跨时钟域延迟、无物理走线延迟）。
-> 
-> dcache 的 load-hit ghost workaround 和 store-hit stall workaround 已于 2026-07-26 移除（架构修正，IPC 无变化——瓶颈在 in-order 流水线的 ex_mem_out 寄存器延迟，非 dcache stall。详见 [DEVLOG.md](DEVLOG.md)）。下一步方向：dcache 写缓冲消除 MEM 级延迟、分支预测器消除跳转空泡。
+>
+> dcache 的 load-hit ghost workaround 和 store-hit stall workaround 已于 2026-07-26 移除（架构修正，IPC 无变化——瓶颈在 in-order 流水线的 ex_mem_out 寄存器延迟，非 dcache stall。详见 [DEVLOG.md](DEVLOG.md)）。下一步方向：dcache 写缓冲消除 MEM 级延迟、分支预测器 ID 级重定向消除跳转空泡。
+
+### 分支预测准确率（BTFNT, Verilator 仿真, 2026-07-26）
+
+| 测试 | 条件分支数 | 误预测数(BTFNT) | 准确率(BTFNT) | 准确率(baseline always not-taken) |
+|------|-----------|----------------|--------------|----------------------------------|
+| Simple | 4,874 | 819 | 83.20% | 66.82% |
+| Stream | 791,306 | 820 | 99.90% | (近似 100%) |
+| Matrix | 244,683 | 10,132 | 95.86% | (估算 ~85%) |
+| Mixed | 41,738 | 4,950 | 88.14% | (估算 ~75%) |
+| Cryptonight | 1,577,738 | 821 | 99.95% | (近似 100%) |
+| Fibonacci | 17,942 | 330 | 98.16% | (估算 ~90%) |
+
+> BTFNT (Backward Taken, Forward Not Taken) 静态预测器，独立模块 `branch_predictor.sv`。`DifftestBranchState` 通过 DPI-C 逐周期上报 `total_branches`（仅条件分支 BEQ/BNE/BLT/BGE/BLTU/BGEU）和 `mispredictions`（预测方向 ≠ 实际方向）。
+>
+> **预测仅用于 difftest 统计，尚未接入 ID 级重定向**：IPC 与周期数均与旧数据一致（对比上表），待下一步在分支预测器内实现 ID 级重定向后 IPC 将有提升。
 
 ### Cache 命中率（Verilator 仿真）
 
@@ -201,6 +217,7 @@ FORCE_VERILATOR_REBUILD=1 make test-simple
 | `DifftestIdlePC` | regcpy 缓冲区对齐 |
 | `DifftestTrapEvent` | 陷阱事件（已定义，待接入） |
 | `DifftestCacheState` | ICache/DCache 性能计数器（hit/miss/access/writeback） |
+| `DifftestBranchState` | 分支预测性能计数器（total_branches/mispredictions） |
 
 ### 仿真结束时输出
 
@@ -210,6 +227,7 @@ difftest 正常退出时自动输出：
 - **FPGA 运行时估测**：`总周期数 / 33MHz`（cpu_clk 频率）
 - **ICache 指标**：访问数 / hit / miss / 命中率
 - **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数
+- **分支预测指标**：条件分支数 / 误预测数 / 准确率
 
 ### Mismatch 时输出
 
