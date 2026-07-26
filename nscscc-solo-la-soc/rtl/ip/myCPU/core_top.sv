@@ -2,7 +2,9 @@
 `include "common.sv"
 
 module core_top #(
-    parameter TLBNUM = 32
+    parameter TLBNUM = 32,
+    parameter int DCACHE_SETS = 256,
+    parameter int ICACHE_SETS = 256
 )(
     input           aclk,
     input           aresetn,
@@ -104,7 +106,7 @@ module core_top #(
         .debug_wb_rf_wdata(core_debug_wb_rf_wdata)
     );
 
-    dcache u_dcache (
+    dcache #(.NR_SETS(DCACHE_SETS)) u_dcache (
         .clk,
         .reset(~aresetn),
         .cpu_req(dreq),
@@ -119,7 +121,7 @@ module core_top #(
         .perf_writeback(dcache_wb)
     );
 
-    icache u_icache (
+    icache #(.NR_SETS(ICACHE_SETS)) u_icache (
         .clk,
         .reset(~aresetn),
         .inv_all(1'b0),
