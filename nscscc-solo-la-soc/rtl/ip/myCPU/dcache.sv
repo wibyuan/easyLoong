@@ -19,12 +19,14 @@ module dcache import la32_common::*; (
     output logic [63:0] perf_writeback
 );
 
-    localparam NR_SETS  = 256;
+    parameter int NR_SETS = 256;
     localparam NR_WORDS = 4;
+    localparam INDEX_WIDTH = $clog2(NR_SETS);
+    localparam TAG_WIDTH = 32 - 4 - INDEX_WIDTH;
 
     typedef logic [1:0] woffset_t;
-    typedef logic [7:0] index_t;
-    typedef logic [19:0] tag_t;
+    typedef logic [INDEX_WIDTH-1:0] index_t;
+    typedef logic [TAG_WIDTH-1:0] tag_t;
 
     // ==================== Data BRAM (registered read, 8 banks) ====================
     (* ram_style = "block" *) logic [31:0] data_mem [0:1][0:3][NR_SETS-1:0];
@@ -58,14 +60,14 @@ module dcache import la32_common::*; (
     end
 
     // ==================== Tag BRAM (registered read, 2 ways) ====================
-    (* ram_style = "block" *) logic [20:0] tag_mem [0:1][NR_SETS-1:0];
+    (* ram_style = "block" *) logic [TAG_WIDTH:0] tag_mem [0:1][NR_SETS-1:0];
     logic        tag_rd_ena;
     index_t      tag_rd_addr;
-    logic [20:0] tag_rd_data [0:1];
+    logic [TAG_WIDTH:0] tag_rd_data [0:1];
     logic        tag_wr_ena;
     logic        tag_wr_way;
     index_t      tag_wr_addr;
-    logic [20:0] tag_wr_data;
+    logic [TAG_WIDTH:0] tag_wr_data;
 
     always_ff @(posedge clk) begin
         if (tag_wr_ena)
@@ -164,10 +166,10 @@ module dcache import la32_common::*; (
     endfunction
 
     // ==================== S2 hit (uses combinational tag read) ====================
-    wire [19:0] tag_r_tag [0:1];
-    wire        tag_r_v   [0:1];
-    assign tag_r_tag[0] = tag_rd_data[0][20:1];
-    assign tag_r_tag[1] = tag_rd_data[1][20:1];
+    wire [TAG_WIDTH-1:0] tag_r_tag [0:1];
+    wire                 tag_r_v   [0:1];
+    assign tag_r_tag[0] = tag_rd_data[0][TAG_WIDTH:1];
+    assign tag_r_tag[1] = tag_rd_data[1][TAG_WIDTH:1];
     assign tag_r_v[0] = tag_rd_data[0][0];
     assign tag_r_v[1] = tag_rd_data[1][0];
 
@@ -196,9 +198,9 @@ module dcache import la32_common::*; (
     // ==================== BRAM read control ====================
     always_comb begin
         data_rd_ena = 1'b0;
-        data_rd_addr = 8'd0;
+        data_rd_addr = '0;
         tag_rd_ena  = 1'b0;
-        tag_rd_addr  = 8'd0;
+        tag_rd_addr  = '0;
 
         if (state == S_IDLE && s1_valid && is_cachable(s1_addr, s1_cacheable)) begin
             data_rd_ena = 1'b1;
@@ -214,9 +216,9 @@ module dcache import la32_common::*; (
         end
         if (state == S_IDLE && cacop_req.valid && cacop_req.code[2:0] == 3'd1 && cacop_req.code[4:3] == 2'b01) begin
             data_rd_ena = 1'b1;
-            data_rd_addr = cacop_req.addr[11:4];
+            data_rd_addr = cacop_req.addr[INDEX_WIDTH+3:4];
             tag_rd_ena  = 1'b1;
-            tag_rd_addr  = cacop_req.addr[11:4];
+            tag_rd_addr  = cacop_req.addr[INDEX_WIDTH+3:4];
         end
     end
 
@@ -238,15 +240,15 @@ module dcache import la32_common::*; (
 
         data_wr_ena  = 1'b0;
         data_wr_way  = 1'b0;
-        data_wr_addr = 8'd0;
+        data_wr_addr = '0;
         data_wr_wo   = 2'd0;
         data_wr_we   = 4'd0;
         data_wr_data = 32'd0;
 
         tag_wr_ena  = 1'b0;
         tag_wr_way  = 1'b0;
-        tag_wr_addr = 8'd0;
-        tag_wr_data = 21'd0;
+        tag_wr_addr = '0;
+        tag_wr_data = '0;
 
         case (state)
 
@@ -254,8 +256,8 @@ module dcache import la32_common::*; (
                 tag_wr_ena  = 1'b1;
                 tag_wr_way  = init_wr_way;
                 tag_wr_addr = init_addr;
-                tag_wr_data = 21'd0;
-                if (init_wr_way == 1'b1 && init_addr == 8'd255)
+                tag_wr_data = '0;
+                if (init_wr_way == 1'b1 && init_addr == NR_SETS - 1)
                     next_state = S_IDLE;
             end
 
@@ -387,7 +389,7 @@ module dcache import la32_common::*; (
                 tag_wr_ena  = 1'b1;
                 tag_wr_way  = cacop_way;
                 tag_wr_addr = cacop_idx;
-                tag_wr_data = 21'd0;
+                tag_wr_data = '0;
                 cacop_done  = 1'b1;
                 next_state  = S_IDLE;
             end
@@ -409,7 +411,7 @@ module dcache import la32_common::*; (
                 tag_wr_ena  = 1'b1;
                 tag_wr_way  = cacop_way;
                 tag_wr_addr = cacop_idx;
-                tag_wr_data = 21'd0;
+                tag_wr_data = '0;
                 cacop_done  = 1'b1;
                 next_state  = S_IDLE;
             end
@@ -435,7 +437,7 @@ module dcache import la32_common::*; (
             rf_wr_cnt  <= 2'd0;
             rf_kw_sent <= 1'b0;
             mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0, cacheable: 1'b0};
-            init_addr    <= 8'd0;
+            init_addr    <= '0;
             init_wr_way  <= 1'b0;
         end else begin
             state <= next_state;
@@ -455,8 +457,8 @@ module dcache import la32_common::*; (
                 s1_wdata <= cpu_req.data;
                 s1_wstrb <= cpu_req.strobe;
                 s1_wo    <= cpu_req.addr[3:2];
-                s1_idx   <= cpu_req.addr[11:4];
-                s1_tag   <= cpu_req.addr[31:12];
+                s1_idx   <= cpu_req.addr[INDEX_WIDTH+3:4];
+                s1_tag   <= cpu_req.addr[31:INDEX_WIDTH+4];
                 s1_cacheable <= cpu_req.cacheable;
 
                 if (s2_hit || (just_hit && s1_addr == last_hit_addr)) begin
@@ -513,12 +515,12 @@ module dcache import la32_common::*; (
             if (state == S_IDLE && cacop_req.valid
                 && cacop_req.code[2:0] == 3'd1 && !s2_valid) begin
                 cacop_way <= cacop_req.addr[0];
-                cacop_idx <= cacop_req.addr[11:4];
+                cacop_idx <= cacop_req.addr[INDEX_WIDTH+3:4];
                 if (cacop_req.code[4:3] == 2'b00) begin
-                    dirty[cacop_req.addr[0]][cacop_req.addr[11:4]] <= 1'b0;
+                    dirty[cacop_req.addr[0]][cacop_req.addr[INDEX_WIDTH+3:4]] <= 1'b0;
                 end
                 if (cacop_req.code[4:3] == 2'b01) begin
-                    cacop_edirty <= dirty[cacop_req.addr[0]][cacop_req.addr[11:4]];
+                    cacop_edirty <= dirty[cacop_req.addr[0]][cacop_req.addr[INDEX_WIDTH+3:4]];
                     cacop_wb_cnt <= 2'd0;
                 end
             end
