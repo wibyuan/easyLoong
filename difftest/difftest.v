@@ -128,20 +128,6 @@ module DifftestBranchState (
     end
 endmodule
 
-module DifftestBranchState (
-    input  logic        clock,
-    input  logic [63:0] total_branches,
-    input  logic [63:0] mispredictions
-);
-    import "DPI-C" function void v_difftest_BranchState(
-        input longint total_branches,
-        input longint mispredictions
-    );
-    always @(posedge clock) begin
-        v_difftest_BranchState(total_branches, mispredictions);
-    end
-endmodule
-
 module DifftestCacheState (
     input  logic        clock,
     input  logic [63:0] icache_access,
