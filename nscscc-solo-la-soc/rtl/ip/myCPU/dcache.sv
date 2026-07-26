@@ -499,7 +499,7 @@ module dcache import la32_common::*; (
 
             if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
                 if (NR_WAYS == 2) begin
-                    plru[0][s2_idx] <= s2_hit_way;
+                    plru[0][s2_idx] <= ~s2_hit_way;
                 end else begin
                     int node = 0;
                     for (int b = WAY_BITS-1; b >= 0; b--) begin
@@ -577,7 +577,7 @@ module dcache import la32_common::*; (
                 if (rf_wr_cnt == NR_WORDS - 1) begin
                     dirty[m_eway][m_idx] <= 1'b0;
                     if (NR_WAYS == 2) begin
-                        plru[0][m_idx] <= m_eway;
+                        plru[0][m_idx] <= ~m_eway;
                     end else begin
                         int node = 0;
                         for (int b = WAY_BITS-1; b >= 0; b--) begin
