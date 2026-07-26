@@ -122,12 +122,26 @@
 |------|--------|--------|-----|-----------|------|
 | Mixed | 329K | 2.73M | 0.121 | 0.117 | +3.2% |
 | Matrix | 5.64M | 46.35M | 0.122 | 0.122 | 0% |
-| Stream | 3.95M | 46.34M | 0.085 | 0.081 | +5.0% |
-| Cryptonight | 23.09M | 254.05M | 0.091 | 0.089 | +1.8% |
+| Stream | 3.95M | 46.35M | 0.085 | 0.081 | +5.0% |
+| Cryptonight | 23.09M | 253.95M | 0.091 | 0.089 | +1.8% |
 
 > 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
+
+### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-26，优先级降序）
+
+| 类别 | Mixed | Matrix | Stream | Cryptonight |
+|------|:-----:|:------:|:------:|:-----------:|
+| DCache Refill | **65.7%** | **51.4%** | **69.1%** | **84.0%** |
+| ICache Refill | 0.2% | 0.0% | 0.0% | 0.0% |
+| Load-Use | 0.5% | 0.0% | 1.9% | 0.0% |
+| Branch Flush | 9.8% | 13.2% | 7.0% | 4.6% |
+| DCache Hit Pipe | 8.6% | 13.8% | 8.5% | 5.1% |
+| ICache Hit Pipe | 11.2% | 14.4% | 8.9% | 4.6% |
+| Other | 4.0% | 7.2% | 4.7% | 1.8% |
+
+> 数值为占全部 stall 周期的百分比。`DCache/ICache Hit Pipe` 为 cache 命中时必经的 S1→S2 1 周期流水线延迟导致 WB 空泡的周期。`Other` 含 JAL 气泡、流水线启动填充等。七类覆盖 93-98% 的 stall 周期。
 >
-> BTFNT ID 重定向后，Stream/Mixed/Cryptonight 的 IPC 有 1.8%-5.0% 提升。Matrix 因分支密集但内层循环均为 forward（BTFNT 预测不跳），ID 重定向未触发，IPC 不变。
+> **瓶颈结论**：DCache miss 同步 refill 是压倒性主瓶颈，占 Cryptonight 84%、Stream 69% 的 stall 周期。Cache 命中流水线延迟合计占 10-28%，为第二瓶颈。分支预测仅占 5-13%，不是当前性能瓶颈。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-07-26）
 
@@ -220,6 +234,7 @@ FORCE_VERILATOR_REBUILD=1 make test-simple
 | `DifftestTrapEvent` | 陷阱事件（已定义，待接入） |
 | `DifftestCacheState` | ICache/DCache 性能计数器（hit/miss/access/writeback） |
 | `DifftestBranchState` | 分支预测性能计数器（total_branches/mispredictions） |
+| `DifftestStallState` | 流水线 stall 7 类拆解（DCache/ICache Refill, Load-Use, Branch Flush, Cache Hit Pipe, Other） |
 
 ### 仿真结束时输出
 
@@ -230,6 +245,7 @@ difftest 正常退出时自动输出：
 - **ICache 指标**：访问数 / hit / miss / 命中率
 - **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数
 - **分支预测指标**：条件分支数 / 误预测数 / 准确率
+- **流水线 Stall 七类拆解**：按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other，输出各类周期数和占 stall 周期百分比
 
 ### Mismatch 时输出
 

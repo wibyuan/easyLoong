@@ -40,6 +40,7 @@
 - [x] fetch_unit 消除 IDLE 死周期（2026-07-26）：REQ 状态在 data_ok 后不再回 IDLE；同时抑制 data_ok、do_ex_flush、do_id_jump 活跃时的 stale 请求。结合 icache 修复后，linear 代码 IPC +0.2%~+10.9%，Matrix 循环因无分支预测器致投机取指冲刷 +4.1% 周期（见下）。
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
 - [x] 分支预测器 BTFNT 实现（2026-07-26）：独立模块 `branch_predictor.sv`，含 ID 级重定向，difftest 结尾报告准确率
+- [x] 流水线 Stall 七类拆解 difftest 集成（2026-07-26）：`DifftestStallState` DPI-C 模块 + `dcache.sv`/`icache.sv` `in_refill` 信号 + `hazard_unit.sv` `load_use_hazard` 暴露。按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other 逐周期统计，仿真实结束时输出各类周期数和占 stall 百分比。全部 5 个基准测试通过
 
 ## 待完成
 
@@ -71,6 +72,20 @@
 | Fibonacci | 17,966 | 330 | 98.16% |
 
 > BTFNT (Backward Taken, Forward Not Taken) 静态预测器，独立模块 `branch_predictor.sv`，含 ID 级 `bp_do_jump` 重定向。`DifftestBranchState` 通过 DPI-C 逐周期上报 `total_branches`（仅条件分支 BEQ/BNE/BLT/BGE/BLTU/BGEU）和 `mispredictions`（预测方向 ≠ 实际方向）。npc 在 EX 阶段抑制正确预测的冗余 flush 并恢复误预测（→ pc+4）。IPC 提升：Stream +5.0%, Mixed +3.2%, Cryptonight +1.8%。Stream/Cryptonight 因循环密集型达 >99.9% 准确率。
+
+### 流水线 Stall 七类拆解（2026-07-26）
+
+| 测试 | DCache Refill | ICache Refill | Load-Use | Branch Flush | DCache Hit Pipe | ICache Hit Pipe | Other |
+|------|:------------:|:------------:|:--------:|:------------:|:---------------:|:---------------:|:-----:|
+| Simple | 1.3% | 4.2% | 2.3% | 12.6% | 46.2% | 22.2% | 11.2% |
+| Mixed | 65.7% | 0.2% | 0.5% | 9.8% | 8.6% | 11.2% | 4.0% |
+| Matrix | 51.4% | 0.0% | 0.0% | 13.2% | 13.8% | 14.4% | 7.2% |
+| Stream | 69.1% | 0.0% | 1.9% | 7.0% | 8.5% | 8.9% | 4.7% |
+| Cryptonight | 84.0% | 0.0% | 0.0% | 4.6% | 5.1% | 4.6% | 1.8% |
+
+> 数值为占全部 stall 周期的百分比。七类按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other 逐周期互斥统计。DCache/ICache Hit Pipe 为 cache 命中时 S1→S2 1 周期流水线延迟导致 WB 空泡的周期。Other 含 JAL 气泡、流水线启动填充等。
+>
+> **瓶颈结论**：DCache miss 同步 refill 是压倒性主瓶颈（51-84%）。Cache 命中流水线延迟合计 10-28% 为第二瓶颈。分支预测仅 5-13%，非当前核心瓶颈。下一步优化方向应优先考虑：(1) 写缓冲消除 store hit pipe delay；(2) 非阻塞 cache 或 load-under-miss 降低 miss 阻塞；(3) 硬件预取降低强制 miss。
 
 ### 2026-07-26 性能对比（icache workaround 修复前 vs 后）
 
