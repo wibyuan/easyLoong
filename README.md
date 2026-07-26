@@ -113,34 +113,33 @@
 
 > 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过。
 
-### 当前性能指标（Verilator difftest 估测 vs 实板）
+### 当前性能指标（Verilator difftest 估测 vs 实板, BTFNT+ID重定向 2026-07-26）
 
-| 测试 | 指令数 | 周期数 | IPC | 估测耗时 | 实板耗时 | 偏差 |
-|------|--------|--------|-----|----------|----------|------|
-| Mixed | 328K | 2.81M | 0.117 | 85 ms | 88 ms | -3.4% |
-| Matrix | 5.64M | 46.35M | 0.122 | 1405 ms | 1391 ms | +1.0% |
-| Stream | 3.95M | 48.71M | 0.081 | 1476 ms | 1524 ms | -3.1% |
-| Cryptonight | 23.09M | 258.67M | 0.089 | 7838 ms | 8387 ms | -6.5% |
+| 测试 | 指令数 | 周期数 | IPC | IPC(无BP) | 提升 |
+|------|--------|--------|-----|-----------|------|
+| Mixed | 329K | 2.73M | 0.121 | 0.117 | +3.2% |
+| Matrix | 5.64M | 46.35M | 0.122 | 0.122 | 0% |
+| Stream | 3.95M | 46.34M | 0.085 | 0.081 | +5.0% |
+| Cryptonight | 23.09M | 254.05M | 0.091 | 0.089 | +1.8% |
 
 > 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
-> 偏差系统性为负（Verilator 无 bus contention、无跨时钟域延迟、无物理走线延迟）。
 >
-> dcache 的 load-hit ghost workaround 和 store-hit stall workaround 已于 2026-07-26 移除（架构修正，IPC 无变化——瓶颈在 in-order 流水线的 ex_mem_out 寄存器延迟，非 dcache stall。详见 [DEVLOG.md](DEVLOG.md)）。下一步方向：dcache 写缓冲消除 MEM 级延迟、分支预测器 ID 级重定向消除跳转空泡。
+> BTFNT ID 重定向后，Stream/Mixed/Cryptonight 的 IPC 有 1.8%-5.0% 提升。Matrix 因分支密集但内层循环均为 forward（BTFNT 预测不跳），ID 重定向未触发，IPC 不变。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-07-26）
 
-| 测试 | 条件分支数 | 误预测数(BTFNT) | 准确率(BTFNT) | 准确率(baseline always not-taken) |
-|------|-----------|----------------|--------------|----------------------------------|
-| Simple | 4,874 | 819 | 83.20% | 66.82% |
-| Stream | 791,306 | 820 | 99.90% | (近似 100%) |
-| Matrix | 244,683 | 10,132 | 95.86% | (估算 ~85%) |
-| Mixed | 41,738 | 4,950 | 88.14% | (估算 ~75%) |
-| Cryptonight | 1,577,738 | 821 | 99.95% | (近似 100%) |
-| Fibonacci | 17,942 | 330 | 98.16% | (估算 ~90%) |
+| 测试 | 条件分支数 | 误预测数 | 准确率 |
+|------|-----------|----------|--------|
+| Simple | 4,879 | 819 | 83.21% |
+| Stream | 791,311 | 820 | 99.90% |
+| Matrix | 244,688 | 10,132 | 95.86% |
+| Mixed | 41,743 | 4,950 | 88.14% |
+| Cryptonight | 1,577,743 | 821 | 99.95% |
+| Fibonacci | 17,966 | 330 | 98.16% |
 
 > BTFNT (Backward Taken, Forward Not Taken) 静态预测器，独立模块 `branch_predictor.sv`。`DifftestBranchState` 通过 DPI-C 逐周期上报 `total_branches`（仅条件分支 BEQ/BNE/BLT/BGE/BLTU/BGEU）和 `mispredictions`（预测方向 ≠ 实际方向）。
 >
-> **预测仅用于 difftest 统计，尚未接入 ID 级重定向**：IPC 与周期数均与旧数据一致（对比上表），待下一步在分支预测器内实现 ID 级重定向后 IPC 将有提升。
+> **BTFNT ID 级重定向已实现**：预测 taken 时在 ID 阶段通过 `bp_do_jump` 重定向 fetch，npc 在 EX 阶段抑制冗余 flush 并处理 misprediction 恢复。IPC 提升见上方性能表。
 
 ### Cache 命中率（Verilator 仿真）
 
