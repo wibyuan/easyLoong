@@ -384,6 +384,50 @@ static void display_cache_metrics() {
     fflush(stdout);
 }
 
+static void display_stall_metrics(uint64_t ticks) {
+    difftest_stall_state_t *ss = difftest_get_stall_state();
+    uint64_t total_stalls = ss->stall_dcache_refill + ss->stall_icache_refill
+                          + ss->stall_load_use + ss->stall_branch_flush
+                          + ss->stall_other;
+
+    fprintf(stdout, "\n[difftest] ============ Stall Breakdown ============\n");
+    if (ticks > 0 && total_stalls > 0) {
+        double pct_total = 100.0 / (double)ticks;
+        fprintf(stdout, "[difftest] Stall: DCacheRefill=%lu (%.2f%%)"
+                " ICacheRefill=%lu (%.2f%%)\n",
+                ss->stall_dcache_refill,
+                (double)ss->stall_dcache_refill * pct_total,
+                ss->stall_icache_refill,
+                (double)ss->stall_icache_refill * pct_total);
+        fprintf(stdout, "[difftest] Stall: LoadUse=%lu (%.2f%%)"
+                " BranchFlush=%lu (%.2f%%)\n",
+                ss->stall_load_use,
+                (double)ss->stall_load_use * pct_total,
+                ss->stall_branch_flush,
+                (double)ss->stall_branch_flush * pct_total);
+        fprintf(stdout, "[difftest] Stall: Other=%lu (%.2f%%)\n",
+                ss->stall_other,
+                (double)ss->stall_other * pct_total);
+
+        if (total_stalls > 0) {
+            fprintf(stdout, "[difftest] Stall composition (%% of stall cycles):\n");
+            fprintf(stdout, "[difftest]   DCache Refill: %.1f%%\n",
+                    (double)ss->stall_dcache_refill / (double)total_stalls * 100.0);
+            fprintf(stdout, "[difftest]   ICache Refill: %.1f%%\n",
+                    (double)ss->stall_icache_refill / (double)total_stalls * 100.0);
+            fprintf(stdout, "[difftest]   Load-Use:      %.1f%%\n",
+                    (double)ss->stall_load_use / (double)total_stalls * 100.0);
+            fprintf(stdout, "[difftest]   Branch Flush:  %.1f%%\n",
+                    (double)ss->stall_branch_flush / (double)total_stalls * 100.0);
+            fprintf(stdout, "[difftest]   Other:         %.1f%%\n",
+                    (double)ss->stall_other / (double)total_stalls * 100.0);
+        }
+    } else {
+        fprintf(stdout, "[difftest] Stall: no stall data available\n");
+    }
+    fflush(stdout);
+}
+
 void DifftestEngine::finish() {
     if (!proxy_.loaded()) return;
     fprintf(stdout, "[difftest] finished, %lu instructions checked\n", instr_count_);
@@ -404,6 +448,7 @@ void DifftestEngine::finish() {
     }
     display_cache_metrics();
     display_branch_metrics();
+    display_stall_metrics(ticks_);
 }
 
 void DifftestEngine::dump_state() {
