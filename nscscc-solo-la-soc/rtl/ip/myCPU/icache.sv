@@ -22,12 +22,14 @@ module icache import la32_common::*; (
     output logic [63:0] perf_cyc
 );
 
-    localparam NR_SETS  = 256;
+    parameter int NR_SETS = 256;
     localparam NR_WORDS = 4;
+    localparam INDEX_WIDTH = $clog2(NR_SETS);
+    localparam TAG_WIDTH = 32 - 4 - INDEX_WIDTH;
 
     typedef logic [1:0] woffset_t;
-    typedef logic [7:0] index_t;
-    typedef logic [19:0] tag_t;
+    typedef logic [INDEX_WIDTH-1:0] index_t;
+    typedef logic [TAG_WIDTH-1:0] tag_t;
 
     // ==================== Data BRAM ====================
     (* ram_style = "block" *) logic [31:0] data_mem [0:1][0:3][NR_SETS-1:0];
@@ -56,13 +58,13 @@ module icache import la32_common::*; (
     end
 
     // ==================== Tag BRAM ====================
-    (* ram_style = "block" *) logic [20:0] tag_mem [0:1][NR_SETS-1:0];
+    (* ram_style = "block" *) logic [TAG_WIDTH:0] tag_mem [0:1][NR_SETS-1:0];
     logic        tag_rd_ena;
     index_t      tag_rd_addr;
-    logic [20:0] tag_rd_data [0:1];
+    logic [TAG_WIDTH:0] tag_rd_data [0:1];
     logic [1:0]  tag_wr_ena;
     index_t      tag_wr_addr;
-    logic [20:0] tag_wr_data [0:1];
+    logic [TAG_WIDTH:0] tag_wr_data [0:1];
 
     always_ff @(posedge clk) begin
         if (tag_wr_ena[0])
@@ -128,10 +130,10 @@ module icache import la32_common::*; (
     endfunction
 
     // ==================== S2 hit ====================
-    wire [19:0] tag_r_tag [0:1];
-    wire        tag_r_v   [0:1];
-    assign tag_r_tag[0] = tag_rd_data[0][20:1];
-    assign tag_r_tag[1] = tag_rd_data[1][20:1];
+    wire [TAG_WIDTH-1:0] tag_r_tag [0:1];
+    wire                 tag_r_v   [0:1];
+    assign tag_r_tag[0] = tag_rd_data[0][TAG_WIDTH:1];
+    assign tag_r_tag[1] = tag_rd_data[1][TAG_WIDTH:1];
     assign tag_r_v[0] = tag_rd_data[0][0];
     assign tag_r_v[1] = tag_rd_data[1][0];
 
@@ -160,9 +162,9 @@ module icache import la32_common::*; (
     // ==================== BRAM read control ====================
     always_comb begin
         data_rd_ena  = 1'b0;
-        data_rd_addr = 8'd0;
+        data_rd_addr = '0;
         tag_rd_ena   = 1'b0;
-        tag_rd_addr  = 8'd0;
+        tag_rd_addr  = '0;
 
         if (state == S_IDLE && s1_valid) begin
             data_rd_ena  = 1'b1;
@@ -193,23 +195,23 @@ module icache import la32_common::*; (
 
         data_wr_ena  = 1'b0;
         data_wr_way  = 1'b0;
-        data_wr_addr = 8'd0;
+        data_wr_addr = '0;
         data_wr_wo   = 2'd0;
         data_wr_data = 32'd0;
 
         tag_wr_ena     = 2'b00;
-        tag_wr_addr    = 8'd0;
-        tag_wr_data[0] = 21'd0;
-        tag_wr_data[1] = 21'd0;
+        tag_wr_addr    = '0;
+        tag_wr_data[0] = '0;
+        tag_wr_data[1] = '0;
 
         case (state)
 
             S_INIT: begin
                 tag_wr_ena     = 2'b11;
                 tag_wr_addr    = init_addr;
-                tag_wr_data[0] = 21'd0;
-                tag_wr_data[1] = 21'd0;
-                if (init_addr == 8'd255)
+                tag_wr_data[0] = '0;
+                tag_wr_data[1] = '0;
+                if (init_addr == NR_SETS - 1)
                     next_state = S_IDLE;
             end
 
@@ -268,8 +270,8 @@ module icache import la32_common::*; (
 
             S_CACOP_ST: begin
                 tag_wr_ena[cacop_req.addr[0]]   = 1'b1;
-                tag_wr_addr                      = cacop_req.addr[11:4];
-                tag_wr_data[cacop_req.addr[0]]   = 21'd0;
+                tag_wr_addr                      = cacop_req.addr[INDEX_WIDTH+3:4];
+                tag_wr_data[cacop_req.addr[0]]   = '0;
                 cacop_done = 1'b1;
                 next_state = S_IDLE;
             end
@@ -290,22 +292,22 @@ module icache import la32_common::*; (
             rf_cnt      <= 2'd0;
             rf_kw_sent  <= 1'b0;
             mem_req_r   <= '{valid: 1'b0, addr: 32'd0};
-            init_addr   <= 8'd0;
+            init_addr   <= '0;
         end else begin
             state <= next_state;
             mem_req_r <= mem_req_next;
 
             if (inv_all) begin
                 state <= S_INIT;
-                init_addr <= 8'd0;
+                init_addr <= '0;
                 plru      <= '0;
             end
 
             if (state == S_INIT) begin
-                if (init_addr != 8'd255)
+                if (init_addr != NR_SETS - 1)
                     init_addr <= init_addr + 1;
                 else begin
-                    init_addr <= 8'd0;
+                    init_addr <= '0;
                     plru      <= '0;
                 end
             end
@@ -314,8 +316,8 @@ module icache import la32_common::*; (
                 s1_valid <= cpu_req.valid;
                 s1_addr  <= cpu_req.addr;
                 s1_wo    <= cpu_req.addr[3:2];
-                s1_idx   <= cpu_req.addr[11:4];
-                s1_tag   <= cpu_req.addr[31:12];
+                s1_idx   <= cpu_req.addr[INDEX_WIDTH+3:4];
+                s1_tag   <= cpu_req.addr[31:INDEX_WIDTH+4];
             end else if (state != S_IDLE) begin
                 s1_valid <= 1'b0;
                 s2_valid <= 1'b0;
