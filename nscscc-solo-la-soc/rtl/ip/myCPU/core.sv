@@ -34,6 +34,7 @@ module core import la32_common::*; (
         logic      mem_re;
         logic      mem_we;
         logic      is_branch;
+        logic      is_cond_branch;
         logic      is_jal;
         logic      is_jalr;
         logic      is_pcadd;
@@ -69,6 +70,7 @@ module core import la32_common::*; (
         logic      rf_we;
         logic      mem_re;
         logic      mem_we;
+        logic      is_cond_branch;
     } ex_mem_ctrl_t;
     typedef struct packed {
         logic [31:0] pc;
@@ -91,6 +93,7 @@ module core import la32_common::*; (
         logic      rf_we;
         logic      mem_re;
         logic      mem_we;
+        logic      is_cond_branch;
     } mem_wb_ctrl_t;
     typedef struct packed {
         logic [31:0] pc;
@@ -209,6 +212,7 @@ module core import la32_common::*; (
     assign id_ex_in.ctrl.mem_re     = dec_mem_re & id_valid;
     assign id_ex_in.ctrl.mem_we     = dec_mem_we & id_valid;
     assign id_ex_in.ctrl.is_branch  = dec_is_branch & id_valid;
+    assign id_ex_in.ctrl.is_cond_branch = (dec_is_branch & id_valid) && (dec_br_type != BR_NONE);
     assign id_ex_in.ctrl.is_jal     = dec_is_jal & id_valid;
     assign id_ex_in.ctrl.is_jalr    = dec_is_jalr & id_valid;
     assign id_ex_in.ctrl.is_pcadd   = dec_is_pcadd & id_valid;
@@ -352,6 +356,7 @@ module core import la32_common::*; (
     assign ex_mem_in.ctrl.rf_we     = id_ex_out.ctrl.rf_we & ex_valid;
     assign ex_mem_in.ctrl.mem_re    = id_ex_out.ctrl.mem_re & ex_valid;
     assign ex_mem_in.ctrl.mem_we    = id_ex_out.ctrl.mem_we & ex_valid;
+    assign ex_mem_in.ctrl.is_cond_branch = id_ex_out.ctrl.is_cond_branch & ex_valid;
 
     assign ex_mem_in.data.pc        = id_ex_out.data.pc;
     assign ex_mem_in.data.instr     = id_ex_out.data.instr;
@@ -434,6 +439,7 @@ module core import la32_common::*; (
     assign mem_wb_in.ctrl.rf_we     = ex_mem_out.ctrl.rf_we & mem_valid;
     assign mem_wb_in.ctrl.mem_re    = ex_mem_out.ctrl.mem_re & mem_valid;
     assign mem_wb_in.ctrl.mem_we    = ex_mem_out.ctrl.mem_we & mem_valid;
+    assign mem_wb_in.ctrl.is_cond_branch = ex_mem_out.ctrl.is_cond_branch & mem_valid;
 
     assign mem_wb_in.data.pc        = ex_mem_out.data.pc;
     assign mem_wb_in.data.instr     = ex_mem_out.data.instr;
@@ -538,8 +544,18 @@ module core import la32_common::*; (
 
     logic [63:0] difftest_total_branches;
     logic [63:0] difftest_mispredictions;
-    assign difftest_total_branches = 64'd0;
-    assign difftest_mispredictions = 64'd0;
+
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            difftest_total_branches <= 64'd0;
+            difftest_mispredictions <= 64'd0;
+        end else begin
+            if (mem_wb_out.ctrl.valid && mem_wb_out.ctrl.is_cond_branch)
+                difftest_total_branches <= difftest_total_branches + 64'd1;
+            if (id_ex_out.ctrl.valid && id_ex_out.ctrl.is_cond_branch && br_taken)
+                difftest_mispredictions <= difftest_mispredictions + 64'd1;
+        end
+    end
 
     DifftestBranchState u_difftest_branch (
         .clock(clk),
