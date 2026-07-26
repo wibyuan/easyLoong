@@ -189,14 +189,6 @@ module dcache import la32_common::*; (
             s1_stall = 1'b1;
         else if (state != S_IDLE)
             s1_stall = 1'b1;
-        else if (s2_valid && s2_hit && s2_op && is_cachable(s2_addr, s2_cacheable))
-            // WORKAROUND: store hit unnecessarily stalls pipeline for 1 cycle.
-            // BRAM write completes in the *same* clock cycle (zero write latency);
-            // a new request entering S1 in this cycle issues its read address in
-            // parallel, and BRAM read data arrives 1 cycle later in S2. There is
-            // no read-after-write conflict: the write commits at cycle end, well
-            // before the next S2 consumes read results. This stall is pure waste.
-            s1_stall = 1'b1;
         else if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !s2_valid)
             s1_stall = 1'b1;
     end
