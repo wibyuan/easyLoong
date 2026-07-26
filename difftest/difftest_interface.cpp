@@ -6,12 +6,14 @@ static difftest_core_state_t dut_state;
 static difftest_commit_t    dut_commit;
 static difftest_trap_t      dut_trap;
 static difftest_cache_state_t dut_cache;
+static difftest_branch_state_t dut_branch;
 static uint64_t             sim_cycle = 0;
 
 uint32_t* difftest_state_buf()   { return (uint32_t*)&dut_state; }
 difftest_commit_t* difftest_get_commit() { return &dut_commit; }
 difftest_trap_t* difftest_get_trap()     { return &dut_trap; }
 difftest_cache_state_t* difftest_get_cache_state() { return &dut_cache; }
+difftest_branch_state_t* difftest_get_branch_state() { return &dut_branch; }
 uint64_t* difftest_cycle_ptr()  { return &sim_cycle; }
 
 extern "C" {
@@ -127,6 +129,14 @@ void v_difftest_CacheState(
     dut_cache.dcache_hit       = (uint64_t)dcache_hit;
     dut_cache.dcache_miss      = (uint64_t)dcache_miss;
     dut_cache.dcache_writeback = (uint64_t)dcache_writeback;
+}
+
+void v_difftest_BranchState(
+    long long total_branches,
+    long long mispredictions
+) {
+    dut_branch.total_branches = (uint64_t)total_branches;
+    dut_branch.mispredictions = (uint64_t)mispredictions;
 }
 
 } // extern "C"

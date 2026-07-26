@@ -535,6 +535,17 @@ module core import la32_common::*; (
         .dmw0(csr_dmw0),
         .dmw1(csr_dmw1)
     );
+
+    logic [63:0] difftest_total_branches;
+    logic [63:0] difftest_mispredictions;
+    assign difftest_total_branches = 64'd0;
+    assign difftest_mispredictions = 64'd0;
+
+    DifftestBranchState u_difftest_branch (
+        .clock(clk),
+        .total_branches(difftest_total_branches),
+        .mispredictions(difftest_mispredictions)
+    );
 `endif
 
 endmodule

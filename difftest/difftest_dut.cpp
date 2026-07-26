@@ -336,6 +336,20 @@ void DifftestEngine::step() {
 
 static const double kCpuClockMhz = 33.0;
 
+static void display_branch_metrics() {
+    difftest_branch_state_t *bs = difftest_get_branch_state();
+    fprintf(stdout, "\n[difftest] =========== Branch Predictor Metrics ===========\n");
+    if (bs->total_branches > 0) {
+        double accuracy = (double)(bs->total_branches - bs->mispredictions)
+                          / (double)(bs->total_branches) * 100.0;
+        fprintf(stdout, "[difftest] Branch: total=%lu, mispredict=%lu, accuracy=%.2f%%\n",
+                bs->total_branches, bs->mispredictions, accuracy);
+    } else {
+        fprintf(stdout, "[difftest] Branch: no branches committed yet\n");
+    }
+    fflush(stdout);
+}
+
 static void display_cache_metrics() {
     difftest_cache_state_t *cs = difftest_get_cache_state();
     fprintf(stdout, "\n[difftest] ============== Cache Metrics ==============\n");
@@ -389,6 +403,7 @@ void DifftestEngine::finish() {
                     runtime_us);
     }
     display_cache_metrics();
+    display_branch_metrics();
 }
 
 void DifftestEngine::dump_state() {
