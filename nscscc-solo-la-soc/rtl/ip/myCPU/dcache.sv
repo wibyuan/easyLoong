@@ -16,7 +16,9 @@ module dcache import la32_common::*; (
     output logic [63:0] perf_access,
     output logic [63:0] perf_hit,
     output logic [63:0] perf_miss,
-    output logic [63:0] perf_writeback
+    output logic [63:0] perf_writeback,
+
+    output logic        in_refill
 );
 
     parameter int NR_SETS = 256;
@@ -191,6 +193,11 @@ module dcache import la32_common::*; (
         for (int w = 0; w < NR_WAYS; w++)
             if (hit_vec[w]) s2_hit_way = way_t'(w);
     end
+
+    // ==================== Refill status ====================
+    assign in_refill = state inside {S_MISS, S_WB_READ, S_WB_WRITE,
+                                     S_REFILL_SEND, S_REFILL_ACK,
+                                     S_REFILL_WAIT, S_REFILL_WRITE};
 
     // ==================== Stall condition ====================
     logic s1_stall;

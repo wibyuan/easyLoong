@@ -13,13 +13,13 @@ module hazard_unit (
     output logic        ex_mem_stall,
     output logic        if_id_flush,
     output logic        id_ex_flush,
+    output logic        load_use_hazard,
     input  logic        jump_flush,
     input  logic        id_jump_req,
     input  logic        bp_do_jump,
     input  logic        wb_jump_req
 );
 
-    logic load_use_hazard;
     assign load_use_hazard = id_ex_mem_re &&
                             ((id_ex_rd != 5'd0) && ((id_ex_rd == dec_rs1) || (id_ex_rd == dec_rs2)));
 

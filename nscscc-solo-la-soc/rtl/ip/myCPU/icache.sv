@@ -19,7 +19,9 @@ module icache import la32_common::*; (
     output logic [63:0] perf_miss,
     output logic [63:0] perf_wa_clear,
     output logic [63:0] perf_s1_accept,
-    output logic [63:0] perf_cyc
+    output logic [63:0] perf_cyc,
+
+    output logic        in_refill
 );
 
     parameter int NR_SETS = 256;
@@ -146,6 +148,10 @@ module icache import la32_common::*; (
         s2_hit = h0 || h1;
         s2_hit_way = h0 ? 1'b0 : 1'b1;
     end
+
+    // ==================== Refill status ====================
+    assign in_refill = state inside {S_MISS, S_REFILL_REQ,
+                                     S_REFILL_WAIT, S_REFILL_WRITE};
 
     // ==================== Stall condition ====================
     logic s1_stall;
