@@ -39,11 +39,13 @@ package la32_common;
         logic [3:0]  strobe;
         word_t       data;
         logic        cacheable;
+        logic [1:0]  burst_len;
     } dbus_req_t;
 
     typedef struct packed {
         logic  addr_ok;
         logic  data_ok;
+        logic  data_last;
         word_t data;
     } dbus_resp_t;
 

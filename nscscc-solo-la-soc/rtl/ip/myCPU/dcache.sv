@@ -92,7 +92,7 @@ module dcache import la32_common::*; (
         S_UNCACHED,
         S_MISS,
         S_WB_READ, S_WB_WRITE,
-        S_REFILL_SEND, S_REFILL_ACK, S_REFILL_WAIT, S_REFILL_WRITE,
+        S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE,
         S_STORE_FINAL,
         S_CACOP_ST,
         S_CACOP_WB_READ, S_CACOP_WB_WRITE, S_CACOP_INV
@@ -196,8 +196,7 @@ module dcache import la32_common::*; (
 
     // ==================== Refill status ====================
     assign in_refill = state inside {S_MISS, S_WB_READ, S_WB_WRITE,
-                                     S_REFILL_SEND, S_REFILL_ACK,
-                                     S_REFILL_WAIT, S_REFILL_WRITE};
+                                     S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE};
 
     // ==================== Stall condition ====================
     logic s1_stall;
@@ -253,6 +252,7 @@ module dcache import la32_common::*; (
         mem_req_next.size   = MSIZE4;
         mem_req_next.strobe = 4'd0;
         mem_req_next.data   = 32'd0;
+        mem_req_next.burst_len = 2'd0;
 
         data_wr_ena  = 1'b0;
         data_wr_way  = '0;
@@ -330,7 +330,7 @@ module dcache import la32_common::*; (
             end
 
             S_MISS: begin
-                next_state = m_edirty ? S_WB_READ : S_REFILL_SEND;
+                next_state = m_edirty ? S_WB_READ : S_REFILL_REQ;
             end
 
             S_WB_READ: begin
@@ -343,18 +343,13 @@ module dcache import la32_common::*; (
                 mem_req_next.strobe = 4'b1111;
                 mem_req_next.data   = wb_buf[wb_cnt];
                 if (mem_resp.addr_ok)
-                    next_state = (wb_cnt == NR_WORDS - 1) ? S_REFILL_SEND : S_WB_WRITE;
+                    next_state = (wb_cnt == NR_WORDS - 1) ? S_REFILL_REQ : S_WB_WRITE;
             end
 
-            S_REFILL_SEND: begin
-                mem_req_next.valid = 1'b1;
-                mem_req_next.addr  = {m_tag, m_idx, rf_cnt, 2'b00};
-                next_state = S_REFILL_ACK;
-            end
-
-            S_REFILL_ACK: begin
-                mem_req_next.valid = 1'b1;
-                mem_req_next.addr  = {m_tag, m_idx, rf_cnt, 2'b00};
+            S_REFILL_REQ: begin
+                mem_req_next.valid  = 1'b1;
+                mem_req_next.addr   = {m_tag, m_idx, {WORD_WIDTH{1'b0}}, 2'b00};
+                mem_req_next.burst_len = NR_WORDS - 1;
                 if (mem_resp.addr_ok)
                     next_state = S_REFILL_WAIT;
             end
@@ -366,8 +361,8 @@ module dcache import la32_common::*; (
                         cpu_resp.data_ok = 1'b1;
                         cpu_resp.data    = mem_resp.data;
                     end
-                    next_state = (&(rf_fmask | ({{(NR_WORDS-1){1'b0}}, 1'b1} << rf_cnt)))
-                        ? S_REFILL_WRITE : S_REFILL_SEND;
+                    if (mem_resp.data_last)
+                        next_state = S_REFILL_WRITE;
                 end
             end
 
@@ -453,7 +448,7 @@ module dcache import la32_common::*; (
             rf_cnt     <= '0;
             rf_wr_cnt  <= '0;
             rf_kw_sent <= 1'b0;
-            mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0, cacheable: 1'b0};
+            mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0, cacheable: 1'b0, burst_len: 2'd0};
             init_addr    <= '0;
             init_wr_way  <= '0;
         end else begin
@@ -545,8 +540,8 @@ module dcache import la32_common::*; (
                 end
             end
 
-            if (state == S_MISS && next_state == S_REFILL_SEND) begin
-                rf_cnt     <= m_wo;
+            if (state == S_MISS && next_state == S_REFILL_REQ) begin
+                rf_cnt     <= '0;
                 rf_fmask   <= '0;
                 rf_kw_sent <= 1'b0;
             end
@@ -562,7 +557,7 @@ module dcache import la32_common::*; (
             if (state == S_WB_WRITE && mem_resp.addr_ok) begin
                 wb_cnt <= wb_cnt + 1;
                 if (wb_cnt == NR_WORDS - 1) begin
-                    rf_cnt     <= m_wo;
+                    rf_cnt     <= '0;
                     rf_fmask   <= '0;
                     rf_kw_sent <= 1'b0;
                 end
@@ -573,7 +568,7 @@ module dcache import la32_common::*; (
                 rf_fmask[rf_cnt]     <= 1'b1;
                 if (rf_cnt == m_wo && !rf_kw_sent && m_op == 1'b0)
                     rf_kw_sent <= 1'b1;
-                rf_cnt <= (rf_cnt == NR_WORDS - 1) ? '0 : (rf_cnt + 1);
+                rf_cnt <= rf_cnt + 1;
             end
 
             if (state == S_REFILL_WAIT && next_state == S_REFILL_WRITE)

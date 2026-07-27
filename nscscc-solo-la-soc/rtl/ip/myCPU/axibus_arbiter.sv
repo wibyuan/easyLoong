@@ -60,7 +60,7 @@ module axibus_arbiter import la32_common::*; (
     logic [31:0] r_addr_r;
 
     // ==================== Combinational logic ====================
-    logic r_dresp_addr_ok, r_dresp_data_ok;
+    logic r_dresp_addr_ok, r_dresp_data_ok, r_dresp_data_last;
     logic r_iresp_addr_ok, r_iresp_data_ok;
     logic [31:0] r_dresp_data, r_iresp_data;
     logic w_dresp_addr_ok, w_dresp_data_ok;
@@ -81,12 +81,13 @@ module axibus_arbiter import la32_common::*; (
         arvalid = 1'b0;
         rready  = 1'b0;
 
-        r_iresp_addr_ok = 1'b0;
-        r_iresp_data_ok = 1'b0;
-        r_iresp_data    = 32'd0;
-        r_dresp_addr_ok = 1'b0;
-        r_dresp_data_ok = 1'b0;
-        r_dresp_data    = 32'd0;
+        r_iresp_addr_ok  = 1'b0;
+        r_iresp_data_ok  = 1'b0;
+        r_iresp_data     = 32'd0;
+        r_dresp_addr_ok  = 1'b0;
+        r_dresp_data_ok  = 1'b0;
+        r_dresp_data_last = 1'b0;
+        r_dresp_data     = 32'd0;
 
         // ----- Read channel FSM -----
         case (rstate)
@@ -112,6 +113,7 @@ module axibus_arbiter import la32_common::*; (
             end
             R_IREQ: begin
                 araddr  = ireq.addr;
+                arlen   = 8'd0;
                 arvalid = 1'b1;
                 if (arready) begin
                     r_iresp_addr_ok = 1'b1;
@@ -120,6 +122,7 @@ module axibus_arbiter import la32_common::*; (
             end
             R_DREQ: begin
                 araddr  = dreq.addr;
+                arlen   = {6'd0, dreq.burst_len};
                 arvalid = 1'b1;
                 if (arready) begin
                     r_dresp_addr_ok = 1'b1;
@@ -130,13 +133,15 @@ module axibus_arbiter import la32_common::*; (
                 rready = 1'b1;
                 if (rvalid) begin
                     if (r_for_d_r) begin
-                        r_dresp_data_ok = 1'b1;
-                        r_dresp_data = rdata;
+                        r_dresp_data_ok   = 1'b1;
+                        r_dresp_data_last  = rlast;
+                        r_dresp_data      = rdata;
                     end else begin
                         r_iresp_data_ok = 1'b1;
                         r_iresp_data = rdata;
                     end
-                    rnext = R_IDLE;
+                    if (rlast)
+                        rnext = R_IDLE;
                 end
             end
             default: rnext = R_IDLE;
@@ -215,9 +220,10 @@ module axibus_arbiter import la32_common::*; (
         iresp.data_ok = r_iresp_data_ok;
         iresp.data    = r_iresp_data;
 
-        dresp.addr_ok = r_dresp_addr_ok || w_dresp_addr_ok;
-        dresp.data_ok = r_dresp_data_ok || (w_dresp_data_ok && !dreq_read_pending);
-        dresp.data    = r_dresp_data;
+        dresp.addr_ok   = r_dresp_addr_ok || w_dresp_addr_ok;
+        dresp.data_ok   = r_dresp_data_ok || (w_dresp_data_ok && !dreq_read_pending);
+        dresp.data_last = r_dresp_data_last;
+        dresp.data      = r_dresp_data;
     end
 
     // ==================== Sequential logic ====================
@@ -247,7 +253,7 @@ module axibus_arbiter import la32_common::*; (
         end else begin
             if (r_dresp_addr_ok && dreq.valid && dreq.strobe == 4'd0)
                 dreq_read_pending <= 1'b1;
-            else if (r_dresp_data_ok)
+            else if (r_dresp_data_ok && rlast)
                 dreq_read_pending <= 1'b0;
         end
     end

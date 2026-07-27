@@ -58,6 +58,7 @@ module lsu import la32_common::*; (
         dreq.strobe = 4'd0;
         dreq.data   = 32'd0;
         dreq.cacheable = 1'b0;
+        dreq.burst_len = 2'd0;
 
         case (state)
             IDLE: begin
