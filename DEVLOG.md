@@ -3,7 +3,7 @@
 ## 已验证
 
 - [x] 仿真环境（Verilator 编译、MIF 加载、超时退出）
-- [x] AXI INCR Burst Refill 实现（2026-07-27）：DCache refill 数据传递由逐字握手改为单次 AXI INCR burst，4 字一行一次 burst 完成。arbiter 读通道加入 burst 计数（R_WAIT 保持至 rlast），miss penalty -34%。全部 5 个基准测试 difftest + 数据比对通过。详见性能表。
+- [x] AXI INCR Burst Refill + Writeback 实现（2026-07-27）：DCache refill 与 writeback 均由逐字握手改为单次 AXI INCR burst（refill 4 字一行一次 burst，writeback 4 字一行一次 burst）。arbiter 读写通道加入 burst 计数，Cryptonight 单次 miss penalty 从 87 → 30.5 周期（-65%），IPC 提升 41-79%。全部 5 个基准测试 difftest + 数据比对通过。
 - [x] 五级流水线冒烟（PC 从 0x1c000000 启动，取指成功）
 - [x] reset 向量 → supervisor init 代码线性执行
 - [x] AXI 读写通路正常（BSS 清零、ExtRAM 存储、UART 写入均可完成）
@@ -72,33 +72,31 @@
 | Cryptonight | 1,577,743 | 821 | 99.95% |
 | Fibonacci | 17,966 | 330 | 98.16% |
 
-> BTFNT (Backward Taken, Forward Not Taken) 静态预测器，独立模块 `branch_predictor.sv`，含 ID 级 `bp_do_jump` 重定向。`DifftestBranchState` 通过 DPI-C 逐周期上报 `total_branches`（仅条件分支 BEQ/BNE/BLT/BGE/BLTU/BGEU）和 `mispredictions`（预测方向 ≠ 实际方向）。npc 在 EX 阶段抑制正确预测的冗余 flush 并恢复误预测（→ pc+4）。IPC 提升：Stream +5.0%, Mixed +3.2%, Cryptonight +1.8%。Stream/Cryptonight 因循环密集型达 >99.9% 准确率。
+> BTFNT (Backward Taken, Forward Not Taken) 静态预测器，独立模块 `branch_predictor.sv`，含 ID 级 `bp_do_jump` 重定向。`DifftestBranchState` 通过 DPI-C 逐周期上报 `total_branches`（仅条件分支 BEQ/BNE/BLT/BGE/BLTU/BGEU）和 `mispredictions`（预测方向 ≠ 实际方向）。npc 在 EX 阶段抑制正确预测的冗余 flush 并恢复误预测（→ pc+4）。
 
-### 流水线 Stall 七类拆解（2026-07-26）
+### 流水线 Stall 七类拆解（2026-07-27 Burst Refill + Writeback）
 
 | 测试 | DCache Refill | ICache Refill | Load-Use | Branch Flush | DCache Hit Pipe | ICache Hit Pipe | Other |
 |------|:------------:|:------------:|:--------:|:------------:|:---------------:|:---------------:|:-----:|
-| Simple | 1.3% | 4.2% | 2.3% | 12.6% | 46.2% | 22.2% | 11.2% |
-| Mixed | 65.7% | 0.2% | 0.5% | 9.8% | 8.6% | 11.2% | 4.0% |
-| Matrix | 51.4% | 0.0% | 0.0% | 13.2% | 13.8% | 14.4% | 7.2% |
-| Stream | 69.1% | 0.0% | 1.9% | 7.0% | 8.5% | 8.9% | 4.7% |
-| Cryptonight | 84.0% | 0.0% | 0.0% | 4.6% | 5.1% | 4.6% | 1.8% |
+| Simple | 0.5% | 4.4% | 2.3% | 12.7% | 46.5% | 22.4% | 11.3% |
+| Mixed | 37.5% | 0.4% | 0.7% | 18.6% | 13.3% | 21.5% | 8.0% |
+| Matrix | 27.0% | 0.0% | 0.0% | 19.9% | 20.7% | 21.8% | 10.6% |
+| Stream | 45.7% | 0.0% | 3.3% | 11.5% | 14.9% | 14.8% | 9.7% |
+| Cryptonight | 57.1% | 0.0% | 0.0% | 15.6% | 9.9% | 13.8% | 3.6% |
 
-> 数值为占全部 stall 周期的百分比。七类按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other 逐周期互斥统计。DCache/ICache Hit Pipe 为 cache 命中时 S1→S2 1 周期流水线延迟导致 WB 空泡的周期。Other 含 JAL 气泡、流水线启动填充等。
->
-> **瓶颈结论**：DCache miss 同步 refill 是压倒性主瓶颈（51-84%）。Cache 命中流水线延迟合计 10-28% 为第二瓶颈。分支预测仅 5-13%，非当前核心瓶颈。下一步优化方向应优先考虑：(1) 写缓冲消除 store hit pipe delay；(2) 非阻塞 cache 或 load-under-miss 降低 miss 阻塞；(3) 硬件预取降低强制 miss。
+> 数值为占全部 stall 周期的百分比。DCache Refill 占 stall 比从 burst 改造前的 51-84% 降至 27-57%。Cache 命中流水线延迟（Hit Pipe）合计占 24-43%，已超过 Refill 成为部分 benchmark 的主瓶颈。下一步优先考虑写缓冲（消除 store hit 延迟）或非阻塞 cache（hit-under-miss）。
 
-### 2026-07-26 性能对比（icache workaround 修复前 vs 后）
+### 2026-07-27 性能对比（Burst Refill + Writeback Burst vs 基线）
 
-| 测试 | 旧 IPC | 新 IPC | Δ IPC | 旧周期 | 新周期 | Δ 周期 |
-|------|--------|--------|-------|--------|--------|--------|
-| simple | 0.1357 | 0.1505 | +10.9% | 154,642 | 144,243 | -6.7% |
-| mixed | 0.112 | 0.1169 | +4.4% | 2.94M | 2.81M | -4.4% |
-| stream | 0.081 | 0.0812 | +0.2% | 48.91M | 48.71M | -0.4% |
-| cryptonight | 0.088 | 0.0893 | +1.5% | 261.72M | 258.67M | -1.2% |
-| matrix | 0.127 | 0.1218 | **-4.1%** | 44.42M | 46.35M | **+4.3%** |
+| 测试 | 基线 IPC | 新 IPC | Δ IPC | 基线周期 | 新周期 | Δ 周期 |
+|------|---------|--------|-------|---------|--------|--------|
+| simple | 0.1505 | 0.152 | +1.1% | 144K | 143K | -0.9% |
+| mixed | 0.121 | 0.176 | +45.5% | 2.73M | 1.87M | -31.6% |
+| stream | 0.085 | 0.141 | +65.9% | 46.35M | 28.07M | -39.4% |
+| cryptonight | 0.091 | 0.163 | +78.8% | 253.95M | 141.85M | -44.1% |
+| matrix | 0.122 | 0.172 | +41.0% | 46.35M | 32.80M | -29.2% |
 
-> Matrix 退化原因：fetch_unit 消除 IDLE 后取指更激进（ICache access 从 11.10M → 15.37M，+38%），内层循环分支密集导致大量投机取指被冲刷浪费。`redirect_soon` 限流方案（检测 ID/ID_EX 阶段有分支时抑制取指 1 周期）曾尝试修复但造成死锁，需进一步调试 pipeline flush 时序与限流交互。
+> 基线 = BTFNT+ID重定向（2026-07-26），即 burst 改造前的值。Cryptonight 单次 miss penalty 87 → 30.5 周期（-65%）。refill 数据传递和 writeback 数据传递均由逐字 AXI 事务改为单次 INCR burst。
 
 ### 修复记录
 

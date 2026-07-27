@@ -160,16 +160,16 @@
 >
 > **BTFNT ID 级重定向已实现**：预测 taken 时在 ID 阶段通过 `bp_do_jump` 重定向 fetch，npc 在 EX 阶段抑制冗余 flush 并处理 misprediction 恢复。IPC 提升见上方性能表。
 
-### Cache 命中率（Verilator 仿真）
+### Cache 命中率（Verilator 仿真, 2026-07-27 Burst 后）
 
 | 测试 | ICache 访问 | ICache 命中率 | DCache 访问 | DCache 命中率 | DCache 写回 |
 |------|------------|--------------|------------|--------------|------------|
-| Mixed | 921K | 99.99% | 66K | 70.46% | 62K words |
-| Matrix | 15.37M | 100.00% | 2.66M | 91.26% | 885K words |
-| Stream | 15.97M | 100.00% | 1.57M | 75.00% | 787K words |
-| Cryptonight | 85.69M | 100.00% | 4.72M | 52.95% | 8.88M words |
+| Mixed | 610K | 99.98% | 66K | 70.46% | 62K words |
+| Matrix | 10.85M | 100.00% | 2.66M | 91.26% | 885K words |
+| Stream | 9.09M | 100.00% | 1.57M | 75.00% | 787K words |
+| Cryptonight | 47.81M | 100.00% | 4.72M | 52.95% | 8.88M words |
 
-> ICache 访问数上升反映了 fetch_unit 消除 IDLE 死周期后更激进的取指带宽。Mixed/Stream/Cryptonight 的 IPC 有 0.2%~4.4% 提升，Matrix 因循环分支密集导致投机取指冲刷增加 4.1% 周期（IPC 从 0.127 降至 0.122），这是无分支预测器下激进取指的固有 trade-off。
+> 命中率与 burst 改造前一致（取决于程序访存模式而非微架构），ICache 访问数因总周期缩减而下降。
 
 ## 5. 开发环境搭建
 
