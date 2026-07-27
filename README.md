@@ -29,6 +29,7 @@
 │   ├── sdk/software/examples/
 │   │   └── supervisor/          #   LA32R 监控程序 + 阶段 1-5 测试用例
 │   └── sdk/toolchains/          #   LA32R 交叉编译工具链
+├── src/soc/                     # → nscscc-solo-la-soc/rtl/ 的 symlink（供 CI 提交用）
 ├── difftest/                    # ★ Differential test 框架 (DPI-C)
 ├── la32r-nemu/                  # NEMU 参考模型（项目自有代码）
 ├── docs/                        # 参考文档、评测说明
@@ -36,6 +37,7 @@
 ├── DEVLOG.md                    # 开发进度
 └── README.md
 ```
+> **注意**：`src/soc/myCPU/` 下每个 `.sv` 文件都是指向 `nscscc-solo-la-soc/rtl/ip/myCPU/` 对应文件的独立 symlink。新增 RTL 模块时需同步添加 symlink（`ln -s ../../../nscscc-solo-la-soc/rtl/ip/myCPU/新文件.sv src/soc/myCPU/`），否则 CI HDL Lint 会报 `Cannot find file containing module`。Verilator 仿真不走此路径，故此类遗漏不会在仿真中暴露。
 
 ## 2. CPU 设计
 
