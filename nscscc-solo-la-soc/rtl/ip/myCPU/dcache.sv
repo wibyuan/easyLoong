@@ -339,9 +339,10 @@ module dcache import la32_common::*; (
 
             S_WB_WRITE: begin
                 mem_req_next.valid  = 1'b1;
-                mem_req_next.addr   = {m_etag, m_idx, wb_cnt, 2'b00};
+                mem_req_next.addr   = {m_etag, m_idx, {WORD_WIDTH{1'b0}}, 2'b00};
                 mem_req_next.strobe = 4'b1111;
                 mem_req_next.data   = wb_buf[wb_cnt];
+                mem_req_next.burst_len = NR_WORDS - 1;
                 if (mem_resp.addr_ok)
                     next_state = (wb_cnt == NR_WORDS - 1) ? S_REFILL_REQ : S_WB_WRITE;
             end

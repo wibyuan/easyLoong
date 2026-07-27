@@ -53,8 +53,12 @@ module axibus_arbiter import la32_common::*; (
     } rstate, rnext;
 
     enum logic [2:0] {
-        W_IDLE, W_ARB, W_WREQ, W_RESP
+        W_IDLE, W_ARB, W_WREQ, W_RESP,
+        W_BURST_SEND, W_BURST_GAP, W_BURST_DATA, W_BURST_RESP
     } wstate, wnext;
+
+    logic [1:0] wbeat_cnt, wbeat_cnt_next;
+    logic [1:0] wburst_len_r;
 
     logic        r_for_d_r;
     logic [31:0] r_addr_r;
@@ -167,11 +171,13 @@ module axibus_arbiter import la32_common::*; (
 
         w_dresp_addr_ok = 1'b0;
         w_dresp_data_ok = 1'b0;
+        wbeat_cnt_next  = wbeat_cnt;
 
         case (wstate)
             W_IDLE: begin
                 if (dreq.valid && |dreq.strobe) begin
                     awaddr  = dreq.addr;
+                    awlen   = {6'd0, dreq.burst_len};
                     awvalid = 1'b1;
                     if (awready) begin
                         wdata_out = dreq.data;
@@ -179,16 +185,19 @@ module axibus_arbiter import la32_common::*; (
                         wvalid = 1'b1;
                         if (wready) begin
                             w_dresp_addr_ok = 1'b1;
-                            bready = 1'b1;
-                            wnext = W_RESP;
+                            if (dreq.burst_len == 2'd0) begin
+                                wlast = 1'b1;
+                                bready = 1'b1;
+                                wnext = W_RESP;
+                            end else begin
+                                wlast = 1'b0;
+                                wbeat_cnt_next = 2'd1;
+                                wnext = W_BURST_GAP;
+                            end
                         end else begin
                             wnext = W_WREQ;
                         end
-                    end else begin
-                        wnext = W_IDLE;
                     end
-                end else begin
-                    wnext = W_IDLE;
                 end
             end
             W_WREQ: begin
@@ -197,10 +206,15 @@ module axibus_arbiter import la32_common::*; (
                 wvalid = 1'b1;
                 if (wready) begin
                     w_dresp_addr_ok = 1'b1;
-                    bready = 1'b1;
-                    wnext = W_RESP;
-                end else begin
-                    wnext = W_WREQ;
+                    if (wburst_len_r == 2'd0) begin
+                        wlast = 1'b1;
+                        bready = 1'b1;
+                        wnext = W_RESP;
+                    end else begin
+                        wlast = 1'b0;
+                        wbeat_cnt_next = 2'd1;
+                        wnext = W_BURST_GAP;
+                    end
                 end
             end
             W_RESP: begin
@@ -208,8 +222,33 @@ module axibus_arbiter import la32_common::*; (
                 if (bvalid) begin
                     w_dresp_data_ok = 1'b1;
                     wnext = W_IDLE;
-                end else begin
-                    wnext = W_RESP;
+                end
+            end
+            W_BURST_GAP: begin
+                wnext = W_BURST_DATA;
+            end
+            W_BURST_DATA: begin
+                wvalid = 1'b1;
+                wdata_out = dreq.data;
+                wstrb = dreq.strobe;
+                if (wready) begin
+                    w_dresp_addr_ok = 1'b1;
+                    if (wbeat_cnt == wburst_len_r) begin
+                        wlast = 1'b1;
+                        bready = 1'b1;
+                        wnext = W_BURST_RESP;
+                    end else begin
+                        wlast = 1'b0;
+                        wbeat_cnt_next = wbeat_cnt + 2'd1;
+                        wnext = W_BURST_GAP;
+                    end
+                end
+            end
+            W_BURST_RESP: begin
+                bready = 1'b1;
+                if (bvalid) begin
+                    w_dresp_data_ok = 1'b1;
+                    wnext = W_IDLE;
                 end
             end
             default: wnext = W_IDLE;
@@ -268,12 +307,16 @@ module axibus_arbiter import la32_common::*; (
             waddr_stored <= 32'd0;
             wdata_stored <= 32'd0;
             wstrb_stored <= 4'd0;
+            wbeat_cnt    <= 2'd0;
+            wburst_len_r <= 2'd0;
         end else begin
-            wstate <= wnext;
+            wstate    <= wnext;
+            wbeat_cnt <= wbeat_cnt_next;
             if (wstate == W_IDLE && dreq.valid) begin
                 waddr_stored <= dreq.addr;
                 wdata_stored <= dreq.data;
                 wstrb_stored <= dreq.strobe;
+                wburst_len_r <= dreq.burst_len;
             end
         end
     end

@@ -117,33 +117,33 @@
 
 > 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过。
 
-### 当前性能指标（Verilator difftest 估测 vs 实板, AXI INCR Burst Refill 2026-07-27）
+### 当前性能指标（Verilator difftest 估测 vs 实板, AXI INCR Burst Refill + Writeback 2026-07-27）
 
 | 测试 | 指令数 | 周期数 | IPC | IPC(旧) | 提升 |
 |------|--------|--------|-----|---------|------|
-| Mixed | 329K | 2.27M | 0.145 | 0.121 | +19.8% |
-| Matrix | 5.64M | 38.76M | 0.146 | 0.122 | +19.5% |
-| Stream | 3.95M | 33.37M | 0.119 | 0.085 | +39.2% |
-| Cryptonight | 23.09M | 201.78M | 0.114 | 0.091 | +25.7% |
+| Mixed | 329K | 1.87M | 0.176 | 0.121 | +45.5% |
+| Matrix | 5.64M | 32.80M | 0.172 | 0.122 | +41.0% |
+| Stream | 3.95M | 28.07M | 0.141 | 0.085 | +65.9% |
+| Cryptonight | 23.09M | 141.85M | 0.163 | 0.091 | +78.8% |
 
 > 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
-> IPC(旧) = BTFNT+ID重定向 基线（2026-07-26），即 burst refill 改造前的值。
+> IPC(旧) = BTFNT+ID重定向 基线（2026-07-26），即 burst refill + writeback burst 改造前的值。
+>
+> **Burst 改造效果**：DCache refill 与 writeback 均由逐字握手改为 AXI INCR burst 单次事务。Cryptonight 单次 miss penalty 从 87 → 30.5 周期（-65%），IPC 提升 78.8%。
 
-### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-27 AXI INCR Burst，优先级降序）
+### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-27 Burst Refill + Writeback Burst，优先级降序）
 
 | 类别 | Mixed | Matrix | Stream | Cryptonight |
 |------|:-----:|:------:|:------:|:-----------:|
-| DCache Refill | **50.4%** | **40.1%** | **55.4%** | **71.5%** |
-| ICache Refill | 0.3% | 0.0% | 0.0% | 0.0% |
-| Load-Use | 0.6% | 0.0% | 2.7% | 0.0% |
-| Branch Flush | 14.9% | 16.3% | 10.1% | 9.8% |
-| DCache Hit Pipe | 10.6% | 17.0% | 12.2% | 6.6% |
-| ICache Hit Pipe | 17.4% | 17.8% | 12.8% | 9.9% |
-| Other | 5.7% | 8.8% | 6.7% | 2.3% |
+| DCache Refill | **37.5%** | **27.0%** | **45.7%** | **57.1%** |
+| ICache Refill | 0.4% | 0.0% | 0.0% | 0.0% |
+| Load-Use | 0.7% | 0.0% | 3.3% | 0.0% |
+| Branch Flush | 18.6% | 19.9% | 11.5% | 15.6% |
+| DCache Hit Pipe | 13.3% | 20.7% | 14.9% | 9.9% |
+| ICache Hit Pipe | 21.5% | 21.8% | 14.8% | 13.8% |
+| Other | 8.0% | 10.6% | 9.7% | 3.6% |
 
-> 数值为占全部 stall 周期的百分比。七类按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other 逐周期互斥统计。
->
-> **Burst Refill 效果**：refill 数据传递从逐字握手改为单次 AXI INCR burst，Cryptonight 单次 miss penalty 从 87 降至 57 周期（-34%）。DCache Refill 占 stall 比全面下降，但 Cryptonight 仍以 71.5% 为压倒性主瓶颈。Cache 命中流水线延迟（Hit Pipe）相对占比上升，为下一优先级优化目标。
+> 数值为占全部 stall 周期的百分比。DCache Refill 占 stall 比从 burst 改造前的 51-84% 降至 27-57%。Cache 命中流水线延迟（Hit Pipe）合计占 24-43%，已超过 Refill 成为部分 benchmark 的主瓶颈。下一步优先考虑写缓冲（消除 store hit 延迟）或非阻塞 cache（hit-under-miss）。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-07-26）
 
