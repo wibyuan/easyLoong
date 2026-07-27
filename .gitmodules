@@ -1,0 +1,3 @@
+[submodule "rvcpu"]
+	path = rvcpu
+	url = git@github.com:Tan-YiFan/rvcpu.git
