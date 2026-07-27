@@ -415,6 +415,20 @@ Vivado 2019.2 Docker 镜像基于 Ubuntu 18.04（Python 3.6），修复了以下
 
 **当前 CPU 架构瓶颈不在 cache 参数配置，而在 miss 处理延迟。** 在顺序流水线、同步 refill、无写缓冲的设计中，任何增大 miss penalty 的优化都会被放大为 IPC 损失。下一步方向应优先考虑：写缓冲（store hit 异步化）、非阻塞 cache（load-under-miss）、或预取机制，而非继续调整组数/路数/行大小。
 
+### Bug 10: Cryptonight FPGA 平台数据比对 FAIL — Verilator PASS
+
+**现象**：Verilator difftest 全部 6 测试 DIFF=1 + 数据比对全 PASS。但竞赛 FPGA 平台 Cryptonight 功能得分仅 50%（program returned but data mismatch at `0x1c400001`: actual=`0x2e`, expected=`0x34`）。其他 4 个性能测试满分。
+
+**可能原因**：
+
+1. **CDC 跨域竞态（主疑）**：`cpu_clk=33MHz` 与 `sys_clk=25MHz` 非整数倍（1.32:1），`Axi_CDC` 异步 FIFO 在非谐波时钟下有不确定的读写仲裁窗口。Cryptonight 写回 8.88M words（其他测试总和的 5×），6σ 样本量放大了小概率 SRAM 写入错误。
+
+2. **Verilator 与 FPGA SRAM 时序差异**：Verilator `fpga_sram_sp` 行为模型零延迟响应，FPGA 板 IS61WV102416ALL SRAM 有真实时序要求（写脉冲 ≥ 8ns）。33MHz 下生成的写脉冲可能偏窄。
+
+3. **Post-Implementation 门级仿真未跑**：SDF 反标的 Post-Impl 仿真能复现 FPGA 行为，因耗时过长（完整测试数小时）未执行。
+
+**验证路径**：cpu_clk 改为 50MHz（2:1 倍 sys_clk）→ 提交 CI 验证 Cryptonight 是否 100 分。
+
 ### 已知局限
 
 - MMIO 注入目前覆盖 0x1f000000-0x1f000fff，若后续阶段访问其他设备地址需扩展 is_mmio_addr。
