@@ -3,6 +3,7 @@
 ## 已验证
 
 - [x] 仿真环境（Verilator 编译、MIF 加载、超时退出）
+- [x] AXI INCR Burst Refill 实现（2026-07-27）：DCache refill 数据传递由逐字握手改为单次 AXI INCR burst，4 字一行一次 burst 完成。arbiter 读通道加入 burst 计数（R_WAIT 保持至 rlast），miss penalty -34%。全部 5 个基准测试 difftest + 数据比对通过。详见性能表。
 - [x] 五级流水线冒烟（PC 从 0x1c000000 启动，取指成功）
 - [x] reset 向量 → supervisor init 代码线性执行
 - [x] AXI 读写通路正常（BSS 清零、ExtRAM 存储、UART 写入均可完成）

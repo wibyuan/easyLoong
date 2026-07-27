@@ -117,32 +117,33 @@
 
 > 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过。
 
-### 当前性能指标（Verilator difftest 估测 vs 实板, BTFNT+ID重定向 2026-07-26）
+### 当前性能指标（Verilator difftest 估测 vs 实板, AXI INCR Burst Refill 2026-07-27）
 
-| 测试 | 指令数 | 周期数 | IPC | IPC(无BP) | 提升 |
-|------|--------|--------|-----|-----------|------|
-| Mixed | 329K | 2.73M | 0.121 | 0.117 | +3.2% |
-| Matrix | 5.64M | 46.35M | 0.122 | 0.122 | 0% |
-| Stream | 3.95M | 46.35M | 0.085 | 0.081 | +5.0% |
-| Cryptonight | 23.09M | 253.95M | 0.091 | 0.089 | +1.8% |
+| 测试 | 指令数 | 周期数 | IPC | IPC(旧) | 提升 |
+|------|--------|--------|-----|---------|------|
+| Mixed | 329K | 2.27M | 0.145 | 0.121 | +19.8% |
+| Matrix | 5.64M | 38.76M | 0.146 | 0.122 | +19.5% |
+| Stream | 3.95M | 33.37M | 0.119 | 0.085 | +39.2% |
+| Cryptonight | 23.09M | 201.78M | 0.114 | 0.091 | +25.7% |
 
 > 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
+> IPC(旧) = BTFNT+ID重定向 基线（2026-07-26），即 burst refill 改造前的值。
 
-### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-26，优先级降序）
+### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-27 AXI INCR Burst，优先级降序）
 
 | 类别 | Mixed | Matrix | Stream | Cryptonight |
 |------|:-----:|:------:|:------:|:-----------:|
-| DCache Refill | **65.7%** | **51.4%** | **69.1%** | **84.0%** |
-| ICache Refill | 0.2% | 0.0% | 0.0% | 0.0% |
-| Load-Use | 0.5% | 0.0% | 1.9% | 0.0% |
-| Branch Flush | 9.8% | 13.2% | 7.0% | 4.6% |
-| DCache Hit Pipe | 8.6% | 13.8% | 8.5% | 5.1% |
-| ICache Hit Pipe | 11.2% | 14.4% | 8.9% | 4.6% |
-| Other | 4.0% | 7.2% | 4.7% | 1.8% |
+| DCache Refill | **50.4%** | **40.1%** | **55.4%** | **71.5%** |
+| ICache Refill | 0.3% | 0.0% | 0.0% | 0.0% |
+| Load-Use | 0.6% | 0.0% | 2.7% | 0.0% |
+| Branch Flush | 14.9% | 16.3% | 10.1% | 9.8% |
+| DCache Hit Pipe | 10.6% | 17.0% | 12.2% | 6.6% |
+| ICache Hit Pipe | 17.4% | 17.8% | 12.8% | 9.9% |
+| Other | 5.7% | 8.8% | 6.7% | 2.3% |
 
-> 数值为占全部 stall 周期的百分比。`DCache/ICache Hit Pipe` 为 cache 命中时必经的 S1→S2 1 周期流水线延迟导致 WB 空泡的周期。`Other` 含 JAL 气泡、流水线启动填充等。七类覆盖 93-98% 的 stall 周期。
+> 数值为占全部 stall 周期的百分比。七类按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other 逐周期互斥统计。
 >
-> **瓶颈结论**：DCache miss 同步 refill 是压倒性主瓶颈，占 Cryptonight 84%、Stream 69% 的 stall 周期。Cache 命中流水线延迟合计占 10-28%，为第二瓶颈。分支预测仅占 5-13%，不是当前性能瓶颈。
+> **Burst Refill 效果**：refill 数据传递从逐字握手改为单次 AXI INCR burst，Cryptonight 单次 miss penalty 从 87 降至 57 周期（-34%）。DCache Refill 占 stall 比全面下降，但 Cryptonight 仍以 71.5% 为压倒性主瓶颈。Cache 命中流水线延迟（Hit Pipe）相对占比上升，为下一优先级优化目标。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-07-26）
 
