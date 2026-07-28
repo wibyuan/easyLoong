@@ -18,3 +18,5 @@ Thumbs.db
 # Downloaded packages
 *.deb
 .env
+nscscc-solo-la-soc/rtl/ip/PLL_2019_2/clk_pll.veo
+nscscc-solo-la-soc/rtl/ip/PLL_2019_2/clk_pll.xml
