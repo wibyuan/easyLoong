@@ -461,4 +461,44 @@ TclStackFree 崩溃的解决方案及完整安装教程见 [vivado-docker.md](vi
 
 **借鉴**：rvcpu 的 0 周期标签比较设计思想（组合逻辑标签读取 + `data_ok` 同周期触发），但仅应用于标签（数据保留 BRAM），限存储命中场景。
 
-**下一步**：DCache Refill 仍占 34-61% stall。计划添加写缓冲（write buffer），使 store 在 refill 期间不被阻塞，进一步降低 DCache Refill 停顿。
+## 2026-07-29: 加载命中延迟分析与写缓冲区设计探讨
+
+### 加载命中延迟消除（借鉴 rvcpu，架构评估后搁置）
+
+**目标**：借鉴 rvcpu 的加载命中 0 停顿设计，消除剩余的 DCache Hit Pipe（6-16%）。
+
+**rvcpu 的关键机制**（`DCache.sv:151-152`）：
+```verilog
+assign dresp.addr_ok = 1'b1;
+assign dresp.data_ok = (state == INIT && hit);  // 标签组合命中 → 同周期 data_ok
+```
+数据 RAM 为 `READ_LATENCY=1`（BRAM），`data_ok` 触发时 `dresp.data` 实际是旧数据。rvcpu 的关键在于 **Writeback 级直接组合读取 `dresp.data`**（不经过 MEM→WB 流水线寄存器）：
+```verilog
+.rd(dresp.data)   // writeback stage input — combinational, not pipelined
+```
+数据 1 周期后到达时，WB 级组合读取到正确值。
+
+**easyLoong 无法直接复现的原因**：
+
+当前数据路径：`dresp.data → LSU(字节提取) → mem_wb_in → mem_wb_out → regfile`
+
+`mem_wb_in` 在 `data_ok` 同周期捕捉 `lsu_rdata`，但 BRAM 数据晚 1 周期才就绪 → 捕捉到旧数据。延迟 `mem_valid` 1 周期会抵消无停顿收益。要在 WB 级直接组合读取 `dresp.data` 进行字节提取，需要重构核心数据路径（当前 `final_res` 经流水线寄存器）。
+
+**结论**：rvcpu 方案依赖特定的数据路径拓扑。easyLoong 需要在流水线结构层面设计数据 bypass 路径后再实施。
+
+### 写缓冲区设计探讨
+
+**目标**：消除 DCache Refill 期间的 store 阻塞（占所有 stall 的 34-61%）。
+
+**尝试方案**：独立 `write_buffer` 模块（LSU 与 DCache 之间），存储命中直通 DCache，refill 期间缓冲 store。
+
+**遇到的设计挑战**：
+
+1. **存储缓冲 vs 直通决策**：独立模块无法获知 DCache 状态（refill 中 vs 空闲），需要额外 busy 信号或重试机制
+2. **加载转发复杂度**：缓冲区内地址匹配的存储数据必须转发给后续加载（CPU 访存 RAW 冒险），需要 word 粒度比较和部分写入的合并逻辑
+3. **排空与 CPU 请求冲突**：DCache 忙时排空被阻塞，同时占着 mem_req 接口，CPU 加载无法直通 DCache
+4. **接口时序**：`mem_req` 寄存器输出引入虚假有效信号
+
+**更可行的方向**：DCache 内部存储队列。DCache 已经知道自身状态（S_IDLE 时 fast path，S_REFILL 期间缓冲 store），无需外部 busy 信号，且数据和标签在同一模块内，加载转发可利用 BRAM 读路径自然解决。
+
+**当前阶段结论**：标签 LUTRAM 优化已取得显著成果（+5-9% IPC），加载命中消除和写缓冲区均需更深入的设计准备后在后续阶段实施。
