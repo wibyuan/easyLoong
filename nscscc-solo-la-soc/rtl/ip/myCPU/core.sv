@@ -314,6 +314,40 @@ module core import la32_common::*; #(
         .res(alu_result)
     );
 
+    logic        mul_in_progress;
+    logic        mul_first_cycle;
+    logic [31:0] mul_p0_reg;
+    logic [15:0] mul_p1l_reg;
+    logic [15:0] mul_p2l_reg;
+    logic [15:0] mul_hi;
+    logic [31:0] mul_result;
+    logic [31:0] ex_alu_result;
+
+    assign mul_first_cycle = id_ex_out.ctrl.valid &&
+        id_ex_out.data.alu_op == ALU_MUL &&
+        !mul_in_progress;
+
+    always_ff @(posedge clk) begin
+        if (reset || (ex_jump_flush && !ex_mem_stall))
+            mul_in_progress <= 1'b0;
+        else if (mul_in_progress)
+            mul_in_progress <= 1'b0;
+        else if (id_ex_out.ctrl.valid && id_ex_out.data.alu_op == ALU_MUL)
+            mul_in_progress <= 1'b1;
+    end
+
+    always_ff @(posedge clk) begin
+        if (mul_first_cycle) begin
+            mul_p0_reg  <= forward_a[15:0] * forward_b[15:0];
+            mul_p1l_reg <= forward_a[15:0] * forward_b[31:16];
+            mul_p2l_reg <= forward_a[31:16] * forward_b[15:0];
+        end
+    end
+
+    assign mul_hi     = mul_p0_reg[31:16] + mul_p1l_reg + mul_p2l_reg;
+    assign mul_result = {mul_hi[15:0], mul_p0_reg[15:0]};
+    assign ex_alu_result = mul_in_progress ? mul_result : alu_result;
+
     logic br_taken;
     bcu bcu_unit (
         .rs1_val(forward_a), .rs2_val(forward_b),
@@ -448,7 +482,7 @@ module core import la32_common::*; #(
             non_alu_result = 32'd0;
     end
 
-    assign ex_mem_in.data.alu_res = is_non_alu ? non_alu_result : alu_result;
+    assign ex_mem_in.data.alu_res = is_non_alu ? non_alu_result : ex_alu_result;
 
     assign ex_mem_in.data.rs2_val   = forward_b;
 
@@ -523,7 +557,7 @@ module core import la32_common::*; #(
     // ==================== HAZARD ====================
     logic load_use_hazard;
 
-    assign ex_stage_busy = csr_read_stall;
+    assign ex_stage_busy = csr_read_stall || mul_first_cycle;
 
     hazard_unit hazard_ctrl (
         .if_not_ready(!iresp.data_ok),

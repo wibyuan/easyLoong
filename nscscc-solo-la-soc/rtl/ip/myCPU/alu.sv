@@ -19,9 +19,8 @@ module alu import la32_common::*; (
             ALU_SLL:  res = a << b[4:0];
             ALU_SRL:  res = a >> b[4:0];
             ALU_SRA:  res = $signed(a) >>> b[4:0];
-            ALU_LUI:  res = b;             // LU12I.W: b already shifted
-            ALU_PCADD: res = a + b;        // PCADDU12I
-            ALU_MUL:   res = a * b;
+            ALU_LUI:  res = b;
+            ALU_PCADD: res = a + b;
             default:  res = 32'd0;
         endcase
     end
