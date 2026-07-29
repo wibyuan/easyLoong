@@ -355,6 +355,18 @@ module core import la32_common::*; #(
 
     assign csr_num = id_ex_out.data.instr[23:10];
 
+    logic [13:0] csr_num_r;
+    logic [31:0] csr_rdata_r;
+
+    always_ff @(posedge clk) begin
+        if (reset) csr_num_r <= 14'd0;
+        else csr_num_r <= csr_num;
+    end
+
+    always_ff @(posedge clk) begin
+        csr_rdata_r <= csr_rdata;
+    end
+
     csr_regfile csr_rf (
         .clk, .reset,
         .csr_num,
@@ -378,7 +390,7 @@ module core import la32_common::*; #(
         if (id_ex_out.ctrl.is_csrwr)
             csr_wdata = forward_a;
         else if (id_ex_out.ctrl.is_csrxchg)
-            csr_wdata = (csr_rdata & ~forward_a) | (forward_b & forward_a);
+            csr_wdata = (csr_rdata_r & ~forward_a) | (forward_b & forward_a);
         else
             csr_wdata = 32'd0;
     end
@@ -412,15 +424,20 @@ module core import la32_common::*; #(
         endcase
     end
 
+    logic csr_read_stall;
+    assign csr_read_stall = id_ex_out.ctrl.valid &&
+        (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrxchg) &&
+        (csr_num != csr_num_r);
+
     always_comb begin
-        if (id_ex_out.ctrl.is_cpucfg)
-            ex_mem_in.data.alu_res = cpucfg_result;
-        else if (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrwr || id_ex_out.ctrl.is_csrxchg)
-            ex_mem_in.data.alu_res = csr_rdata;
+        if (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrwr || id_ex_out.ctrl.is_csrxchg)
+            ex_mem_in.data.alu_res = csr_rdata_r;
         else if (id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr)
             ex_mem_in.data.alu_res = id_ex_out.data.pc_plus_4;
         else if (id_ex_out.ctrl.is_pcadd)
             ex_mem_in.data.alu_res = id_ex_out.data.pc + id_ex_out.data.imm;
+        else if (id_ex_out.ctrl.is_cpucfg)
+            ex_mem_in.data.alu_res = cpucfg_result;
         else
             ex_mem_in.data.alu_res = alu_result;
     end
@@ -498,7 +515,7 @@ module core import la32_common::*; #(
     // ==================== HAZARD ====================
     logic load_use_hazard;
 
-    assign ex_stage_busy = 1'b0;
+    assign ex_stage_busy = csr_read_stall;
 
     hazard_unit hazard_ctrl (
         .if_not_ready(!iresp.data_ok),
