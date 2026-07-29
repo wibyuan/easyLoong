@@ -437,6 +437,23 @@ Vivado 2019.2 Docker 镜像基于 Ubuntu 18.04（Python 3.6），修复了以下
 
 TclStackFree 崩溃的解决方案及完整安装教程见 [vivado-docker.md](vivado-docker.md)。
 
+### JVM segfault in reportTcl (2026-07-29)
+
+**现象**：Docker 内 Vivado 2019.2 合成完成后，写 report 阶段 JVM crash（signal 11）：
+
+```
+Stack:
+libc.so.6(+0x3ef10)
+libc.so.6(_IO_vfprintf+0x3c)
+librdi_synth.so(UParam::Base::reportTcl(...)+0x31d)
+```
+
+`synthes_design` 和 `Timing Optimization` 均成功（0 errors），`launch_runs` 返回 `synth_design ERROR` 为 crash 导致的误报。DCP checkpoint 正常生成。
+
+**根因**：Vivado 2019.2 的 `report_timing_summary` 或 `report_utilization` 在部分环境下的内存损坏（非设计问题）。与 DEVLOG 早前记录的 `TclStackFree: incorrect freePtr`（Windows 11 24H2）同类。
+
+**规避**：在合成脚本中用轻量级 `report_timing -max_paths 100` 替代 `report_timing_summary`。或合成后单独 `open_run synth_1`（在同一 Vivado session 内）提取时序，避免 `launch_runs` 内嵌 report 触发崩溃路径。
+
 ## 2026-07-29: DCache 标签 LUTRAM + 存储命中快速路径
 
 **目标**：消除 DCache 存储命中流水线停顿（stall_dcache_hit_pipe 中 store 部分）。

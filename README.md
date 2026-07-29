@@ -281,6 +281,8 @@ DUT 从设备地址 (`0x1f000000-0x1f000fff`) load 时，将值注入 NEMU 内�
 
 Vivado 2019.2 在 Windows 11 上有兼容性问题，推荐使用 Docker 容器运行。完整安装教程见 [vivado-docker.md](vivado-docker.md)。
 
+> **已知问题**：Docker 内 `report_timing_summary` 可能触发 JVM segfault（signal 11, `reportTcl`），合成本身 0 errors。用 `report_timing -max_paths 100` 替代可规避。详见 DEVLOG。
+
 ```bash
 # 综合 + 实现 + 生成 bitstream
 make build-bitstream
