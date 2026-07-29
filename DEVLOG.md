@@ -548,3 +548,28 @@ assign dresp.data_ok = (state == INIT && hit);  // 标签组合命中 → 同周
 3. **每次改动后跑 CI**：确认 Vivado 综合+实现可通过，关注 `WNS` 和 `WHS`。Place 后 WNS < 0.5ns 时需考虑时序优化
 4. **50MHz cpu_clk**：若后续提升时钟频率，时序压力会显著增加，需重新评估关键路径
 5. **组合逻辑深度**：LUTRAM 组合读取路径 + 标签比较 + data_ok 生成均在单周期内，添加更多组合逻辑（如写入缓冲区地址匹配 CAM）可能成为关键路径
+
+## 2026-07-29: DCache S_STORE_FINAL 消除 + cpu_resp 拆分
+
+**目标**：降低 dcache FSM 组合逻辑深度，提升 synthesis WNS。
+
+**分析**：dcache 的 `cpu_resp`（`addr_ok`/`data_ok`/`data`）和 FSM `next_state`、PLRU、dirty 等慢路径在同一个 200 行 `always_comb` 块中。Vivado 展平为单一 LUT 网络，使 PLRU 树 256→1 地址解码器（MUXF8/MUXF7 级联）插入 `data_ok` 到 core 的关键路径。
+
+**实现**：
+1. `cpu_resp` 从 FSM `always_comb` 移出为独立 `always_comb`（参照 rvcpu 的连续赋值模式）
+2. 消除 `S_STORE_FINAL` 状态——refill 完成后直接回 `S_IDLE`，pending store 通过标准快速路径重试命中（标签刚写入，必然 hit）
+3. 删除 `m_wdata`/`m_wstrb`/`m_size` 寄存器（不再需要）
+
+**结果**（Verilator difftest，全 6 测试 PASS，IPC 不变）：
+
+| 指标 | 修改前 | 修改后 |
+|------|--------|--------|
+| Synthesis WNS | 5.290ns | **5.388ns** |
+| dcache 段最差路径排名 | #1 | #6+（slack ~5.539ns） |
+| 最差路径来源 | dcache→pc_reg（26 级） | ALU(MUL)→CSR→ex_mem（15 级） |
+| Logic levels（最差） | 26 | 15 |
+| dcache 单元数 | 134,261 | 未变 |
+
+> PLRU/dirty 加 `(* ram_style = "distributed" *)` 实验：无效（它们已被 Vivado 自动推断为 LUTRAM）。瓶颈是 always_comb 中的跨信号子表达式共享，非 RAM 类型。
+
+**CI**：`submit-20260729-1630` 已推送，待结果。

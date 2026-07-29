@@ -325,6 +325,9 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 | submit-v3 | ✅ 通过 | 7.811 ns | 0 | 2026-07-25 |
 | submit-v4 | ✅ 通过 | — | 0 | 2026-07-25 |
 | submit-20260729-1031 | ⏳ 超时 | 0.564 (Place) | 0 | 2026-07-29 |
+| submit-20260729-1630 | ⏳ 待结果 | 5.388 (Synth) | 0 | 2026-07-29 |
+
+> **submit-20260729-1630**：含 dcache S_STORE_FINAL 消除 + cpu_resp 拆分优化。Synthesis WNS 5.290→5.388ns，dcache 关键路径从 #1 跌至 #6+，新最差路径为 ALU(MUL)→CSR→ex_mem。详见 DEVLOG。
 
 > **submit-20260729-1031**：含标签 LUTRAM 优化（`(* ram_style = "distributed" *)`）。HDL Lint、综合、布局均通过（0 Critical Warnings, Place WNS=0.564 ns），布线阶段超 1h CI 限制。详见 [DEVLOG.md](DEVLOG.md) 中时序优化注意事项。
 
