@@ -572,4 +572,50 @@ assign dresp.data_ok = (state == INIT && hit);  // 标签组合命中 → 同周
 
 > PLRU/dirty 加 `(* ram_style = "distributed" *)` 实验：无效（它们已被 Vivado 自动推断为 LUTRAM）。瓶颈是 always_comb 中的跨信号子表达式共享，非 RAM 类型。
 
+## 2026-07-29: EX 阶段关键路径优化
+
+**目标**：缩短 synthesis 关键路径，提升 WNS 为 Implementation 留出收敛余量。
+
+**背景**：S_STORE_FINAL 消除后，synthesis WNS=5.388ns。最差路径为 `reg_ex_mem_ctrl[5]` → ALU(mul.w 2× DSP48E1 级联，~5.4ns) → CARRY4 → 4× LUT6(5 路结果 mux + CSR 读) → `reg_ex_mem_data[0]`，共 15 级逻辑。
+
+### 优化 1：CSR 读打拍
+
+CSR `always_comb` case 语句被 Vivado 与 5 路结果 mux 合并进同一 LUT 网络，插入关键路径尾部。将 `csr_rdata` 输出转化为寄存器输出（`csr_rdata_r`），用 `csr_num` 变化检测自动触发 CSR 读指令 1 周期 stall。CSR/JAL/PCADD/cpucfg 路径改用 `csr_rdata_r`。
+
+**效果**：WNS 5.359→5.381ns（+0.022ns，微）。CSR 路径只占尾部少量 LUT 级，DSP 级联是瓶颈。
+
+### 优化 2：EX 结果 mux 拆分
+
+原 5 路优先编码 mux（CSR→JAL→PCADD→cpucfg→ALU）将 `alu_result`（含 MUL 的 DSP→CARRY4）拖入完整 LUT 链。将 ALU 结果从 mux 中分离——`alu_result` 直连 `ex_mem_in.alu_res`，非 ALU 结果走独立 mux 由 2 选 1 终选。
+
+**效果**：WNS 5.381→5.389ns（+0.008ns，微）。Vivado 将 `is_non_alu` 条件信号和 CSR 读合并进同一组合逻辑块，抵消了 mux 拆分收益。
+
+### 优化 3：mul.w 分解为 16 位部分积
+
+借鉴 `wip-100mhz` 分支，将 32 位乘法 `a * b` 分解为三个 16 位部分积：
+- `p0 = a[15:0] * b[15:0]`（单个 DSP48E1）
+- `p1l = a[15:0] * b[31:16]`（单个 DSP48E1）
+- `p2l = a[31:16] * b[15:0]`（单个 DSP48E1）
+
+FSM (`mul_in_progress`)：
+- 第 1 周期：三个 16×16 并行计算（组合逻辑），posedge 捕获 `p0/p1l/p2l` 到寄存器，pipeline stall
+- 第 2 周期：`mul_hi = p0[31:16] + p1l + p2l`（17 位加法），`mul_result = {mul_hi[15:0], p0[15:0]}` 组合输出，pipeline 释出
+- ALU (`alu.sv`) 移除 `ALU_MUL` case，`ex_alu_result = mul_in_progress ? mul_result : alu_result` 二选一
+
+三个 16×16 各自在单个 DSP48E1 内完成（无级联），部分积寄存器打断 DSP 链。mul.w 增加 1 周期延迟，MUL 指令罕见于 benchmark → IPC 零损失。
+
+**效果**（Verilator difftest 全 6 测试 PASS，IPC 不变）：
+
+| 指标 | 优化前 | 优化后 | Δ |
+|------|--------|--------|-----|
+| Synthesis WNS | 5.388ns | **7.728ns** | **+2.34ns (+43%)** |
+| 数据路径延迟 | 14.41ns | 12.04ns | -2.37ns |
+| 逻辑延迟 | 8.45ns | 5.50ns | -2.95ns |
+| 逻辑级数 | 15 | 22 | +7 |
+| DSP48E1 关键路径 | 2 个（级联） | **0 个** | 消除 |
+| 新最差路径 | ALU→CSR→reg | DCache just_hit → pc_reg[28] | 路径转移 |
+
+> **关键**：DSP48E1 级联（~5.4ns，占原路径 37%）被三个并行 16 位部分积 + 寄存器完全消除。新最差路径转移至 dcache LUTRAM 组合逻辑标签命中检测（MUXF8×2、CARRY4×9）→ NPC，但 WNS 7.73ns 提供充足 Implementation 收敛余量。
+
+
 **CI**：`submit-20260729-1630` 已推送，待结果。
