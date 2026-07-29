@@ -62,9 +62,8 @@ module dcache import la32_common::*; (
         end
     end
 
-    // ==================== Tag BRAM ====================
-    (* ram_style = "block" *) logic [TAG_WIDTH:0] tag_mem [0:NR_WAYS-1][NR_SETS-1:0];
-    logic        tag_rd_ena;
+    // ==================== Tag LUTRAM ====================
+    (* ram_style = "distributed" *) logic [TAG_WIDTH:0] tag_mem [0:NR_WAYS-1][NR_SETS-1:0];
     index_t      tag_rd_addr;
     logic [TAG_WIDTH:0] tag_rd_data [0:NR_WAYS-1];
     logic        tag_wr_ena;
@@ -75,10 +74,11 @@ module dcache import la32_common::*; (
     always_ff @(posedge clk) begin
         if (tag_wr_ena)
             tag_mem[tag_wr_way][tag_wr_addr] <= tag_wr_data;
-        if (tag_rd_ena) begin
-            for (int w = 0; w < NR_WAYS; w++)
-                tag_rd_data[w] <= tag_mem[w][tag_rd_addr];
-        end
+    end
+
+    always_ff @(posedge clk) begin
+        for (int w = 0; w < NR_WAYS; w++)
+            tag_rd_data[w] <= tag_mem[w][tag_rd_addr];
     end
 
     // ==================== Dirty + PLRU ====================
@@ -172,6 +172,36 @@ module dcache import la32_common::*; (
         end
     endfunction
 
+    // ==================== Combinational request hit ====================
+    wire index_t   req_idx;
+    wire tag_t     req_tag;
+    wire woffset_t req_wo;
+    assign req_idx = cpu_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
+    assign req_tag = cpu_req.addr[31:INDEX_WIDTH+LINE_OFFSET];
+    assign req_wo  = cpu_req.addr[LINE_OFFSET-1:2];
+
+    logic [TAG_WIDTH:0] req_tag_data [0:NR_WAYS-1];
+    always_comb begin
+        for (int w = 0; w < NR_WAYS; w++)
+            req_tag_data[w] = tag_mem[w][req_idx];
+    end
+
+    logic req_hit;
+    way_t req_hit_way;
+
+    always_comb begin
+        automatic logic [NR_WAYS-1:0] hit_vec;
+        hit_vec = '0;
+        for (int w = 0; w < NR_WAYS; w++)
+            hit_vec[w] = req_tag_data[w][0]
+                && (req_tag_data[w][TAG_WIDTH:1] == req_tag)
+                && is_cachable(cpu_req.addr, cpu_req.cacheable);
+        req_hit = |hit_vec && (state == S_IDLE);
+        req_hit_way = '0;
+        for (int w = 0; w < NR_WAYS; w++)
+            if (hit_vec[w]) req_hit_way = way_t'(w);
+    end
+
     // ==================== S2 hit ====================
     wire [TAG_WIDTH-1:0] tag_r_tag [0:NR_WAYS-1];
     wire                 tag_r_v   [0:NR_WAYS-1];
@@ -214,25 +244,21 @@ module dcache import la32_common::*; (
     always_comb begin
         data_rd_ena = 1'b0;
         data_rd_addr = '0;
-        tag_rd_ena  = 1'b0;
         tag_rd_addr  = '0;
 
         if (state == S_IDLE && s1_valid && is_cachable(s1_addr, s1_cacheable)) begin
             data_rd_ena = 1'b1;
             data_rd_addr = s1_idx;
-            tag_rd_ena  = 1'b1;
             tag_rd_addr  = s1_idx;
         end
         if (state == S_MISS) begin
             data_rd_ena = 1'b1;
             data_rd_addr = m_idx;
-            tag_rd_ena  = 1'b1;
             tag_rd_addr  = m_idx;
         end
         if (state == S_IDLE && cacop_req.valid && cacop_req.code[2:0] == 3'd1 && cacop_req.code[4:3] == 2'b01) begin
             data_rd_ena = 1'b1;
             data_rd_addr = cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
-            tag_rd_ena  = 1'b1;
             tag_rd_addr  = cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
         end
     end
@@ -283,6 +309,16 @@ module dcache import la32_common::*; (
                         next_state = S_CACOP_ST;
                     else if (cacop_req.code[4:3] == 2'b01)
                         next_state = S_CACOP_WB_READ;
+                end else if (!s2_valid && cpu_req.valid && |cpu_req.strobe
+                           && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+                    cpu_resp.addr_ok = 1'b1;
+                    cpu_resp.data_ok = 1'b1;
+                    data_wr_ena  = 1'b1;
+                    data_wr_way  = req_hit_way;
+                    data_wr_addr = req_idx;
+                    data_wr_wo   = req_wo;
+                    data_wr_we   = cpu_req.strobe;
+                    data_wr_data = cpu_req.data;
                 end else if (s2_valid) begin
                     if (!is_cachable(s2_addr, s2_cacheable)) begin
                         mem_req_next.valid  = 1'b1;
@@ -463,6 +499,10 @@ module dcache import la32_common::*; (
             end
 
             if (!s1_stall) begin
+                if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+                    && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+                    s1_valid <= 1'b0;
+                end else begin
                 s1_valid <= cpu_req.valid;
                 s1_addr  <= cpu_req.addr;
                 s1_op    <= |cpu_req.strobe;
@@ -488,6 +528,7 @@ module dcache import la32_common::*; (
                     s2_tag   <= s1_tag;
                     s2_cacheable <= s1_cacheable;
                 end
+                end
             end else if (state != S_IDLE) begin
                 s1_valid <= 1'b0;
                 s2_valid <= 1'b0;
@@ -496,9 +537,29 @@ module dcache import la32_common::*; (
                 s1_valid <= 1'b0;
             end
 
-            just_hit <= s2_valid && s2_hit;
-            if (s2_valid && s2_hit)
-                last_hit_addr <= s2_addr;
+            if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+                && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+                just_hit <= 1'b1;
+                last_hit_addr <= cpu_req.addr;
+            end else begin
+                just_hit <= s2_valid && s2_hit;
+                if (s2_valid && s2_hit)
+                    last_hit_addr <= s2_addr;
+            end
+
+            if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+                && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+                if (NR_WAYS == 2) begin
+                    plru[0][req_idx] <= ~req_hit_way;
+                end else begin
+                    int node = 0;
+                    for (int b = WAY_BITS-1; b >= 0; b--) begin
+                        plru[node][req_idx] <= ~req_hit_way[b];
+                        node = 2*node + 1 + int'(req_hit_way[b]);
+                    end
+                end
+                dirty[req_hit_way][req_idx] <= 1'b1;
+            end
 
             if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
                 if (NR_WAYS == 2) begin
@@ -631,6 +692,11 @@ module dcache import la32_common::*; (
                     hit_cnt <= hit_cnt + 64'd1;
                 else
                     miss_cnt <= miss_cnt + 64'd1;
+            end
+            if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+                && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+                access_cnt <= access_cnt + 64'd1;
+                hit_cnt <= hit_cnt + 64'd1;
             end
             if (state == S_WB_WRITE && mem_resp.addr_ok)
                 wb_cnt64 <= wb_cnt64 + 64'd1;
