@@ -37,7 +37,6 @@ module dcache import la32_common::*; (
     typedef logic [WAY_BITS-1:0] way_t;
 
     // ==================== Data BRAM ====================
-    (* ram_style = "block" *) logic [31:0] data_mem [0:NR_WAYS-1][0:NR_WORDS-1][NR_SETS-1:0];
     logic        data_rd_ena;
     index_t      data_rd_addr;
     logic [31:0] data_rd_out [0:NR_WAYS-1][0:NR_WORDS-1];
@@ -48,19 +47,26 @@ module dcache import la32_common::*; (
     logic [3:0]  data_wr_we;
     logic [31:0] data_wr_data;
 
-    always_ff @(posedge clk) begin
-        if (data_wr_ena) begin
-            if (data_wr_we[0]) data_mem[data_wr_way][data_wr_wo][data_wr_addr][ 7: 0] <= data_wr_data[ 7: 0];
-            if (data_wr_we[1]) data_mem[data_wr_way][data_wr_wo][data_wr_addr][15: 8] <= data_wr_data[15: 8];
-            if (data_wr_we[2]) data_mem[data_wr_way][data_wr_wo][data_wr_addr][23:16] <= data_wr_data[23:16];
-            if (data_wr_we[3]) data_mem[data_wr_way][data_wr_wo][data_wr_addr][31:24] <= data_wr_data[31:24];
+    generate
+        for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_data_way
+            for (genvar gb = 0; gb < NR_WORDS; gb++) begin : g_data_word
+                (* ram_style = "block" *) logic [31:0] mem [NR_SETS-1:0];
+                logic wen;
+                assign wen = data_wr_ena && (data_wr_way == way_t'(gw)) && (data_wr_wo == woffset_t'(gb));
+
+                always_ff @(posedge clk) begin
+                    if (wen) begin
+                        if (data_wr_we[0]) mem[data_wr_addr][ 7: 0] <= data_wr_data[ 7: 0];
+                        if (data_wr_we[1]) mem[data_wr_addr][15: 8] <= data_wr_data[15: 8];
+                        if (data_wr_we[2]) mem[data_wr_addr][23:16] <= data_wr_data[23:16];
+                        if (data_wr_we[3]) mem[data_wr_addr][31:24] <= data_wr_data[31:24];
+                    end
+                    if (data_rd_ena)
+                        data_rd_out[gw][gb] <= mem[data_rd_addr];
+                end
+            end
         end
-        if (data_rd_ena) begin
-            for (int w = 0; w < NR_WAYS; w++)
-                for (int b = 0; b < NR_WORDS; b++)
-                    data_rd_out[w][b] <= data_mem[w][b][data_rd_addr];
-        end
-    end
+    endgenerate
 
     // ==================== Tag LUTRAM ====================
     (* ram_style = "distributed" *) logic [TAG_WIDTH:0] tag_mem [0:NR_WAYS-1][NR_SETS-1:0];

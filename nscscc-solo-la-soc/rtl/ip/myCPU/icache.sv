@@ -34,7 +34,6 @@ module icache import la32_common::*; (
     typedef logic [TAG_WIDTH-1:0] tag_t;
 
     // ==================== Data BRAM ====================
-    (* ram_style = "block" *) logic [31:0] data_mem [0:1][0:3][NR_SETS-1:0];
     logic        data_rd_ena;
     index_t      data_rd_addr;
     logic [31:0] data_rd_out [0:1][0:3];
@@ -44,23 +43,24 @@ module icache import la32_common::*; (
     logic [1:0]  data_wr_wo;
     logic [31:0] data_wr_data;
 
-    always_ff @(posedge clk) begin
-        if (data_wr_ena)
-            data_mem[data_wr_way][data_wr_wo][data_wr_addr] <= data_wr_data;
-        if (data_rd_ena) begin
-            data_rd_out[0][0] <= data_mem[0][0][data_rd_addr];
-            data_rd_out[0][1] <= data_mem[0][1][data_rd_addr];
-            data_rd_out[0][2] <= data_mem[0][2][data_rd_addr];
-            data_rd_out[0][3] <= data_mem[0][3][data_rd_addr];
-            data_rd_out[1][0] <= data_mem[1][0][data_rd_addr];
-            data_rd_out[1][1] <= data_mem[1][1][data_rd_addr];
-            data_rd_out[1][2] <= data_mem[1][2][data_rd_addr];
-            data_rd_out[1][3] <= data_mem[1][3][data_rd_addr];
+    generate
+        for (genvar gw = 0; gw < 2; gw++) begin : g_data_way
+            for (genvar gb = 0; gb < 4; gb++) begin : g_data_word
+                (* ram_style = "block" *) logic [31:0] mem [NR_SETS-1:0];
+                logic wen;
+                assign wen = data_wr_ena && (data_wr_way == 1'(gw)) && (data_wr_wo == 2'(gb));
+
+                always_ff @(posedge clk) begin
+                    if (wen)
+                        mem[data_wr_addr] <= data_wr_data;
+                    if (data_rd_ena)
+                        data_rd_out[gw][gb] <= mem[data_rd_addr];
+                end
+            end
         end
-    end
+    endgenerate
 
     // ==================== Tag BRAM ====================
-    (* ram_style = "block" *) logic [TAG_WIDTH:0] tag_mem [0:1][NR_SETS-1:0];
     logic        tag_rd_ena;
     index_t      tag_rd_addr;
     logic [TAG_WIDTH:0] tag_rd_data [0:1];
@@ -68,16 +68,20 @@ module icache import la32_common::*; (
     index_t      tag_wr_addr;
     logic [TAG_WIDTH:0] tag_wr_data [0:1];
 
-    always_ff @(posedge clk) begin
-        if (tag_wr_ena[0])
-            tag_mem[0][tag_wr_addr] <= tag_wr_data[0];
-        if (tag_wr_ena[1])
-            tag_mem[1][tag_wr_addr] <= tag_wr_data[1];
-        if (tag_rd_ena) begin
-            tag_rd_data[0] <= tag_mem[0][tag_rd_addr];
-            tag_rd_data[1] <= tag_mem[1][tag_rd_addr];
+    generate
+        for (genvar gw = 0; gw < 2; gw++) begin : g_tag_way
+            (* ram_style = "block" *) logic [TAG_WIDTH:0] mem [NR_SETS-1:0];
+            logic wen;
+            assign wen = tag_wr_ena[gw];
+
+            always_ff @(posedge clk) begin
+                if (wen)
+                    mem[tag_wr_addr] <= tag_wr_data[gw];
+                if (tag_rd_ena)
+                    tag_rd_data[gw] <= mem[tag_rd_addr];
+            end
         end
-    end
+    endgenerate
 
     // ==================== PLRU ====================
     logic [NR_SETS-1:0] plru;
