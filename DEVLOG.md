@@ -436,3 +436,29 @@ Vivado 2019.2 Docker 镜像基于 Ubuntu 18.04（Python 3.6），修复了以下
 ## Vivado 2019.2 Docker 环境
 
 TclStackFree 崩溃的解决方案及完整安装教程见 [vivado-docker.md](vivado-docker.md)。
+
+## 2026-07-29: DCache 标签 LUTRAM + 存储命中快速路径
+
+**目标**：消除 DCache 存储命中流水线停顿（stall_dcache_hit_pipe 中 store 部分）。
+
+**分析**：当前 DCache 标签和数据均在 BRAM 中（1 周期读延迟），形成 2 级流水线 (S1→S2)。每次缓存访问（含命中）都需要等待标签和数据从 BRAM 返回（1 周期），导致流水线停顿。标签 RAM 仅 ~10.5Kb，可放入分布式 RAM (LUTRAM) 实现组合逻辑读取（0 周期），数据 RAM (64Kb) 必须保留 BRAM。加载命中因 BRAM 数据延迟无法消除停顿。
+
+**实现**：
+
+1. **标签 RAM → LUTRAM**：`(* ram_style = "distributed" *)`，双读端口（组合逻辑 `req_tag_data` + 寄存器 `tag_rd_data` 供 S2/miss/cacop 路径使用）。
+2. **组合逻辑命中检测**：在 S_IDLE 状态下，基于 `cpu_req` 直接组合读取标签判断命中（无流水线延迟）。
+3. **直接存储命中路径**：S2 空闲时，存储命中在同周期触发 `addr_ok`+`data_ok`，直写 BRAM 数据，更新 PLRU/dirty，旁路 S1/S2。
+4. **组合逻辑环路修复**：LSU 移除 `dreq` 信号对 `dresp.data_ok` 的组合依赖，避免同周期响应导致的 Verilator 振荡。
+
+**结果**（Verilator difftest，全 6 测试 PASS）：
+
+| 测试 | 旧 IPC | 新 IPC | ΔIPC | DCache Hit Pipe (旧) | DCache Hit Pipe (新) |
+|------|--------|--------|------|----------------------|----------------------|
+| Mixed | 0.176 | 0.186 | +5.5% | 13.3% | 9.8% |
+| Matrix | 0.172 | 0.187 | +8.8% | 20.7% | 15.7% |
+| Stream | 0.141 | 0.150 | +6.8% | 14.9% | 10.8% |
+| Cryptonight | 0.163 | 0.172 | +5.4% | 9.9% | 6.0% |
+
+**借鉴**：rvcpu 的 0 周期标签比较设计思想（组合逻辑标签读取 + `data_ok` 同周期触发），但仅应用于标签（数据保留 BRAM），限存储命中场景。
+
+**下一步**：DCache Refill 仍占 34-61% stall。计划添加写缓冲（write buffer），使 store 在 refill 期间不被阻塞，进一步降低 DCache Refill 停顿。

@@ -133,19 +133,30 @@
 >
 > **Burst 改造效果**：DCache refill 与 writeback 均由逐字握手改为 AXI INCR burst 单次事务。Cryptonight 单次 miss penalty 从 87 → 30.5 周期（-65%），IPC 提升 78.8%。
 
-### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-27 Burst Refill + Writeback Burst，优先级降序）
+### DCache 标签 LUTRAM + 存储命中快速路径（2026-07-29）
+
+| 测试 | 指令数 | 周期数 | IPC | IPC(旧) | 提升 |
+|------|--------|--------|-----|---------|------|
+| Mixed | 329K | 1.77M | 0.186 | 0.176 | +5.5% |
+| Matrix | 5.64M | 30.16M | 0.187 | 0.172 | +8.8% |
+| Stream | 3.95M | 26.26M | 0.150 | 0.141 | +6.8% |
+| Cryptonight | 23.09M | 134.38M | 0.172 | 0.163 | +5.4% |
+
+> 将 DCache 标签 RAM 从 BRAM 迁移至分布式 RAM (LUTRAM)，实现组合逻辑标签读取。在 S2 空闲时，存储命中请求在同周期内触发 `addr_ok`+`data_ok` 并直写 BRAM，旁路 S1/S2 流水线。借鉴 rvcpu 的 0 周期标签比较设计思想，但仅将标签（~10.5Kb）放入 LUTRAM，数据 RAM（64Kb）保留 BRAM。IPC 提升 5-9%。
+
+### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-29 标签 LUTRAM，优先级降序）
 
 | 类别 | Mixed | Matrix | Stream | Cryptonight |
 |------|:-----:|:------:|:------:|:-----------:|
-| DCache Refill | **37.5%** | **27.0%** | **45.7%** | **57.1%** |
+| DCache Refill | **40.0%** | **34.2%** | **50.7%** | **60.9%** |
 | ICache Refill | 0.4% | 0.0% | 0.0% | 0.0% |
-| Load-Use | 0.7% | 0.0% | 3.3% | 0.0% |
-| Branch Flush | 18.6% | 19.9% | 11.5% | 15.6% |
-| DCache Hit Pipe | 13.3% | 20.7% | 14.9% | 9.9% |
-| ICache Hit Pipe | 21.5% | 21.8% | 14.8% | 13.8% |
-| Other | 8.0% | 10.6% | 9.7% | 3.6% |
+| Load-Use | 0.8% | 0.2% | 5.3% | 0.0% |
+| Branch Flush | 20.1% | 19.4% | 12.0% | 15.8% |
+| DCache Hit Pipe | 9.8% | 15.7% | 10.8% | 6.0% |
+| ICache Hit Pipe | 23.5% | 22.0% | 15.7% | 15.8% |
+| Other | 5.4% | 8.4% | 5.4% | 1.4% |
 
-> 数值为占全部 stall 周期的百分比。DCache Refill 占 stall 比从 burst 改造前的 51-84% 降至 27-57%。Cache 命中流水线延迟（Hit Pipe）合计占 24-43%，已超过 Refill 成为部分 benchmark 的主瓶颈。下一步优先考虑写缓冲（消除 store hit 延迟）或非阻塞 cache（hit-under-miss）。
+> DCache Hit Pipe 占比从 10-21% 降至 6-16%（存储命中延迟已消除）。DCache Refill 仍为最大瓶颈（34-61%）。下一步优先考虑写缓冲（消除 refill 期间 store 阻塞）或非阻塞 cache（hit-under-miss）。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-07-26）
 
