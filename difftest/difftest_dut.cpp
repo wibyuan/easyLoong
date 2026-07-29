@@ -334,7 +334,7 @@ void DifftestEngine::step() {
     }
 }
 
-static const double kCpuClockMhz = 33.0;
+static const double kCpuClockMhz = 50.0;
 
 static void display_branch_metrics() {
     difftest_branch_state_t *bs = difftest_get_branch_state();
@@ -448,7 +448,7 @@ void DifftestEngine::finish() {
                 (double)instr_count_ / (double)ticks_);
         double runtime_us = (double)ticks_ / kCpuClockMhz;
         if (runtime_us >= 1e6)
-            fprintf(stdout, "[difftest] estimated FPGA runtime (33MHz): %.3f s\n",
+            fprintf(stdout, "[difftest] estimated FPGA runtime (50MHz): %.3f s\n",
                     runtime_us / 1e6);
         else if (runtime_us >= 1e3)
             fprintf(stdout, "[difftest] estimated FPGA runtime (33MHz): %.3f ms\n",
