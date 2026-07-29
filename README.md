@@ -128,7 +128,7 @@
 | Stream | 3.95M | 28.07M | 0.141 | 0.085 | +65.9% |
 | Cryptonight | 23.09M | 141.85M | 0.163 | 0.091 | +78.8% |
 
-> 估测公式：`runtime = total_cycles / 33MHz`（cpu_clk 经 PLL XCI 确认为 33 MHz）。
+> 估测公式：`runtime = total_cycles / 50MHz`（cpu_clk 经 PLL XCI 确认为 50 MHz）。
 > IPC(旧) = BTFNT+ID重定向 基线（2026-07-26），即 burst refill + writeback burst 改造前的值。
 >
 > **Burst 改造效果**：DCache refill 与 writeback 均由逐字握手改为 AXI INCR burst 单次事务。Cryptonight 单次 miss penalty 从 87 → 30.5 周期（-65%），IPC 提升 78.8%。
@@ -256,7 +256,7 @@ FORCE_VERILATOR_REBUILD=1 make test-simple
 difftest 正常退出时自动输出：
 
 - **IPC**：`指令数 / 总周期数`
-- **FPGA 运行时估测**：`总周期数 / 33MHz`（cpu_clk 频率）
+- **FPGA 运行时估测**：`总周期数 / 50MHz`（cpu_clk 频率）
 - **ICache 指标**：访问数 / hit / miss / 命中率
 - **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数
 - **分支预测指标**：条件分支数 / 误预测数 / 准确率
@@ -322,6 +322,9 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 | submit-v1 | ❌ 时序失败 | -1.274 ns | 34 | 2026-07-25 |
 | submit-v3 | ✅ 通过 | 7.811 ns | 0 | 2026-07-25 |
 | submit-v4 | ✅ 通过 | — | 0 | 2026-07-25 |
+| submit-20260729-1031 | ⏳ 超时 | 0.564 (Place) | 0 | 2026-07-29 |
+
+> **submit-20260729-1031**：含标签 LUTRAM 优化（`(* ram_style = "distributed" *)`）。HDL Lint、综合、布局均通过（0 Critical Warnings, Place WNS=0.564 ns），布线阶段超 1h CI 限制。详见 [DEVLOG.md](DEVLOG.md) 中时序优化注意事项。
 
 详细工作流见 [docs/CI-WORKFLOW.md](docs/CI-WORKFLOW.md)。
 

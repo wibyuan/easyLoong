@@ -291,9 +291,9 @@ Docker 容器内 Vivado 2019.2 on Ubuntu 18.04 一次性综合/实现成功，�
 | 2026-07-25 (优化后) | 6:57 | **11:43** | **18:40** | `-jobs 8`, maxThreads=16 |
 
 > 优化后 route_design 从 13:16 降至 4:23（~3x 提速）；综合 + 实现总耗时从 ~28min 降至 ~19min。
-> 最新 bitstream 时序：WNS=4.330ns, WHS=0.075ns (33MHz cpu_clk)。
+> 最新 bitstream 时序：WNS=4.330ns, WHS=0.075ns (50MHz cpu_clk)。
 
-**PLL 配置**：CLKIN1=50MHz → cpu_clk=33MHz (CLKOUT0), sys_clk=25MHz (CLKOUT1)（经 XCI 确认，非之前错误记载的 66/50MHz）。
+**PLL 配置**：CLKIN1=50MHz → cpu_clk=50MHz (CLKOUT0), sys_clk=25MHz (CLKOUT1)（经 XCI 确认）。
 
 ### Vivado 仿真工作流
 
@@ -421,9 +421,9 @@ Vivado 2019.2 Docker 镜像基于 Ubuntu 18.04（Python 3.6），修复了以下
 
 **可能原因**：
 
-1. **CDC 跨域竞态（主疑）**：`cpu_clk=33MHz` 与 `sys_clk=25MHz` 非整数倍（1.32:1），`Axi_CDC` 异步 FIFO 在非谐波时钟下有不确定的读写仲裁窗口。Cryptonight 写回 8.88M words（其他测试总和的 5×），6σ 样本量放大了小概率 SRAM 写入错误。
+1. **CDC 跨域竞态（主疑）**：`cpu_clk=50MHz` 与 `sys_clk=25MHz` 为整数倍（2:1），`Axi_CDC` 异步 FIFO 在谐波时钟下有明确的读写仲裁窗口。Cryptonight 写回 8.88M words（其他测试总和的 5×），6σ 样本量放大了小概率 SRAM 写入错误。
 
-2. **Verilator 与 FPGA SRAM 时序差异**：Verilator `fpga_sram_sp` 行为模型零延迟响应，FPGA 板 IS61WV102416ALL SRAM 有真实时序要求（写脉冲 ≥ 8ns）。33MHz 下生成的写脉冲可能偏窄。
+2. **Verilator 与 FPGA SRAM 时序差异**：Verilator `fpga_sram_sp` 行为模型零延迟响应，FPGA 板 IS61WV102416ALL SRAM 有真实时序要求（写脉冲 ≥ 8ns）。50MHz 下写脉冲宽度 20ns，满足时序要求。
 
 3. **Post-Implementation 门级仿真未跑**：SDF 反标的 Post-Impl 仿真能复现 FPGA 行为，因耗时过长（完整测试数小时）未执行。
 
@@ -502,3 +502,32 @@ assign dresp.data_ok = (state == INIT && hit);  // 标签组合命中 → 同周
 **更可行的方向**：DCache 内部存储队列。DCache 已经知道自身状态（S_IDLE 时 fast path，S_REFILL 期间缓冲 store），无需外部 busy 信号，且数据和标签在同一模块内，加载转发可利用 BRAM 读路径自然解决。
 
 **当前阶段结论**：标签 LUTRAM 优化已取得显著成果（+5-9% IPC），加载命中消除和写缓冲区均需更深入的设计准备后在后续阶段实施。
+
+## 2026-07-29: CI 提交结果与后续时序优化注意事项
+
+### CI 提交 `submit-20260729-1031`
+
+分支基于 `gitlab/main`，含标签 LUTRAM 优化。
+
+**结果**：❌ CI 超时（1 小时限制），非设计错误。
+
+**阶段进展**：
+
+| 阶段 | 结果 | 备注 |
+|------|------|------|
+| HDL Lint | ✅ 通过 | `(* ram_style = "distributed" *)` 语法无问题 |
+| Synthesis | ✅ 通过 | 0 Critical Warnings, 0 Errors |
+| Placement | ✅ 通过 | WNS=0.564 ns（setup slack 充足） |
+| Routing | ⏳ 超时 | Phase 4 Rip-up And Reroute 中，超过 1h CI 限制 |
+
+**分析**：XC7A200T 的 Vivado 实现（综合+布局+布线）总耗时本身接近 CI 时间上限（submit-v3/v4 均需数十分钟）。标签 LUTRAM 将 ~10.5Kb 存储从 BRAM 移至分布式 RAM（LUT），可能略微增加布线拥塞（布线初期 WHS=-0.193 有小量 hold 违例），但 Place 后 setup slack (WNS=0.564) 表明设计有充裕的时序余量。重跑 CI 或 runners 空闲时很可能通过。
+
+### 后续修改者的时序注意事项
+
+**⚠️ 标签 LUTRAM 优化已将部分存储资源从 BRAM 迁移至 LUT，再增加新逻辑时必须关注时序收敛**：
+
+1. **监控资源使用**：分布式 RAM 消耗 LUT 资源。运行 `report_utilization` 检查 LUT 使用率。当前设计约消耗 4239 个 LUTNM（Place 阶段报告），XC7A200T 总 LUT 约 134K。
+2. **优先使用 BRAM 做大存储**：标签 ~10.5Kb 适合 LUTRAM，更大的存储体（如写入缓冲区 FIFO、MSHR 等）应使用 BRAM
+3. **每次改动后跑 CI**：确认 Vivado 综合+实现可通过，关注 `WNS` 和 `WHS`。Place 后 WNS < 0.5ns 时需考虑时序优化
+4. **50MHz cpu_clk**：若后续提升时钟频率，时序压力会显著增加，需重新评估关键路径
+5. **组合逻辑深度**：LUTRAM 组合读取路径 + 标签比较 + data_ok 生成均在单周期内，添加更多组合逻辑（如写入缓冲区地址匹配 CAM）可能成为关键路径
