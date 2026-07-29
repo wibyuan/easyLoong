@@ -429,18 +429,26 @@ module core import la32_common::*; #(
         (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrxchg) &&
         (csr_num != csr_num_r);
 
+    logic        is_non_alu;
+    logic [31:0] non_alu_result;
+    assign is_non_alu = id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrwr ||
+        id_ex_out.ctrl.is_csrxchg || id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr ||
+        id_ex_out.ctrl.is_pcadd || id_ex_out.ctrl.is_cpucfg;
+
     always_comb begin
         if (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrwr || id_ex_out.ctrl.is_csrxchg)
-            ex_mem_in.data.alu_res = csr_rdata_r;
+            non_alu_result = csr_rdata_r;
         else if (id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr)
-            ex_mem_in.data.alu_res = id_ex_out.data.pc_plus_4;
+            non_alu_result = id_ex_out.data.pc_plus_4;
         else if (id_ex_out.ctrl.is_pcadd)
-            ex_mem_in.data.alu_res = id_ex_out.data.pc + id_ex_out.data.imm;
+            non_alu_result = id_ex_out.data.pc + id_ex_out.data.imm;
         else if (id_ex_out.ctrl.is_cpucfg)
-            ex_mem_in.data.alu_res = cpucfg_result;
+            non_alu_result = cpucfg_result;
         else
-            ex_mem_in.data.alu_res = alu_result;
+            non_alu_result = 32'd0;
     end
+
+    assign ex_mem_in.data.alu_res = is_non_alu ? non_alu_result : alu_result;
 
     assign ex_mem_in.data.rs2_val   = forward_b;
 
