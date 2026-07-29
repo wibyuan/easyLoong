@@ -104,7 +104,7 @@ AXI burst；递增突发访问使用 `arburst`/`awburst = 2'b01`，并正确处�
 `.v`/`.sv` 源文件，内部目录可以自行组织，也不要求存在 `mycpu.h`。Vivado 额外识别
 `.xci`/`.xcix` IP 文件；不要提交 `.Xil`、IP 输出目录、仿真 netlist 或 Vivado 工程目录。
 
-当前板级输入时钟为 50 MHz，PLL 配置的 `cpu_clk` 约为 33 MHz，`sys_clk` 为 25 MHz。
+当前板级输入时钟为 50 MHz，PLL 配置的 `cpu_clk` 约为 50 MHz，`sys_clk` 为 25 MHz。
 XSIM 使用相同的双时钟关系；Verilator 为提高速度暂时令 CPU 和系统总线使用同一时钟，
 因此 Verilator 适合功能回归，跨时钟和板级时序仍需由 XSIM 与 Vivado 实现报告验证。
 
