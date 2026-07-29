@@ -82,8 +82,8 @@ module dcache import la32_common::*; (
     end
 
     // ==================== Dirty + PLRU ====================
-    logic [NR_SETS-1:0] dirty [0:NR_WAYS-1];
-    logic [NR_SETS-1:0] plru [0:NR_WAYS-2];
+    (* ram_style = "distributed" *) logic [NR_SETS-1:0] dirty [0:NR_WAYS-1];
+    (* ram_style = "distributed" *) logic [NR_SETS-1:0] plru [0:NR_WAYS-2];
 
     // ==================== State ====================
     enum logic [3:0] {
@@ -93,7 +93,6 @@ module dcache import la32_common::*; (
         S_MISS,
         S_WB_READ, S_WB_WRITE,
         S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE,
-        S_STORE_FINAL,
         S_CACOP_ST,
         S_CACOP_WB_READ, S_CACOP_WB_WRITE, S_CACOP_INV
     } state, next_state;
@@ -129,9 +128,6 @@ module dcache import la32_common::*; (
 
     // ==================== Miss context ====================
     logic       m_op;
-    msize_t     m_size;
-    word_t      m_wdata;
-    logic [3:0] m_wstrb;
     woffset_t   m_wo;
     index_t     m_idx;
     tag_t       m_tag;
@@ -263,13 +259,43 @@ module dcache import la32_common::*; (
         end
     end
 
+    // ==================== Fast-path cpu_resp (data_ok/addr_ok, 独立于 FSM) ====================
+    always_comb begin
+        cpu_resp.addr_ok  = 1'b0;
+        cpu_resp.data_ok  = 1'b0;
+        cpu_resp.data     = 32'd0;
+        cpu_resp.data_last = 1'b0;
+
+        if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+            && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+            cpu_resp.addr_ok = 1'b1;
+            cpu_resp.data_ok = 1'b1;
+        end
+
+        if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
+            cpu_resp.addr_ok = 1'b1;
+            cpu_resp.data_ok = 1'b1;
+            if (!s2_op)
+                cpu_resp.data = data_rd_out[s2_hit_way][s2_wo];
+        end
+
+        if (state == S_UNCACHED && mem_resp.data_ok) begin
+            cpu_resp.addr_ok = 1'b1;
+            cpu_resp.data_ok = 1'b1;
+            cpu_resp.data    = mem_resp.data;
+        end
+
+        if (state == S_REFILL_WAIT && mem_resp.data_ok
+            && rf_cnt == m_wo && !rf_kw_sent && m_op == 1'b0) begin
+            cpu_resp.addr_ok  = 1'b1;
+            cpu_resp.data_ok  = 1'b1;
+            cpu_resp.data     = mem_resp.data;
+        end
+    end
+
     // ==================== FSM combinational ====================
     always_comb begin
         next_state = state;
-
-        cpu_resp.addr_ok = 1'b0;
-        cpu_resp.data_ok = 1'b0;
-        cpu_resp.data    = 32'd0;
 
         cacop_done = 1'b0;
 
@@ -311,8 +337,6 @@ module dcache import la32_common::*; (
                         next_state = S_CACOP_WB_READ;
                 end else if (!s2_valid && cpu_req.valid && |cpu_req.strobe
                            && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
-                    cpu_resp.addr_ok = 1'b1;
-                    cpu_resp.data_ok = 1'b1;
                     data_wr_ena  = 1'b1;
                     data_wr_way  = req_hit_way;
                     data_wr_addr = req_idx;
@@ -325,16 +349,11 @@ module dcache import la32_common::*; (
                         mem_req_next.addr   = {s2_addr[31:2], 2'b00};
                         mem_req_next.strobe = s2_op ? s2_wstrb : 4'd0;
                         mem_req_next.data   = s2_wdata;
-                        if (mem_resp.addr_ok && mem_resp.data_ok) begin
-                            cpu_resp.addr_ok = 1'b1;
-                            cpu_resp.data_ok = 1'b1;
-                            cpu_resp.data    = mem_resp.data;
-                        end else begin
+                        if (mem_resp.addr_ok && mem_resp.data_ok)
+                            ;
+                        else
                             next_state = S_UNCACHED;
-                        end
                     end else if (s2_hit) begin
-                        cpu_resp.addr_ok = 1'b1;
-                        cpu_resp.data_ok = 1'b1;
                         if (s2_op) begin
                             data_wr_ena  = 1'b1;
                             data_wr_way  = s2_hit_way;
@@ -342,8 +361,6 @@ module dcache import la32_common::*; (
                             data_wr_wo   = s2_wo;
                             data_wr_we   = s2_wstrb;
                             data_wr_data = s2_wdata;
-                        end else begin
-                            cpu_resp.data = data_rd_out[s2_hit_way][s2_wo];
                         end
                     end else begin
                         next_state = S_MISS;
@@ -353,9 +370,6 @@ module dcache import la32_common::*; (
 
             S_UNCACHED: begin
                 if (mem_resp.data_ok) begin
-                    cpu_resp.addr_ok = 1'b1;
-                    cpu_resp.data_ok = 1'b1;
-                    cpu_resp.data    = mem_resp.data;
                     next_state = S_IDLE;
                 end else if (!mem_resp.addr_ok) begin
                     mem_req_next.valid  = 1'b1;
@@ -393,11 +407,6 @@ module dcache import la32_common::*; (
 
             S_REFILL_WAIT: begin
                 if (mem_resp.data_ok) begin
-                    if (rf_cnt == m_wo && !rf_kw_sent && m_op == 1'b0) begin
-                        cpu_resp.addr_ok = 1'b1;
-                        cpu_resp.data_ok = 1'b1;
-                        cpu_resp.data    = mem_resp.data;
-                    end
                     if (mem_resp.data_last)
                         next_state = S_REFILL_WRITE;
                 end
@@ -417,20 +426,8 @@ module dcache import la32_common::*; (
                     tag_wr_data = {m_tag, 1'b1};
                 end
                 next_state = (rf_wr_cnt == NR_WORDS - 1)
-                    ? (m_op ? S_STORE_FINAL : S_IDLE)
+                    ? S_IDLE
                     : S_REFILL_WRITE;
-            end
-
-            S_STORE_FINAL: begin
-                data_wr_ena  = 1'b1;
-                data_wr_way  = m_eway;
-                data_wr_addr = m_idx;
-                data_wr_wo   = m_wo;
-                data_wr_we   = m_wstrb;
-                data_wr_data = m_wdata;
-                cpu_resp.addr_ok = 1'b1;
-                cpu_resp.data_ok = 1'b1;
-                next_state = S_IDLE;
             end
 
             S_CACOP_ST: begin
@@ -578,9 +575,6 @@ module dcache import la32_common::*; (
             if (state == S_IDLE && s2_valid && !s2_hit && is_cachable(s2_addr, s2_cacheable)
                 && next_state == S_MISS) begin
                 m_op     <= s2_op;
-                m_size   <= s2_size;
-                m_wdata  <= s2_wdata;
-                m_wstrb  <= s2_wstrb;
                 m_wo     <= s2_wo;
                 m_idx    <= s2_idx;
                 m_tag    <= s2_tag;
@@ -651,9 +645,6 @@ module dcache import la32_common::*; (
                     end
                 end
             end
-
-            if (state == S_STORE_FINAL)
-                dirty[m_eway][m_idx] <= 1'b1;
 
             if (state == S_CACOP_WB_READ) begin
                 cacop_etag      <= tag_r_tag[cacop_way];
