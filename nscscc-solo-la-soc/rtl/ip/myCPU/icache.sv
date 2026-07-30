@@ -33,15 +33,22 @@ module icache import la32_common::*; (
     typedef logic [INDEX_WIDTH-1:0] index_t;
     typedef logic [TAG_WIDTH-1:0] tag_t;
 
-    // ==================== Data BRAM ====================
-    logic        data_rd_ena;
-    index_t      data_rd_addr;
-    logic [31:0] data_rd_out [0:1][0:3];
+    // ==================== Request extraction ====================
+    wire index_t   req_idx;
+    wire tag_t     req_tag;
+    wire woffset_t req_wo;
+    assign req_idx = cpu_req.addr[INDEX_WIDTH+3:4];
+    assign req_tag = cpu_req.addr[31:INDEX_WIDTH+4];
+    assign req_wo  = cpu_req.addr[3:2];
+
+    // ==================== Data BRAM (combinational read) ====================
     logic        data_wr_ena;
     logic        data_wr_way;
     index_t      data_wr_addr;
     logic [1:0]  data_wr_wo;
     logic [31:0] data_wr_data;
+
+    logic [31:0] data_rd_out [0:1][0:3];
 
     generate
         for (genvar gw = 0; gw < 2; gw++) begin : g_data_way
@@ -53,20 +60,18 @@ module icache import la32_common::*; (
                 always_ff @(posedge clk) begin
                     if (wen)
                         mem[data_wr_addr] <= data_wr_data;
-                    if (data_rd_ena)
-                        data_rd_out[gw][gb] <= mem[data_rd_addr];
                 end
+
+                assign data_rd_out[gw][gb] = mem[req_idx];
             end
         end
     endgenerate
 
-    // ==================== Tag LUTRAM ====================
+    // ==================== Tag LUTRAM (combinational read) ====================
     (* ram_style = "distributed" *) logic [TAG_WIDTH:0] tag_mem [0:1][NR_SETS-1:0];
-    logic        tag_rd_ena;
-    index_t      tag_rd_addr;
-    logic [TAG_WIDTH:0] tag_rd_data [0:1];
-    logic [1:0]  tag_wr_ena;
-    index_t      tag_wr_addr;
+
+    logic [1:0]         tag_wr_ena;
+    index_t             tag_wr_addr;
     logic [TAG_WIDTH:0] tag_wr_data [0:1];
 
     always_ff @(posedge clk) begin
@@ -76,15 +81,14 @@ module icache import la32_common::*; (
             tag_mem[1][tag_wr_addr] <= tag_wr_data[1];
     end
 
-    always_ff @(posedge clk) begin
-        if (tag_rd_ena) begin
-            tag_rd_data[0] <= tag_mem[0][tag_rd_addr];
-            tag_rd_data[1] <= tag_mem[1][tag_rd_addr];
-        end
+    logic [TAG_WIDTH:0] req_tag_data [0:1];
+    always_comb begin
+        req_tag_data[0] = tag_mem[0][req_idx];
+        req_tag_data[1] = tag_mem[1][req_idx];
     end
 
-    // ==================== PLRU ====================
-    logic [NR_SETS-1:0] plru;
+    // ==================== PLRU (distributed RAM) ====================
+    (* ram_style = "distributed" *) logic [NR_SETS-1:0] plru;
 
     // ==================== State ====================
     enum logic [2:0] {
@@ -98,22 +102,28 @@ module icache import la32_common::*; (
     ibus_req_t  mem_req_next;
     ibus_req_t  mem_req_r;
 
-    // ==================== Pipeline ====================
-    logic       s1_valid;
-    word_t      s1_addr;
-    woffset_t   s1_wo;
-    index_t     s1_idx;
-    tag_t       s1_tag;
+    // ==================== Combinational hit detection ====================
+    logic req_hit;
+    logic req_hit_way;
 
-    logic       s2_valid;
-    word_t      s2_addr;
-    woffset_t   s2_wo;
-    index_t     s2_idx;
-    tag_t       s2_tag;
+    always_comb begin
+        automatic logic h0, h1;
+        h0 = req_tag_data[0][0] && (req_tag_data[0][TAG_WIDTH:1] == req_tag);
+        h1 = req_tag_data[1][0] && (req_tag_data[1][TAG_WIDTH:1] == req_tag);
+        req_hit = (state == S_IDLE) && (h0 || h1);
+        req_hit_way = h0 ? 1'b0 : 1'b1;
+    end
 
     // ==================== Ghost hit prevention ====================
     logic       just_hit;
     word_t      last_hit_addr;
+    wire        ghost;
+    assign ghost = just_hit && (cpu_req.addr == last_hit_addr);
+
+    // ==================== PLRU victim ====================
+    function automatic logic victim_way(input index_t i);
+        return ~plru[i];
+    endfunction
 
     // ==================== Miss context ====================
     woffset_t   m_wo;
@@ -130,63 +140,21 @@ module icache import la32_common::*; (
     // ==================== Init registers ====================
     index_t init_addr;
 
-    // ==================== Helper functions ====================
-    function automatic logic victim_way(input index_t i);
-        return ~plru[i];
-    endfunction
-
-    // ==================== S2 hit ====================
-    wire [TAG_WIDTH-1:0] tag_r_tag [0:1];
-    wire                 tag_r_v   [0:1];
-    assign tag_r_tag[0] = tag_rd_data[0][TAG_WIDTH:1];
-    assign tag_r_tag[1] = tag_rd_data[1][TAG_WIDTH:1];
-    assign tag_r_v[0] = tag_rd_data[0][0];
-    assign tag_r_v[1] = tag_rd_data[1][0];
-
-    logic s2_hit, s2_hit_way;
-
-    always_comb begin
-        automatic logic h0, h1;
-        h0 = s2_valid && tag_r_v[0] && (tag_r_tag[0] == s2_tag);
-        h1 = s2_valid && tag_r_v[1] && (tag_r_tag[1] == s2_tag);
-        s2_hit = h0 || h1;
-        s2_hit_way = h0 ? 1'b0 : 1'b1;
+    // ==================== Debug ====================
+    logic [31:0] dbg_cyc;
+    always_ff @(posedge clk) begin
+        if (reset) dbg_cyc <= 32'd0;
+        else dbg_cyc <= dbg_cyc + 32'd1;
     end
 
-    // ==================== Refill status ====================
-    assign in_refill = state inside {S_MISS, S_REFILL_REQ,
-                                     S_REFILL_WAIT, S_REFILL_WRITE};
-
-    // ==================== Stall condition ====================
-    logic s1_stall;
-    always_comb begin
-        s1_stall = 1'b0;
-        if (state == S_INIT)
-            s1_stall = 1'b1;
-        else if (state != S_IDLE)
-            s1_stall = 1'b1;
-        else if (cacop_req.valid && cacop_req.code[2:0] == 3'd0 && !s2_valid)
-            s1_stall = 1'b1;
-    end
-
-    // ==================== BRAM read control ====================
-    always_comb begin
-        data_rd_ena  = 1'b0;
-        data_rd_addr = '0;
-        tag_rd_ena   = 1'b0;
-        tag_rd_addr  = '0;
-
-        if (state == S_IDLE && s1_valid) begin
-            data_rd_ena  = 1'b1;
-            data_rd_addr = s1_idx;
-            tag_rd_ena   = 1'b1;
-            tag_rd_addr  = s1_idx;
-        end
-        if (state == S_MISS) begin
-            data_rd_ena  = 1'b1;
-            data_rd_addr = m_idx;
-            tag_rd_ena   = 1'b1;
-            tag_rd_addr  = m_idx;
+    logic [31:0] dbg_dataok_addr;
+    logic [31:0] dbg_dataok_data;
+    always_ff @(posedge clk) begin
+        if (cpu_resp.data_ok) begin
+            dbg_dataok_addr <= cpu_req.addr;
+            dbg_dataok_data <= cpu_resp.data;
+            $display("[ICACHE %0d] data_ok: addr=%08x data=%08x state=%0d rf_cnt=%0d",
+                dbg_cyc, cpu_req.addr, cpu_resp.data, state, rf_cnt);
         end
     end
 
@@ -226,16 +194,14 @@ module icache import la32_common::*; (
             end
 
             S_IDLE: begin
-                if (cacop_req.valid && cacop_req.code[2:0] == 3'd0 && !s2_valid) begin
+                if (cacop_req.valid && cacop_req.code[2:0] == 3'd0) begin
                     next_state = S_CACOP_ST;
-                end else if (s2_valid) begin
-                    if (s2_hit) begin
-                        cpu_resp.addr_ok = 1'b1;
-                        cpu_resp.data_ok = 1'b1;
-                        cpu_resp.data    = data_rd_out[s2_hit_way][s2_wo];
-                    end else begin
-                        next_state = S_MISS;
-                    end
+                end else if (req_hit) begin
+                    cpu_resp.addr_ok = 1'b1;
+                    cpu_resp.data_ok = 1'b1;
+                    cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
+                end else if (cpu_req.valid && !ghost) begin
+                    next_state = S_MISS;
                 end
             end
 
@@ -269,9 +235,9 @@ module icache import la32_common::*; (
                 data_wr_wo   = rf_cnt;
                 data_wr_data = rf_buf[rf_cnt];
                 if (rf_cnt == 2'd0) begin
-                    tag_wr_ena[m_eway]   = 1'b1;
-                    tag_wr_addr          = m_idx;
-                    tag_wr_data[m_eway]  = {m_tag, 1'b1};
+                    tag_wr_ena[m_eway]  = 1'b1;
+                    tag_wr_addr         = m_idx;
+                    tag_wr_data[m_eway] = {m_tag, 1'b1};
                 end
                 next_state = (rf_cnt == 2'd3)
                     ? S_IDLE
@@ -294,8 +260,6 @@ module icache import la32_common::*; (
     always_ff @(posedge clk) begin
         if (reset) begin
             state       <= S_INIT;
-            s1_valid    <= 1'b0;
-            s2_valid    <= 1'b0;
             just_hit    <= 1'b0;
             plru        <= '0;
             rf_fmask    <= 4'd0;
@@ -322,45 +286,20 @@ module icache import la32_common::*; (
                 end
             end
 
-            if (!s1_stall) begin
-                s1_valid <= cpu_req.valid;
-                s1_addr  <= cpu_req.addr;
-                s1_wo    <= cpu_req.addr[3:2];
-                s1_idx   <= cpu_req.addr[INDEX_WIDTH+3:4];
-                s1_tag   <= cpu_req.addr[31:INDEX_WIDTH+4];
-            end else if (state != S_IDLE) begin
-                s1_valid <= 1'b0;
-                s2_valid <= 1'b0;
+            just_hit <= cpu_resp.data_ok;
+            if (cpu_resp.data_ok)
+                last_hit_addr <= cpu_req.addr;
+
+            if (state == S_IDLE && req_hit) begin
+                plru[req_idx] <= req_hit_way;
             end
 
-            if (!s1_stall) begin
-                if (s2_hit || (just_hit && s1_addr == last_hit_addr)) begin
-                    s2_valid <= 1'b0;
-                end else begin
-                    s2_valid <= s1_valid;
-                    s2_addr  <= s1_addr;
-                    s2_wo    <= s1_wo;
-                    s2_idx   <= s1_idx;
-                    s2_tag   <= s1_tag;
-                end
-            end else begin
-                s2_valid <= 1'b0;
-            end
-
-            just_hit <= s2_valid && s2_hit;
-            if (s2_valid && s2_hit)
-                last_hit_addr <= s2_addr;
-
-            if (state == S_IDLE && s2_valid && s2_hit) begin
-                plru[s2_idx] <= s2_hit_way;
-            end
-
-            if (state == S_IDLE && s2_valid && !s2_hit
+            if (state == S_IDLE && cpu_req.valid && !ghost && !req_hit
                 && next_state == S_MISS) begin
-                m_wo   <= s2_wo;
-                m_idx  <= s2_idx;
-                m_tag  <= s2_tag;
-                m_eway <= victim_way(s2_idx);
+                m_wo   <= req_wo;
+                m_idx  <= req_idx;
+                m_tag  <= req_tag;
+                m_eway <= victim_way(req_idx);
             end
 
             if (state == S_MISS && next_state == S_REFILL_REQ) begin
@@ -377,8 +316,9 @@ module icache import la32_common::*; (
                 rf_cnt <= (rf_cnt == 2'd3) ? 2'd0 : (rf_cnt + 1);
             end
 
-            if (state == S_REFILL_WAIT && next_state == S_REFILL_WRITE)
-                rf_cnt <= 2'd0;
+            if (state == S_REFILL_REQ && !mem_req_r.valid)
+                $display("[ICACHE %0d] refill req send: addr=%08x m_tag=%08x m_idx=%0d rf_cnt=%0d",
+                    dbg_cyc, {m_tag, m_idx, rf_cnt, 2'b00}, m_tag, m_idx, rf_cnt);
 
             if (state == S_REFILL_WRITE) begin
                 rf_cnt <= rf_cnt + 1;
@@ -391,6 +331,7 @@ module icache import la32_common::*; (
 
     assign mem_req = mem_req_r;
 
+    // ==================== Performance counters ====================
     logic [63:0] access_cnt, hit_cnt, miss_cnt;
     logic [63:0] wa_clear_cnt, s1_accept_cnt, cyc_cnt;
     assign perf_access    = access_cnt;
@@ -411,19 +352,18 @@ module icache import la32_common::*; (
         end else begin
             cyc_cnt <= cyc_cnt + 64'd1;
 
-            if (state == S_IDLE) begin
-                if (s2_valid) begin
-                    access_cnt <= access_cnt + 64'd1;
-                    if (s2_hit)
-                        hit_cnt <= hit_cnt + 64'd1;
-                    else
-                        miss_cnt <= miss_cnt + 64'd1;
-                end
-                if (!s1_stall && s2_hit)
+            if (state == S_IDLE && !ghost) begin
+                access_cnt <= access_cnt + 64'd1;
+                if (req_hit) begin
+                    hit_cnt <= hit_cnt + 64'd1;
                     wa_clear_cnt <= wa_clear_cnt + 64'd1;
-                if (!s1_stall && cpu_req.valid)
-                    s1_accept_cnt <= s1_accept_cnt + 64'd1;
+                end else begin
+                    miss_cnt <= miss_cnt + 64'd1;
+                end
             end
+
+            if (state == S_IDLE)
+                s1_accept_cnt <= s1_accept_cnt + 64'd1;
         end
     end
 

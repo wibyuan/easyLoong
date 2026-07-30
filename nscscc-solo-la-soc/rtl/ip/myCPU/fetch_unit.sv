@@ -31,18 +31,18 @@ module fetch_unit import la32_common::*; (
 
     always_comb begin
         ireq.valid = 1'b0;
-        ireq.addr  = 32'd0;
+        ireq.addr  = pc_current;
 
         case (state)
             IDLE: begin
                 ireq.valid = 1'b0;
-                ireq.addr  = 32'd0;
+                ireq.addr  = pc_current;
             end
             REQ: begin
                 if (iresp.data_ok || do_ex_flush || (do_id_jump && pc_current != id_jump_pc)
                     || (bp_do_jump && pc_current != bp_jump_pc)) begin
                     ireq.valid = 1'b0;
-                    ireq.addr  = 32'd0;
+                    ireq.addr  = pc_current;
                 end else begin
                     ireq.valid = 1'b1;
                     ireq.addr  = pc_current;
@@ -50,7 +50,7 @@ module fetch_unit import la32_common::*; (
             end
             WAIT_DATA: begin
                 ireq.valid = 1'b0;
-                ireq.addr  = 32'd0;
+                ireq.addr  = pc_current;
             end
         endcase
     end
