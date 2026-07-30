@@ -2,6 +2,7 @@
 
 ## 已验证
 
+- [x] ICache 标签 LUTRAM 迁移（2026-07-30）：将 ICache 标签 RAM 从 BRAM 迁移至分布式 RAM (LUTRAM)，使用与 DCache 已有的相同 LUTRAM 读写模式。当前仍为寄存式读取（1-cycle latency），维持 S1→S2 流水线不变。此改动为后续 ICache 0-cycle 命中的必要前置步骤（借鉴 rvcpu 的 READ_LATENCY=0 标签比较设计）。全部 6 个基准测试 difftest 通过，stall 分布无变化。
 - [x] 仿真环境（Verilator 编译、MIF 加载、超时退出）
 - [x] AXI INCR Burst Refill + Writeback 实现（2026-07-27）：DCache refill 与 writeback 均由逐字握手改为单次 AXI INCR burst（refill 4 字一行一次 burst，writeback 4 字一行一次 burst）。arbiter 读写通道加入 burst 计数，Cryptonight 单次 miss penalty 从 87 → 30.5 周期（-65%），IPC 提升 41-79%。全部 5 个基准测试 difftest + 数据比对通过。
 - [x] 五级流水线冒烟（PC 从 0x1c000000 启动，取指成功）
