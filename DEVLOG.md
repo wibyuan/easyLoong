@@ -621,3 +621,9 @@ FSM (`mul_in_progress`)：
 
 
 **CI**：`submit-20260729-1630` 已推送，待结果。
+
+## 已知问题（wip/icache-0cycle 分支，2026-07-30）
+
+- [ ] **Pipeline EX/MEM 不 flush 导致重复 commit**：`core.sv:513` 中 `reg_ex_mem_ctrl` 的 `flush` 端口硬编码为 `1'b0`。分支跳转时 `id_ex_flush` 和 `if_id_flush` 清空 IF/ID 和 ID/EX，但 EX/MEM 保留旧值。在旧 icache（0.5 IPC）下 pipeline 永不满载所以不触发；0-cycle icache（1 IPC）满载后，flush 当拍 EX/MEM 输出旧指令被 MEM/WB 再次捕获，导致同一条指令 commit 两次。difftest 在 instruction #36 处检出 mismatch。
+
+  修复方向：`core.sv` 中 `reg_ex_mem_ctrl` 的 `.flush()` 端口接入跳转 flush 信号，或 `mem_wb_in.ctrl.valid` 增加去重逻辑。
