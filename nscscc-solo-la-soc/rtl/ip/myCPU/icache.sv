@@ -60,7 +60,8 @@ module icache import la32_common::*; (
         end
     endgenerate
 
-    // ==================== Tag BRAM ====================
+    // ==================== Tag LUTRAM ====================
+    (* ram_style = "distributed" *) logic [TAG_WIDTH:0] tag_mem [0:1][NR_SETS-1:0];
     logic        tag_rd_ena;
     index_t      tag_rd_addr;
     logic [TAG_WIDTH:0] tag_rd_data [0:1];
@@ -68,20 +69,19 @@ module icache import la32_common::*; (
     index_t      tag_wr_addr;
     logic [TAG_WIDTH:0] tag_wr_data [0:1];
 
-    generate
-        for (genvar gw = 0; gw < 2; gw++) begin : g_tag_way
-            (* ram_style = "block" *) logic [TAG_WIDTH:0] mem [NR_SETS-1:0];
-            logic wen;
-            assign wen = tag_wr_ena[gw];
+    always_ff @(posedge clk) begin
+        if (tag_wr_ena[0])
+            tag_mem[0][tag_wr_addr] <= tag_wr_data[0];
+        if (tag_wr_ena[1])
+            tag_mem[1][tag_wr_addr] <= tag_wr_data[1];
+    end
 
-            always_ff @(posedge clk) begin
-                if (wen)
-                    mem[tag_wr_addr] <= tag_wr_data[gw];
-                if (tag_rd_ena)
-                    tag_rd_data[gw] <= mem[tag_rd_addr];
-            end
+    always_ff @(posedge clk) begin
+        if (tag_rd_ena) begin
+            tag_rd_data[0] <= tag_mem[0][tag_rd_addr];
+            tag_rd_data[1] <= tag_mem[1][tag_rd_addr];
         end
-    endgenerate
+    end
 
     // ==================== PLRU ====================
     logic [NR_SETS-1:0] plru;
