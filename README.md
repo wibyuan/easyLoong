@@ -228,6 +228,16 @@ make test-all             # 全部测试
 DIFF=0 make test-simple   # 关闭 difftest，仅仿真
 ```
 
+### 单元测试
+
+当 difftest 报错时，可将错误现场提取为独立单元测试，快速迭代调试：
+
+```bash
+cd unittest/ex_mem_flush && ./run_test.sh
+```
+
+单元测试实例化 `core` 模块直连 NEMU difftest，绕过 supervisor / UART / SRAM 等全系统依赖，仿真时间 < 1 秒。工作流文档见 `unittest/UNITTEST-WORKFLOW.md`。
+
 ### 强制重新编译 RTL
 
 ```bash
