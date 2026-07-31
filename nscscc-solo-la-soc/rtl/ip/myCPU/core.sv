@@ -572,6 +572,7 @@ module core import la32_common::*; #(
         .load_use_hazard,
         .jump_flush(ex_jump_flush_hazard),
         .id_jump_req(id_jump_req),
+        .bp_do_jump(bp_do_jump),
         .wb_jump_req(1'b0)
     );
 
