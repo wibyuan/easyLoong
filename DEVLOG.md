@@ -622,16 +622,48 @@ FSM (`mul_in_progress`)：
 
 **CI**：`submit-20260729-1630` 已推送，待结果。
 
-## 已知问题（wip/icache-0cycle 分支，2026-07-30）
+## 已知问题（wip/icache-0cycle 分支，2026-07-31）
 
-- [ ] **Pipeline EX/MEM 不 flush 导致重复 commit**：`core.sv:513` 中 `reg_ex_mem_ctrl` 的 `flush` 端口硬编码为 `1'b0`。分支跳转时 `id_ex_flush` 和 `if_id_flush` 清空 IF/ID 和 ID/EX，但 EX/MEM 保留旧值。在旧 icache（0.5 IPC）下 pipeline 永不满载所以不触发；0-cycle icache（1 IPC）满载后，flush 当拍 EX/MEM 输出旧指令被 MEM/WB 再次捕获，导致同一条指令 commit 两次。difftest 在 instruction #36 处检出 mismatch。
+### Bug 1：`bp_do_jump` 未接入 hazard_unit → 分支预测重定向后 IF/ID 未冲刷 ✅
 
-  修复方向：`core.sv` 中 `reg_ex_mem_ctrl` 的 `.flush()` 端口接入跳转 flush 信号，或 `mem_wb_in.ctrl.valid` 增加去重逻辑。
+**现象**：`make test-simple` 在 instruction #36 处 difftest mismatch。`or $r16` 在 BTFNT 预测 taken 后，fall-through 路径的 `addi.w $r12` 未被冲刷，错误提交。
 
-  单元测试：`unittest/ex_mem_flush/` — 从 make test-simple 错误现场提取指令序列和寄存器状态，构建独立 Verilator + NEMU difftest 环境。运行方式：
+**根因**：`core.sv:574` 中 `hazard_unit` 实例化缺少 `.bp_do_jump(bp_do_jump)` 连接。当 BTFNT 预测跳转时，`fetch_unit` 被重定向（`bp_do_jump` 驱动 `next_pc`），但 `if_id_flush` 不触发——已取出的下一条顺序指令进入流水线而不被冲刷。
 
-  ```bash
-  cd unittest/ex_mem_flush && ./run_test.sh
-  ```
+**修复**：`3b00951` — 在 `hazard_unit` 实例化中补上 `.bp_do_jump(bp_do_jump)`。
 
-  工作流文档见 `unittest/UNITTEST-WORKFLOW.md`。
+**单元测试**：`unittest/ex_mem_flush/` — 最小循环体（`or → cacop → addi → slt → beq`），cacop 立即完成，验证分支冲刷。运行方式：
+
+```bash
+cd unittest/ex_mem_flush && ./run_test.sh
+```
+
+### Bug 2：cacop stall 期间 EX/MEM 被 MEM/WB 重复捕获 → 同一条指令 commit 两次 ✅
+
+**现象**：`make test-simple` 在 instruction #36 处 difftest mismatch（同 Bug 1 的现象，但根因不同）。`or $r16` 在 `cacop` 的 pipeline stall 期间被 MEM/WB 连续两次捕获，提交两次。
+
+**根因**：`mem_wb_in.ctrl.valid` 无去重逻辑。`cacop` 进入 EX 时 `cacop_not_ready=1` → `ex_mem_stall=1`，EX/MEM 被卡住。但 MEM/WB 的 `stall` 硬编码为 `1'b0`（从不阻塞），每个 cycle 都从 EX/MEM 捕获同一指令。`or` 不访存（`lsu_ready=1`），故 `mem_valid` 在每个 stall cycle 都为 1。
+
+**修复**：`1b62bc2` — `mem_valid` 增加 `!ex_mem_stall` 条件，pipeline stall 期间不推进 MEM/WB。
+
+**单元测试**：`unittest/ex_mem_stall_dup/` — `or → cacop` 背靠背，`cacop_done` 打一拍（模拟真实 delay）。运行方式：
+
+```bash
+cd unittest/ex_mem_stall_dup && ./run_test.sh
+```
+
+### Bug 3：CSR 写在 EX 级、difftest 在 WB 级捕获 → dmw0 CSR 值提前可见 ❌ 未修
+
+**现象**：Bug 1/2 修复后 `make test-simple` 推进到 instruction #7241，报 dmw0 mismatch（DUT=0x19, REF=0x00）。
+
+**根因**：CSR 写（`csr_we`）在 EX 级通过组合逻辑完成，但 difftest 的 DPI-C 在 WB 级（`mem_wb_out`）捕获 commit 和 CSR 状态。`csrwr $r12, CSR_DMW0` 在 EX 级写完 DMW0=0x19 之后的下一周期，其前驱指令 `ori $r12,$r0,0x19` 在 WB 级提交，difftest 捕获到此 commit 时看到 DMW0 已变为 0x19——此时 `csrwr` 尚未提交。
+
+这是 CSR 执行阶段（EX）与 difftest 捕获边界（WB）之间的 timing skew。在旧 icache（0.5 IPC）下流水线间距较大，此 skew 未暴露；0-cycle icache（1 IPC）压缩指令间距后暴露。
+
+**单元测试**：`unittest/csr_dmw0/` — `csrwr $r12,CSR_DMW0 → csrwr $r0,CSR_DMW0` 序列，验证 DMW0 清除后 difftest 看到的值。运行方式：
+
+```bash
+cd unittest/csr_dmw0 && ./run_test.sh
+```
+
+**修复方向**：将 CSR 写移到 WB 级（打拍），或 difftest 仅在 CSR 指令提交时比较 CSR 状态。
