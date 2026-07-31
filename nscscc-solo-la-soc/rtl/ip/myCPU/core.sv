@@ -84,6 +84,8 @@ module core import la32_common::*; #(
         logic      mem_re;
         logic      mem_we;
         logic      is_cond_branch;
+        logic      is_csrwr;
+        logic      is_csrxchg;
     } ex_mem_ctrl_t;
     typedef struct packed {
         logic [31:0] pc;
@@ -95,6 +97,7 @@ module core import la32_common::*; #(
         msize_t      mem_size;
         logic        mem_unsigned;
         logic        mem_cacheable;
+        logic [31:0] csr_wdata;
     } ex_mem_data_t;
     typedef struct packed {
         ex_mem_ctrl_t ctrl;
@@ -107,6 +110,8 @@ module core import la32_common::*; #(
         logic      mem_re;
         logic      mem_we;
         logic      is_cond_branch;
+        logic      is_csrwr;
+        logic      is_csrxchg;
     } mem_wb_ctrl_t;
     typedef struct packed {
         logic [31:0] pc;
@@ -114,6 +119,7 @@ module core import la32_common::*; #(
         logic [4:0]  rd;
         logic [31:0] final_res;
         logic [31:0] mem_addr;
+        logic [31:0] csr_wdata;
     } mem_wb_data_t;
     typedef struct packed {
         mem_wb_ctrl_t ctrl;
@@ -380,7 +386,6 @@ module core import la32_common::*; #(
     // ==================== CSR REGISTER FILE ====================
     logic [13:0] csr_num;
     logic [31:0] csr_rdata, csr_wdata;
-    logic        csr_we;
     logic [31:0] csr_crmd, csr_dmw0, csr_dmw1;
     logic [31:0] csr_prmd, csr_euen, csr_ecfg, csr_estat, csr_era, csr_badv, csr_eentry;
     logic [31:0] csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl, csr_pgdh;
@@ -401,13 +406,47 @@ module core import la32_common::*; #(
         csr_rdata_r <= csr_rdata;
     end
 
+    // ==================== CSR RETIREMENT & FORWARDING ====================
+    // CSR writes take effect at the WB retirement point (in-order). The real
+    // regfile array write happens when the csrwr/csrxchg retires, so the
+    // architectural state (and difftest comparison) is always consistent.
+    // In-flight write tracking for EX-stage forwarding:
+    //   mem_csr_* : write in MEM  (1 instruction older than the EX reader)
+    //   wb_csr_*  : write in WB   (2 instructions older)
+    //   wb_csr_*_r: write retired last cycle (covers the 1-cycle lag of the
+    //               free-running csr_rdata_r read pipeline, 3+ older)
+    logic mem_csr_we, wb_csr_we;
+    logic [13:0] mem_csr_num, wb_csr_num;
+    logic [31:0] mem_csr_wdata, wb_csr_wdata;
+    logic        wb_csr_we_r;
+    logic [13:0] wb_csr_num_r;
+    logic [31:0] wb_csr_wdata_r;
+
+    always_ff @(posedge clk) begin
+        wb_csr_we_r    <= wb_csr_we;
+        wb_csr_num_r   <= wb_csr_num;
+        wb_csr_wdata_r <= wb_csr_wdata;
+    end
+
+    logic [31:0] csr_rdata_final;
+    always_comb begin
+        if (mem_csr_we && mem_csr_num == csr_num)
+            csr_rdata_final = mem_csr_wdata;
+        else if (wb_csr_we && wb_csr_num == csr_num)
+            csr_rdata_final = wb_csr_wdata;
+        else if (wb_csr_we_r && wb_csr_num_r == csr_num)
+            csr_rdata_final = wb_csr_wdata_r;
+        else
+            csr_rdata_final = csr_rdata_r;
+    end
+
     csr_regfile csr_rf (
         .clk, .reset,
         .csr_num,
         .csr_rdata,
-        .csr_we,
-        .csr_waddr(csr_num),
-        .csr_wdata,
+        .csr_we(wb_csr_we),
+        .csr_waddr(wb_csr_num),
+        .csr_wdata(wb_csr_wdata),
         .crmd(csr_crmd), .prmd(csr_prmd), .euen(csr_euen),
         .ecfg(csr_ecfg), .estat(csr_estat), .era(csr_era),
         .badv(csr_badv), .eentry(csr_eentry),
@@ -424,12 +463,17 @@ module core import la32_common::*; #(
         if (id_ex_out.ctrl.is_csrwr)
             csr_wdata = forward_a;
         else if (id_ex_out.ctrl.is_csrxchg)
-            csr_wdata = (csr_rdata_r & ~forward_a) | (forward_b & forward_a);
+            csr_wdata = (csr_rdata_final & ~forward_a) | (forward_b & forward_a);
         else
             csr_wdata = 32'd0;
     end
 
-    assign csr_we = id_ex_out.ctrl.valid && (id_ex_out.ctrl.is_csrwr || id_ex_out.ctrl.is_csrxchg);
+    assign mem_csr_we    = ex_mem_out.ctrl.valid && (ex_mem_out.ctrl.is_csrwr || ex_mem_out.ctrl.is_csrxchg);
+    assign mem_csr_num   = ex_mem_out.data.instr[23:10];
+    assign mem_csr_wdata = ex_mem_out.data.csr_wdata;
+    assign wb_csr_we     = mem_wb_out.ctrl.valid && (mem_wb_out.ctrl.is_csrwr || mem_wb_out.ctrl.is_csrxchg);
+    assign wb_csr_num    = mem_wb_out.data.instr[23:10];
+    assign wb_csr_wdata  = mem_wb_out.data.csr_wdata;
 
     // ==================== EXECUTE (continued) ====================
     logic ex_valid;
@@ -440,6 +484,8 @@ module core import la32_common::*; #(
     assign ex_mem_in.ctrl.mem_re    = id_ex_out.ctrl.mem_re & ex_valid;
     assign ex_mem_in.ctrl.mem_we    = id_ex_out.ctrl.mem_we & ex_valid;
     assign ex_mem_in.ctrl.is_cond_branch = id_ex_out.ctrl.is_cond_branch & ex_valid;
+    assign ex_mem_in.ctrl.is_csrwr  = id_ex_out.ctrl.is_csrwr & ex_valid;
+    assign ex_mem_in.ctrl.is_csrxchg = id_ex_out.ctrl.is_csrxchg & ex_valid;
 
     assign ex_mem_in.data.pc        = id_ex_out.data.pc;
     assign ex_mem_in.data.instr     = id_ex_out.data.instr;
@@ -471,7 +517,7 @@ module core import la32_common::*; #(
 
     always_comb begin
         if (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrwr || id_ex_out.ctrl.is_csrxchg)
-            non_alu_result = csr_rdata_r;
+            non_alu_result = csr_rdata_final;
         else if (id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr)
             non_alu_result = id_ex_out.data.pc_plus_4;
         else if (id_ex_out.ctrl.is_pcadd)
@@ -488,15 +534,22 @@ module core import la32_common::*; #(
 
     logic [31:0] ex_mem_addr;
     logic        ex_mem_cacheable;
+    logic [31:0] crmd_eff, dmw0_eff, dmw1_eff;
+    // MEM-stage bypass: a csrwr/csrxchg one instruction older is still
+    // in-flight; the WB-stage write is covered by csr_regfile output bypass,
+    // and fully-retired writes are already in the array.
+    assign crmd_eff  = (mem_csr_we && mem_csr_num == 14'h000) ? mem_csr_wdata : csr_crmd;
+    assign dmw0_eff  = (mem_csr_we && mem_csr_num == 14'h180) ? mem_csr_wdata : csr_dmw0;
+    assign dmw1_eff  = (mem_csr_we && mem_csr_num == 14'h181) ? mem_csr_wdata : csr_dmw1;
     always_comb begin
         ex_mem_addr = alu_result;
         ex_mem_cacheable = 1'b0;
-        if (!csr_crmd[3] && csr_crmd[4]) begin
-            if (alu_result[31:29] == csr_dmw0[31:29] && csr_dmw0[0]) begin
-                ex_mem_addr = {csr_dmw0[27:25], alu_result[28:0]};
+        if (!crmd_eff[3] && crmd_eff[4]) begin
+            if (alu_result[31:29] == dmw0_eff[31:29] && dmw0_eff[0]) begin
+                ex_mem_addr = {dmw0_eff[27:25], alu_result[28:0]};
                 ex_mem_cacheable = 1'b1;
-            end else if (alu_result[31:29] == csr_dmw1[31:29] && csr_dmw1[0]) begin
-                ex_mem_addr = {csr_dmw1[27:25], alu_result[28:0]};
+            end else if (alu_result[31:29] == dmw1_eff[31:29] && dmw1_eff[0]) begin
+                ex_mem_addr = {dmw1_eff[27:25], alu_result[28:0]};
             end
         end
     end
@@ -505,6 +558,7 @@ module core import la32_common::*; #(
     assign ex_mem_in.data.mem_size  = id_ex_out.data.mem_size;
     assign ex_mem_in.data.mem_unsigned = id_ex_out.data.mem_unsigned;
     assign ex_mem_in.data.mem_cacheable = ex_mem_cacheable;
+    assign ex_mem_in.data.csr_wdata = csr_wdata;
 
     pipeline_reg #($bits(ex_mem_ctrl_t)) reg_ex_mem_ctrl (
         .clk, .reset, .stall(ex_mem_stall), .flush(1'b0),
@@ -538,12 +592,15 @@ module core import la32_common::*; #(
     assign mem_wb_in.ctrl.mem_re    = ex_mem_out.ctrl.mem_re & mem_valid;
     assign mem_wb_in.ctrl.mem_we    = ex_mem_out.ctrl.mem_we & mem_valid;
     assign mem_wb_in.ctrl.is_cond_branch = ex_mem_out.ctrl.is_cond_branch & mem_valid;
+    assign mem_wb_in.ctrl.is_csrwr  = ex_mem_out.ctrl.is_csrwr & mem_valid;
+    assign mem_wb_in.ctrl.is_csrxchg = ex_mem_out.ctrl.is_csrxchg & mem_valid;
 
     assign mem_wb_in.data.pc        = ex_mem_out.data.pc;
     assign mem_wb_in.data.instr     = ex_mem_out.data.instr;
     assign mem_wb_in.data.rd        = ex_mem_out.data.rd;
     assign mem_wb_in.data.final_res = ex_mem_out.ctrl.mem_re ? lsu_rdata : ex_mem_out.data.alu_res;
     assign mem_wb_in.data.mem_addr  = ex_mem_out.data.mem_addr;
+    assign mem_wb_in.data.csr_wdata = ex_mem_out.data.csr_wdata;
 
     pipeline_reg #($bits(mem_wb_ctrl_t)) reg_mem_wb_ctrl (
         .clk, .reset, .stall(1'b0), .flush(1'b0),

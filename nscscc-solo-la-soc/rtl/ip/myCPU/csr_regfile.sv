@@ -134,31 +134,35 @@ module csr_regfile (
         end
     end
 
-    assign crmd      = csr[14'h000];
-    assign prmd      = csr[14'h001];
-    assign euen      = csr[14'h002];
-    assign ecfg      = csr[14'h004];
-    assign estat     = csr[14'h005];
-    assign era       = csr[14'h006];
-    assign badv      = csr[14'h007];
-    assign eentry    = csr[14'h00c];
-    assign tlbidx    = csr[14'h010];
-    assign tlbehi    = csr[14'h011];
-    assign tlbelo0   = csr[14'h012];
-    assign tlbelo1   = csr[14'h013];
-    assign asid      = csr[14'h018];
-    assign pgdl      = csr[14'h019];
-    assign pgdh      = csr[14'h01a];
-    assign save0     = csr[14'h030];
-    assign save1     = csr[14'h031];
-    assign save2     = csr[14'h032];
-    assign save3     = csr[14'h033];
-    assign tid       = csr[14'h040];
-    assign tcfg      = csr[14'h041];
-    assign tval      = csr[14'h042];
-    assign llbctl    = csr[14'h060];
-    assign tlbrentry = csr[14'h088];
-    assign dmw0      = csr[14'h180];
-    assign dmw1      = csr[14'h181];
+    // write-bypass on all outputs (mirrors regfile gpr_dbg): the register
+    // file array write happens at the WB retirement posedge; the bypass makes
+    // the retired value visible to difftest sampling and EX-stage reads on the
+    // same cycle the writing instruction commits.
+    assign crmd      = (csr_we && csr_waddr == 14'h000) ? csr_wdata : csr[14'h000];
+    assign prmd      = (csr_we && csr_waddr == 14'h001) ? csr_wdata : csr[14'h001];
+    assign euen      = (csr_we && csr_waddr == 14'h002) ? csr_wdata : csr[14'h002];
+    assign ecfg      = (csr_we && csr_waddr == 14'h004) ? csr_wdata : csr[14'h004];
+    assign estat     = (csr_we && csr_waddr == 14'h005) ? csr_wdata : csr[14'h005];
+    assign era       = (csr_we && csr_waddr == 14'h006) ? csr_wdata : csr[14'h006];
+    assign badv      = (csr_we && csr_waddr == 14'h007) ? csr_wdata : csr[14'h007];
+    assign eentry    = (csr_we && csr_waddr == 14'h00c) ? csr_wdata : csr[14'h00c];
+    assign tlbidx    = (csr_we && csr_waddr == 14'h010) ? csr_wdata : csr[14'h010];
+    assign tlbehi    = (csr_we && csr_waddr == 14'h011) ? csr_wdata : csr[14'h011];
+    assign tlbelo0   = (csr_we && csr_waddr == 14'h012) ? csr_wdata : csr[14'h012];
+    assign tlbelo1   = (csr_we && csr_waddr == 14'h013) ? csr_wdata : csr[14'h013];
+    assign asid      = (csr_we && csr_waddr == 14'h018) ? csr_wdata : csr[14'h018];
+    assign pgdl      = (csr_we && csr_waddr == 14'h019) ? csr_wdata : csr[14'h019];
+    assign pgdh      = (csr_we && csr_waddr == 14'h01a) ? csr_wdata : csr[14'h01a];
+    assign save0     = (csr_we && csr_waddr == 14'h030) ? csr_wdata : csr[14'h030];
+    assign save1     = (csr_we && csr_waddr == 14'h031) ? csr_wdata : csr[14'h031];
+    assign save2     = (csr_we && csr_waddr == 14'h032) ? csr_wdata : csr[14'h032];
+    assign save3     = (csr_we && csr_waddr == 14'h033) ? csr_wdata : csr[14'h033];
+    assign tid       = (csr_we && csr_waddr == 14'h040) ? csr_wdata : csr[14'h040];
+    assign tcfg      = (csr_we && csr_waddr == 14'h041) ? csr_wdata : csr[14'h041];
+    assign tval      = (csr_we && csr_waddr == 14'h042) ? csr_wdata : csr[14'h042];
+    assign llbctl    = (csr_we && csr_waddr == 14'h060) ? csr_wdata : csr[14'h060];
+    assign tlbrentry = (csr_we && csr_waddr == 14'h088) ? csr_wdata : csr[14'h088];
+    assign dmw0      = (csr_we && csr_waddr == 14'h180) ? csr_wdata : csr[14'h180];
+    assign dmw1      = (csr_we && csr_waddr == 14'h181) ? csr_wdata : csr[14'h181];
 
 endmodule
