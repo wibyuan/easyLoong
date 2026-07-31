@@ -2,6 +2,7 @@
 
 ## 已验证
 
+- [x] 非阻塞 DCache（hit-under-miss，单 MSHR）（2026-07-31）：store miss 当拍接受 + refill 合并、refill 期间同拍服务其他行命中、读回写合并进 refill 写、load miss 当拍 addr_ok；修复 arbiter R_ARB 突发截断缺陷。stream IPC +25.1%、mixed +11.2%、cryptonight +7.9%、matrix +3.3%，全 6 测试 difftest + 数据比对 + 7 单元测试通过。详见下方「非阻塞 DCache（hit-under-miss，单 MSHR）」章节
 - [x] ICache 0-cycle 命中路径实现（2026-07-30，wip/icache-0cycle）：ICache 标签 LUTRAM + 数据 BRAM 组合读取 + 去除 S1/S2 流水线。`req_hit` 组
 合逻辑直接驱动 `data_ok`，fetch 延迟从 2 拍降至 0 拍。Ghost hit 仅用于 miss 检测（防止 redirect 当拍捕获错误地址），不再抑制 `data_ok`。fetch_unit 修复：所有状态下 `ireq.addr` 保持 `pc_current`（断开旧实现中 `data_ok→addr=0` 的组合环路）。功能验证到 instruction #35（difftest 因 pipeline EX/MEM flush 缺失导致的重复 commit 而失败，此为独立问题，非 icache 引入）。
 - [x] 仿真环境（Verilator 编译、MIF 加载、超时退出）
@@ -50,7 +51,7 @@
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
 - [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试（最近一次已知结果：2026-07-27 提交 Cryptonight 50 分，CDC 疑因）
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
-- [ ] dcache 写缓冲（write buffer）：store 命中已 0-cycle（2026-07-29 快速路径），剩余目标为消除 **refill 期间 store 阻塞**（占 stall 的 70-89% 主瓶颈）
+- [x] dcache 写缓冲/非阻塞化（2026-07-31）：store miss 当拍接受 + refill 合并、读回写合并进 refill 写、hit-under-miss 同拍服务其他行命中——refill 期间 store 不再阻塞（原占 stall 70-89% 的主瓶颈，见「非阻塞 DCache」章节）。残余阻塞：refill 期间到达的二次 miss（单 MSHR 上限）、顺序 load miss 延迟、写回→refill 串行
 
 ## difftest 状态（2026-07-26，icache workaround + dcache workaround 修复后）
 
@@ -762,3 +763,59 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 > cryptonight 的 load 命中路径无收益属预期（其 load 为随机 scratchpad 访问，容量 miss 主导；命中主要来自栈 store，2026-07-29 已走快速路径）。残余 hit-pipe（matrix 3.5% 周期）来自 `!s2_valid` 门控下 miss 的 S1/S2 窗口内到达的请求（回退 S2 管道，正确但 2 拍）——与 icache 类似地整体拆除 S1/S2（组合 miss 检测）可进一步消除，留待后续。
 
 **资源影响**：dcache 数据 64Kb 由 BRAM 迁移至分布式 RAM（~1024 LUT），组合读路径（LUTRAM 读 + tag 比较 + data_ok + LSU 字节提取）进入 50MHz 关键路径，需 CI 时序确认。
+
+---
+
+## 2026-07-31: 非阻塞 DCache（hit-under-miss，单 MSHR）
+
+**目标**：消除 DCache Refill 期间的流水线停顿（旧占全部 stall 的 70-89%，绝对主瓶颈）。参照 2026-07-29「写缓冲区设计探讨」的结论方向：DCache 内部完成 store 缓冲，不引入外部写缓冲模块。
+
+**核心洞察**：旧架构中 miss 处理是**同步**的——store miss 期间整条流水线被 `lsu_ready=0` 冻结，store 的数据要等 refill 完成后通过"重试命中"写回。这使 store miss（不需要返回数据）白白阻塞流水线 ~30 拍。将 store miss 解耦后，流水线在 refill 期间继续运行，LSU 会向 dcache 发出新请求——dcache 必须能在 refill 期间同拍响应，即 **hit-under-miss**。
+
+### 实现（dcache.sv，单 MSHR = 一个在飞 miss + 两个合并槽）
+
+1. **组合 miss 接受**（S_IDLE 快速路径扩展）：所有 cacheable 请求请求拍内组合响应——
+   - 命中（load/store）：原有 0-cycle 路径；
+   - **store miss：当拍 `addr_ok`+`data_ok` 接受**，miss 上下文（m_wdata/m_wstrb/m_wo，重引入 2026-07-29 删除的寄存器）在 S_REFILL_WRITE 写入对应 word 时合并进新行（写分配完成，dirty=1）；
+   - **load miss：当拍 `addr_ok`**，LSU 进入 WAIT（dreq.valid=0），数据经原有关键字转发返回——同时消除了 S1/S2 检测窗口（每 miss 省 1-2 拍）。
+2. **Hit-under-miss**（refill 状态下的组合响应）：`in_refill && req_hit_any && !(req_idx==m_idx && req_hit_way==m_eway)`——正在 refill 的行**整行排除**（数据 RAM 只写了一半或 tag 尚未更新，读取会拿到部分/旧数据）；load 恒可服务（组合读口），store 在数据写口空闲时服务（S_REFILL_WRITE 期间写口被 refill 占用，store 命中等 ≤4 拍后在 S_IDLE 重试）。
+3. **读回写合并**（第二合并槽 st_merge_*）：store 命中正在 refill 的行（cryptonight `scratchpad[x]=…` 读回写模式）当拍接受，只要其 word 尚未写入数据 RAM（S_REFILL_WAIT 及更早恒可，S_REFILL_WRITE 时要求 `rf_wr_cnt < req_wo`）；合并进 refill 写（后写者优先于 store-miss 合并）。`st_merge_pending` **保持到 refill 完成**（不能在合并拍清除——dirty 位在完成拍用 `m_op || st_merge_pending` 生成，提前清除会把合并过的行标为 clean，evict 时静默丢弃 store 数据，这是本实现排查出的第一处功能 bug）。
+4. **二次 miss 等待**：refill 期间到达的未命中请求不给任何应答（单 MSHR 上限），LSU 保持请求，refill 完成后在 S_IDLE 正常处理（命中或新 miss）。
+5. **cacop 门控**：S_IDLE 的 miss 接受需 `!cacop_pending`（FSM 中 cacop 优先级更高，若接受而 cacop 先走，refill 不会启动，被接受的 load miss 会把 LSU 卡在 WAIT 死锁）。
+
+### 修复的关联缺陷：arbiter R_ARB 突发截断（axibus_arbiter.sv）
+
+- **现象**：simple 测试 WELCOME 循环第 5 个字符（'T'）读到 0x84，refill 只收到 1 个 beat，行的 word1-3 写入陈旧 rf_buf 数据。
+- **根因**：arbiter 的 `R_ARB` 状态（ireq 与 dreq 读请求同时挂起时的仲裁路径）**不设置 arlen**——默认 arlen=0 单拍。旧架构下流水线在任意 miss 期间全停，icache 请求不可能与 dcache refill 读同时挂起，此路径从未被触发；0-cycle icache + store-miss 解耦后流水线在 refill 期间运行，icache 取指与 dcache 突发 refill 首次并发 → refill burst 被截成单拍 → 行数据损坏。
+- **修复**：`R_ARB` 按请求方设置 arlen（dreq 取 `dreq.burst_len`，ireq 恒 0）。
+
+### 结果（Verilator difftest，全 6 测试 + 7 单元测试 PASS）
+
+| 测试 | 旧 IPC | 新 IPC | Δ IPC | hit-under-miss |
+|------|--------|--------|-------|----------------|
+| simple | 0.1669 | 0.1671 | +0.1% | 11 |
+| stream | 0.2241 | **0.2804** | **+25.1%** | 589,838 |
+| matrix | 0.3730 | 0.3853 | +3.3% | 18,217 |
+| mixed | 0.2963 | **0.3295** | **+11.2%** | 8,213 |
+| cryptonight | 0.2478 | **0.2673** | +7.9% | 339,785 |
+| fibonacci | 0.1360 | 0.1360 | 0%（uncache 内核） | — |
+
+**Stall 拆解**：DCache Hit Pipe 基本清零（matrix 5.6%→0.5%、cryptonight 6.6%→0.1%）；DCache Refill 仍为主瓶颈（stream 64.1%、cryptonight 70.6% 的周期），其中 cryptonight 的 load miss 为顺序流水线无法隐藏的延迟（scratchpad 随机读，关键字返回前流水线必然等待），stream 的残余为 load miss 延迟 + refill 期间到达的二次 miss 等待。
+
+### 可调参数
+
+| 参数 | 位置 | 说明 |
+|------|------|------|
+| `DCACHE_SETS` / `ICACHE_SETS` | `core_top.sv` 模组参数 | 组数（默认 256，8KB） |
+| `NR_WAYS` / `NR_WORDS` | `core_top.sv` 例化 dcache/icache | 路数（默认 2）/ 行 word 数（默认 4，16B） |
+| `st_merge` 槽数 | dcache.sv | 读回写合并槽，当前 1 个（与 store-miss 合并槽共 2 个） |
+| MSHR 数 | dcache.sv FSM | 当前 1（单在飞 miss），受 arbiter 单 outstanding 读限制 |
+
+> 组数/路数/行大小扫描结论不变（见「dcache 增强实验」）：命中率提升被 miss penalty 放大抵消，瓶颈在 miss 处理延迟。非阻塞化后 miss penalty 的构成（写回串行 + refill + 写回 RAM）成为下一步优化对象。
+
+### 保守取舍（未实现，留待后续）
+
+1. **写回/refill 重叠**（cryptonight 收益最大，估 ~8-12%）：脏行写回与下一行 refill 共用 dcache 单一 `mem_req` 接口，burst 数据须逐拍驱动，无法并行发出两个事务。实现需 arbiter 写通道在 AW 握手时缓冲整个突发（4×32b），并允许 dcache 在写回排空期间切换到 refill 读——接口级改动，风险高，本期未做。
+2. **MSHR 多路 outstanding**（load-under-miss × N）：顺序流水线 + 单 LSU 下，后续 load 无法越过在飞的 load miss 发起新请求；需要 LSU 重排序缓冲 + 乱序完成，侵入流水线核心，未做。
+3. **refill 行 store 合并的 word 已写情形**（S_REFILL_WRITE 中 `rf_wr_cnt > req_wo` 的 store）：需第三个合并槽或写缓冲，窗口仅 1-4 拍，未做。
+4. **icache 非阻塞**：取指为单流顺序，miss 即阻塞取指单元本身，无并行请求可服务（ICache Refill 占 stall 0.0%），无意义。

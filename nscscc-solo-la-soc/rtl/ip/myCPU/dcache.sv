@@ -18,6 +18,7 @@ module dcache import la32_common::*; (
     output logic [63:0] perf_miss,
     output logic [63:0] perf_writeback,
     output logic [63:0] perf_fast_load,
+    output logic [63:0] perf_fast_hum,
 
     output logic        in_refill
 );
@@ -148,6 +149,18 @@ module dcache import la32_common::*; (
     way_t       m_eway;
     logic       m_edirty;
     tag_t       m_etag;
+    // Accepted store miss data, merged into the refilled line at
+    // S_REFILL_WRITE (store misses are completed in the request cycle).
+    word_t      m_wdata;
+    logic [3:0] m_wstrb;
+
+    // Second merge slot: a store hitting the line being refilled (the
+    // read-back-store pattern) is accepted in-cycle and merged into the
+    // refill write, instead of stalling until the refill completes.
+    logic        st_merge_pending;
+    woffset_t    st_merge_wo;
+    word_t       st_merge_data;
+    logic [3:0]  st_merge_strb;
 
     // ==================== Work registers ====================
     logic [CNT_WIDTH-1:0] wb_cnt;
@@ -196,8 +209,9 @@ module dcache import la32_common::*; (
             req_tag_data[w] = tag_mem[w][req_idx];
     end
 
-    logic req_hit;
+    logic req_hit_any;
     way_t req_hit_way;
+    logic req_hit;
 
     always_comb begin
         automatic logic [NR_WAYS-1:0] hit_vec;
@@ -206,7 +220,8 @@ module dcache import la32_common::*; (
             hit_vec[w] = req_tag_data[w][0]
                 && (req_tag_data[w][TAG_WIDTH:1] == req_tag)
                 && is_cachable(cpu_req.addr, cpu_req.cacheable);
-        req_hit = |hit_vec && (state == S_IDLE);
+        req_hit_any = |hit_vec;
+        req_hit = req_hit_any && (state == S_IDLE);
         req_hit_way = '0;
         for (int w = 0; w < NR_WAYS; w++)
             if (hit_vec[w]) req_hit_way = way_t'(w);
@@ -237,6 +252,48 @@ module dcache import la32_common::*; (
     // ==================== Refill status ====================
     assign in_refill = state inside {S_MISS, S_WB_READ, S_WB_WRITE,
                                      S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE};
+
+    // ==================== Non-blocking (hit-under-miss) ====================
+    // One miss may be in flight while the pipeline keeps running: store
+    // misses are accepted in the request cycle (their data is merged into
+    // the refilled line), so the LSU is free to issue further requests
+    // during the refill.  Hits to lines other than the one being refilled
+    // are served in the request cycle; any request that does not hit must
+    // wait for the in-flight miss to complete (single MSHR).
+    wire cacop_d_pending = cacop_req.valid && (cacop_req.code[2:0] == 3'd1);
+    // Every cacheable request is answered combinationally in S_IDLE: a hit
+    // (load/store) or a miss accept (store: full accept; load: addr_ok only,
+    // data via the keyword forward).  Miss accepts must not fire while a
+    // dcache cacop is pending — the FSM gives the cacop priority and no
+    // refill would start, leaving an accepted request to hang.
+    wire fast_path_req   = (state == S_IDLE) && !s2_valid && cpu_req.valid
+                           && is_cachable(cpu_req.addr, cpu_req.cacheable);
+    wire fast_path_miss  = fast_path_req && !req_hit && !cacop_d_pending;
+    // The line being refilled must not be served: its data RAM is only
+    // partially (or not yet) written while its tag can already match.
+    wire hum_refilling   = (req_idx == m_idx) && (req_hit_way == m_eway);
+    // No hit-under-miss while the keyword of an outstanding load miss is
+    // forwarded (the pipeline is stalled on that load, so no second request
+    // can exist — defensive guard).
+    wire hum_keyword     = (state == S_REFILL_WAIT) && mem_resp.data_ok
+                           && (rf_cnt == m_wo) && !rf_kw_sent && (m_op == 1'b0);
+    wire hum_req         = in_refill && !hum_keyword && cpu_req.valid
+                           && is_cachable(cpu_req.addr, cpu_req.cacheable)
+                           && req_hit_any && !hum_refilling;
+    // Store hits need the data write port, which the refill owns during
+    // S_REFILL_WRITE; such hits are deferred (they stall at most a few
+    // cycles and then hit again in S_IDLE).  Loads are always served.
+    wire hum_ok          = hum_req && ((state != S_REFILL_WRITE) || !(|cpu_req.strobe));
+    // A store to the line being refilled (read-back-store) is accepted
+    // in-cycle as long as its word has not been written to the data RAM
+    // yet; it is merged into the refill write (second merge slot, the
+    // later store wins over the store-miss merge at the same word).
+    wire store_refill_ok = in_refill && cpu_req.valid && |cpu_req.strobe
+                           && is_cachable(cpu_req.addr, cpu_req.cacheable)
+                           && (req_idx == m_idx) && (req_tag == m_tag)
+                           && ((state != S_REFILL_WRITE) ||
+                               (rf_wr_cnt < req_wo))
+                           && !(st_merge_pending && (req_wo != st_merge_wo));
 
     // ==================== Stall condition ====================
     logic s1_stall;
@@ -282,12 +339,21 @@ module dcache import la32_common::*; (
 
         // Store AND load hits are served in the request cycle (0-cycle, the
         // store fast path + the load-hit fast path bypass the S1/S2 pipe).
-        if (state == S_IDLE && !s2_valid && cpu_req.valid
-            && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
-            cpu_resp.addr_ok = 1'b1;
-            cpu_resp.data_ok = 1'b1;
-            if (!(|cpu_req.strobe))
-                cpu_resp.data = data_rd_comb[req_hit_way][req_wo];
+        // Misses are accepted in the request cycle too (non-blocking): a
+        // store miss completes immediately (data merged into the refilled
+        // line), a load miss is acknowledged with addr_ok and receives its
+        // data via the refill keyword forward.
+        if (fast_path_req) begin
+            if (req_hit) begin
+                cpu_resp.addr_ok = 1'b1;
+                cpu_resp.data_ok = 1'b1;
+                if (!(|cpu_req.strobe))
+                    cpu_resp.data = data_rd_comb[req_hit_way][req_wo];
+            end else if (!cacop_d_pending) begin
+                cpu_resp.addr_ok = 1'b1;
+                if (|cpu_req.strobe)
+                    cpu_resp.data_ok = 1'b1;
+            end
         end
 
         if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
@@ -308,6 +374,23 @@ module dcache import la32_common::*; (
             cpu_resp.addr_ok  = 1'b1;
             cpu_resp.data_ok  = 1'b1;
             cpu_resp.data     = mem_resp.data;
+        end
+
+        // Hit-under-miss: while a miss refills, hits to other lines are
+        // served in the request cycle (loads always, stores when the data
+        // write port is free).
+        if (hum_ok) begin
+            cpu_resp.addr_ok = 1'b1;
+            cpu_resp.data_ok = 1'b1;
+            if (!(|cpu_req.strobe))
+                cpu_resp.data = data_rd_comb[req_hit_way][req_wo];
+        end
+
+        // Read-back store to the line being refilled: accept in-cycle and
+        // merge into the refill write.
+        if (store_refill_ok) begin
+            cpu_resp.addr_ok = 1'b1;
+            cpu_resp.data_ok = 1'b1;
         end
     end
 
@@ -353,15 +436,20 @@ module dcache import la32_common::*; (
                         next_state = S_CACOP_ST;
                     else if (cacop_req.code[4:3] == 2'b01)
                         next_state = S_CACOP_WB_READ;
-                end else if (!s2_valid && cpu_req.valid
-                           && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
-                    if (|cpu_req.strobe) begin
-                        data_wr_ena  = 1'b1;
-                        data_wr_way  = req_hit_way;
-                        data_wr_addr = req_idx;
-                        data_wr_wo   = req_wo;
-                        data_wr_we   = cpu_req.strobe;
-                        data_wr_data = cpu_req.data;
+                end else if (fast_path_req) begin
+                    if (req_hit) begin
+                        if (|cpu_req.strobe) begin
+                            data_wr_ena  = 1'b1;
+                            data_wr_way  = req_hit_way;
+                            data_wr_addr = req_idx;
+                            data_wr_wo   = req_wo;
+                            data_wr_we   = cpu_req.strobe;
+                            data_wr_data = cpu_req.data;
+                        end
+                    end else if (!cacop_d_pending) begin
+                        // Combinational miss accept: start the refill while
+                        // the request is completed in the request cycle.
+                        next_state = S_MISS;
                     end
                 end else if (s2_valid) begin
                     if (!is_cachable(s2_addr, s2_cacheable)) begin
@@ -437,8 +525,20 @@ module dcache import la32_common::*; (
                 data_wr_way  = m_eway;
                 data_wr_addr = m_idx;
                 data_wr_wo   = rf_wr_cnt;
-                data_wr_we   = 4'b1111;
-                data_wr_data = rf_buf[rf_wr_cnt];
+                if (st_merge_pending && rf_wr_cnt == st_merge_wo) begin
+                    // Read-back store merged over the refill data (a later
+                    // store than the store-miss merge, so it wins).
+                    data_wr_we   = st_merge_strb;
+                    data_wr_data = st_merge_data;
+                end else if (m_op && rf_wr_cnt == m_wo) begin
+                    // Merge the accepted store miss's bytes into the
+                    // refilled line (write-allocate store completion).
+                    data_wr_we   = m_wstrb;
+                    data_wr_data = m_wdata;
+                end else begin
+                    data_wr_we   = 4'b1111;
+                    data_wr_data = rf_buf[rf_wr_cnt];
+                end
                 if (rf_wr_cnt == 0) begin
                     tag_wr_ena  = 1'b1;
                     tag_wr_way  = m_eway;
@@ -483,6 +583,17 @@ module dcache import la32_common::*; (
 
             default: next_state = S_IDLE;
         endcase
+
+        // Hit-under-miss store hit: the data write port is free in every
+        // state except S_REFILL_WRITE (hum_ok already gates that out).
+        if (hum_ok && |cpu_req.strobe) begin
+            data_wr_ena  = 1'b1;
+            data_wr_way  = req_hit_way;
+            data_wr_addr = req_idx;
+            data_wr_wo   = req_wo;
+            data_wr_we   = cpu_req.strobe;
+            data_wr_data = cpu_req.data;
+        end
     end
 
     // ==================== Sequential logic ====================
@@ -502,6 +613,12 @@ module dcache import la32_common::*; (
             rf_cnt     <= '0;
             rf_wr_cnt  <= '0;
             rf_kw_sent <= 1'b0;
+            m_wdata    <= 32'd0;
+            m_wstrb    <= 4'd0;
+            st_merge_pending <= 1'b0;
+            st_merge_wo      <= '0;
+            st_merge_data    <= 32'd0;
+            st_merge_strb    <= 4'd0;
             mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0, cacheable: 1'b0, burst_len: 2'd0};
             init_addr    <= '0;
             init_wr_way  <= '0;
@@ -516,8 +633,7 @@ module dcache import la32_common::*; (
             end
 
             if (!s1_stall) begin
-                if (state == S_IDLE && !s2_valid && cpu_req.valid
-                    && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+                if (fast_path_req) begin
                     s1_valid <= 1'b0;
                 end else begin
                 s1_valid <= cpu_req.valid;
@@ -554,8 +670,7 @@ module dcache import la32_common::*; (
                 s1_valid <= 1'b0;
             end
 
-            if (state == S_IDLE && !s2_valid && cpu_req.valid
-                && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+            if (fast_path_req) begin
                 just_hit <= 1'b1;
                 last_hit_addr <= cpu_req.addr;
             end else begin
@@ -564,8 +679,22 @@ module dcache import la32_common::*; (
                     last_hit_addr <= s2_addr;
             end
 
-            if (state == S_IDLE && !s2_valid && cpu_req.valid
-                && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+            if (fast_path_req && req_hit) begin
+                if (NR_WAYS == 2) begin
+                    plru[0][req_idx] <= ~req_hit_way;
+                end else begin
+                    int node = 0;
+                    for (int b = WAY_BITS-1; b >= 0; b--) begin
+                        plru[node][req_idx] <= ~req_hit_way[b];
+                        node = 2*node + 1 + int'(req_hit_way[b]);
+                    end
+                end
+                if (|cpu_req.strobe)
+                    dirty[req_hit_way][req_idx] <= 1'b1;
+            end
+
+            // Hit-under-miss hits update PLRU/dirty like the S_IDLE hits.
+            if (hum_ok) begin
                 if (NR_WAYS == 2) begin
                     plru[0][req_idx] <= ~req_hit_way;
                 end else begin
@@ -602,6 +731,22 @@ module dcache import la32_common::*; (
                 m_eway   <= victim_way(s2_idx);
                 m_edirty <= dirty[victim_way(s2_idx)][s2_idx];
                 m_etag   <= tag_r_tag[victim_way(s2_idx)];
+            end
+
+            // Combinational miss accept: capture the miss context from the
+            // request itself (the S1/S2 pipe is bypassed for cacheable
+            // requests).  m_wdata/m_wstrb carry the accepted store's bytes
+            // to the S_REFILL_WRITE merge.
+            if (fast_path_miss && next_state == S_MISS) begin
+                m_op     <= |cpu_req.strobe;
+                m_wo     <= req_wo;
+                m_idx    <= req_idx;
+                m_tag    <= req_tag;
+                m_eway   <= victim_way(req_idx);
+                m_edirty <= dirty[victim_way(req_idx)][req_idx];
+                m_etag   <= req_tag_data[victim_way(req_idx)][TAG_WIDTH:1];
+                m_wdata  <= cpu_req.data;
+                m_wstrb  <= cpu_req.strobe;
             end
 
             if (state == S_IDLE && cacop_req.valid
@@ -654,7 +799,11 @@ module dcache import la32_common::*; (
             if (state == S_REFILL_WRITE) begin
                 rf_wr_cnt <= rf_wr_cnt + 1;
                 if (rf_wr_cnt == NR_WORDS - 1) begin
-                    dirty[m_eway][m_idx] <= 1'b0;
+                    // An accepted store miss and/or a merged read-back store
+                    // modified the line, so it must be written back when
+                    // evicted; a plain load refill leaves the line clean.
+                    dirty[m_eway][m_idx] <= m_op || st_merge_pending;
+                    st_merge_pending <= 1'b0;
                     if (NR_WAYS == 2) begin
                         plru[0][m_idx] <= ~m_eway;
                     end else begin
@@ -665,6 +814,18 @@ module dcache import la32_common::*; (
                         end
                     end
                 end
+            end
+
+            // Read-back store to the refilling line: latch the merge slot.
+            // The flag is held until the refill completes (not cleared at
+            // the merge) so the dirty bit at the completion sees it — a
+            // merged store modified the line and it must be written back
+            // when evicted.
+            if (store_refill_ok) begin
+                st_merge_pending <= 1'b1;
+                st_merge_wo      <= req_wo;
+                st_merge_data    <= cpu_req.data;
+                st_merge_strb    <= cpu_req.strobe;
             end
 
             if (state == S_CACOP_WB_READ) begin
@@ -687,11 +848,13 @@ module dcache import la32_common::*; (
 
     logic [63:0] access_cnt, hit_cnt, miss_cnt, wb_cnt64;
     logic [63:0] fast_load_cnt;
+    logic [63:0] fast_hum_cnt;
     assign perf_access    = access_cnt;
     assign perf_hit       = hit_cnt;
     assign perf_miss      = miss_cnt;
     assign perf_writeback = wb_cnt64;
     assign perf_fast_load = fast_load_cnt;
+    assign perf_fast_hum  = fast_hum_cnt;
 
     always_ff @(posedge clk) begin
         if (reset) begin
@@ -700,6 +863,7 @@ module dcache import la32_common::*; (
             miss_cnt   <= 64'd0;
             wb_cnt64   <= 64'd0;
             fast_load_cnt <= 64'd0;
+            fast_hum_cnt  <= 64'd0;
         end else begin
             if (state == S_IDLE && s2_valid && is_cachable(s2_addr, s2_cacheable)) begin
                 access_cnt <= access_cnt + 64'd1;
@@ -708,12 +872,26 @@ module dcache import la32_common::*; (
                 else
                     miss_cnt <= miss_cnt + 64'd1;
             end
-            if (state == S_IDLE && !s2_valid && cpu_req.valid
-                && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
+            if (fast_path_req) begin
                 access_cnt <= access_cnt + 64'd1;
-                hit_cnt <= hit_cnt + 64'd1;
+                if (req_hit) begin
+                    hit_cnt <= hit_cnt + 64'd1;
+                    if (!(|cpu_req.strobe))
+                        fast_load_cnt <= fast_load_cnt + 64'd1;
+                end else
+                    miss_cnt <= miss_cnt + 64'd1;
+            end
+            if (hum_ok) begin
+                access_cnt <= access_cnt + 64'd1;
+                hit_cnt    <= hit_cnt + 64'd1;
+                fast_hum_cnt <= fast_hum_cnt + 64'd1;
                 if (!(|cpu_req.strobe))
                     fast_load_cnt <= fast_load_cnt + 64'd1;
+            end
+            if (store_refill_ok) begin
+                access_cnt <= access_cnt + 64'd1;
+                hit_cnt    <= hit_cnt + 64'd1;
+                fast_hum_cnt <= fast_hum_cnt + 64'd1;
             end
             if (state == S_WB_WRITE && mem_resp.addr_ok)
                 wb_cnt64 <= wb_cnt64 + 64'd1;

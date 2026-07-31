@@ -89,7 +89,7 @@ module core_top #(
     logic [63:0] icache_access, icache_hit, icache_miss;
     logic [63:0] icache_wa_clear, icache_s1_accept, icache_cyc;
     logic [63:0] dcache_access, dcache_hit, dcache_miss, dcache_wb;
-    logic [63:0] dcache_fast_load;
+    logic [63:0] dcache_fast_load, dcache_fast_hum;
 
     logic dcache_in_refill, icache_in_refill;
 
@@ -137,6 +137,7 @@ module core_top #(
         .perf_miss(dcache_miss),
         .perf_writeback(dcache_wb),
         .perf_fast_load(dcache_fast_load),
+        .perf_fast_hum(dcache_fast_hum),
         .in_refill(dcache_in_refill)
     );
 
@@ -199,7 +200,8 @@ module core_top #(
         .dcache_hit(dcache_hit),
         .dcache_miss(dcache_miss),
         .dcache_writeback(dcache_wb),
-        .dcache_fast_load(dcache_fast_load)
+        .dcache_fast_load(dcache_fast_load),
+        .dcache_fast_hum(dcache_fast_hum)
     );
 `endif
 

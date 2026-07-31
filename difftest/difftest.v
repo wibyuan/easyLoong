@@ -140,7 +140,8 @@ module DifftestCacheState (
     input  logic [63:0] dcache_hit,
     input  logic [63:0] dcache_miss,
     input  logic [63:0] dcache_writeback,
-    input  logic [63:0] dcache_fast_load
+    input  logic [63:0] dcache_fast_load,
+    input  logic [63:0] dcache_fast_hum
 );
     import "DPI-C" function void v_difftest_CacheState(
         input longint icache_access,
@@ -153,13 +154,14 @@ module DifftestCacheState (
         input longint dcache_hit,
         input longint dcache_miss,
         input longint dcache_writeback,
-        input longint dcache_fast_load
+        input longint dcache_fast_load,
+        input longint dcache_fast_hum
     );
     always @(posedge clock) begin
         v_difftest_CacheState(icache_access, icache_hit, icache_miss,
                               icache_wa_clear, icache_s1_accept, icache_cyc,
                               dcache_access, dcache_hit, dcache_miss,
-                              dcache_writeback, dcache_fast_load);
+                              dcache_writeback, dcache_fast_load, dcache_fast_hum);
     end
 endmodule
 

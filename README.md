@@ -55,6 +55,7 @@
 
 - **icache**：2 路组相联、256 组、16 字节行、8KB、只读、PLRU、关键字优先；**0-cycle 命中**（标签 LUTRAM + 数据组合读取，`addr_ok`+`data_ok`+数据同拍响应，fetch 延迟 2 拍 → 0 拍）
 - **dcache**：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先；**0-cycle 命中**（load/store 均旁路 S1/S2 流水线：标签 LUTRAM 组合比较 + 数据组合读取，请求拍内返回数据；miss 仍走 S1/S2 管道）
+- **非阻塞（hit-under-miss，单 MSHR）**：请求拍内组合判定命中/缺失，store miss **当拍接受**（数据在 refill 写入阶段合并进新行，流水线在 refill 期间继续运行）；refill 期间命中其他行（load 恒可、store 在写口空闲时）同拍响应；**读回写**（store 命中正在 refill 的行）当拍接受并合并进 refill 写（第二合并槽，后写者优先）；load miss 当拍 `addr_ok` 应答，数据经关键字转发返回。无法处理的二次 miss 等待当前 refill 完成（单 MSHR 上限）
 - **参数化**：dcache 支持 NR_SETS / NR_WAYS / NR_WORDS 三参数配置，组数/路数/行大小可独立调整。icache 同理（独立参数）。`core_top.sv` 中通过 `DCACHE_SETS`, `ICACHE_SETS` 及其他模组参数统一控制。
 - **CACOP**：支持 `cacop 0x00` (I$ 索引无效)、`cacop 0x01` (D$ 索引无效)、`cacop 0x09` (D$ 索引写回无效)
 - **IBAR**：支持 hint=0 流水线冲刷
@@ -147,32 +148,34 @@
 
 > 将 DCache 标签 RAM 从 BRAM 迁移至分布式 RAM (LUTRAM)，实现组合逻辑标签读取。在 S2 空闲时，存储命中请求在同周期内触发 `addr_ok`+`data_ok` 并直写 BRAM，旁路 S1/S2 流水线。借鉴 rvcpu 的 0 周期标签比较设计思想，但仅将标签（~10.5Kb）放入 LUTRAM，数据 RAM（64Kb）保留 BRAM。IPC 提升 5-9%。
 
-### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-31，0-cycle icache + dcache 快速路径，优先级降序）
+### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-31，非阻塞 dcache，优先级降序）
 
 | 类别 | Simple | Fibonacci | Stream | Matrix | Mixed | Cryptonight |
 |------|:------:|:---------:|:------:|:------:|:-----:|:-----------:|
-| DCache Refill | 0.5% | 0.0% | **80.4%** | **76.9%** | **70.5%** | **89.4%** |
+| DCache Refill | 0.4% | 0.0% | **64.1%** | **49.7%** | **48.7%** | **70.6%** |
 | ICache Refill | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
-| Load-Use | 2.7% | 3.8% | 0.0% | 0.0% | 0.4% | 0.0% |
-| Branch Flush | 2.0% | 0.2% | 0.0% | 0.1% | 0.8% | 1.0% |
-| DCache Hit Pipe | 57.8% | **87.4%** | 9.1% | 5.6% | 14.4% | 6.6% |
-| ICache Hit Pipe | 27.3% | 0.7% | 0.2% | 0.4% | 4.3% | 0.0% |
-| Other | 9.6% | 7.9% | 10.2% | 16.9% | 9.5% | 2.9% |
+| Load-Use | 2.3% | 3.8% | 0.0% | 0.0% | 0.3% | 0.0% |
+| Branch Flush | 1.7% | 0.2% | 0.0% | 0.1% | 0.7% | 0.6% |
+| DCache Hit Pipe | 48.2% | **87.4%** | 1.9% | 0.5% | 7.4% | 0.1% |
+| ICache Hit Pipe | 22.8% | 0.7% | 0.2% | 0.2% | 3.4% | 0.0% |
+| Other | 8.0% | 7.9% | 5.7% | 10.9% | 6.6% | 2.0% |
 
-> Simple/Fibonacci 的 DCache Hit Pipe 高占比来自**非缓存 UART 串口轮询**（S_UNCACHED 路径，`in_refill` 不覆盖而计入 Hit Pipe），非 cache 命中停顿。性能型 benchmark（stream/matrix/mixed/cryptonight）中 **DCache Refill 为绝对主瓶颈（70-89%）**；load 密集的 matrix 的 Hit Pipe 已由 load 快速路径大幅消除。残余 Hit Pipe 主要为 `!s2_valid` 门控下 miss 的 S1/S2 窗口内到达的请求（回退 S2 管道）。下一步优先考虑写缓冲（消除 refill 期间 store 阻塞）或非阻塞 cache（hit-under-miss）。
+> 非阻塞改造后 **DCache Hit Pipe 基本清零**（store 命中、load 命中、store miss、load miss 均在请求拍内组合响应；matrix 0.5%、cryptonight 0.1%，残余来自 S1/S2 回退窗口与 Simple/Fibonacci 的非缓存 UART 轮询）。DCache Refill 为绝对主瓶颈：stream 的 miss 为顺序写+顺序读（store 已解耦，残余为 load miss 延迟 + refill 期间到达的二次 miss）；cryptonight 的 load miss（scratchpad 读）在顺序流水线中必须等待关键字返回，无法隐藏。下一步方向：写回/refill 重叠（需 arbiter 写通道突发数据缓冲）、MSHR 多路 outstanding。
 
-### 当前性能指标（Verilator difftest, 2026-07-31，0-cycle icache + dcache load 快速路径）
+### 当前性能指标（Verilator difftest, 2026-07-31，非阻塞 dcache：store-miss 解耦 + hit-under-miss）
 
-| 测试 | 指令数 | IPC | 说明 |
-|------|--------|-----|------|
-| simple | 24K | 0.1669 | 与旧流水线基线 0.1505 相比 +11% |
-| fibonacci | 97K | 0.1360 | UART 串口读写主导（DCache Hit Pipe 来自串口轮询） |
-| stream | 3.96M | 0.2241 | |
-| matrix | 5.65M | **0.3730** | load 密集（91% 命中），dcache load 快速路径收益最大 |
-| mixed | 331K | 0.2963 | |
-| cryptonight | 23.09M | 0.2478 | load 几乎全为 2MB scratchpad 强制 miss，无命中可提速 |
+| 测试 | 指令数 | IPC | 旧 IPC | Δ IPC |
+|------|--------|-----|--------|-------|
+| simple | 24K | 0.1671 | 0.1669 | +0.1% |
+| fibonacci | 97K | 0.1360 | 0.1360 | 0%（uncache 内核，dcache 旁路） |
+| stream | 3.96M | **0.2804** | 0.2241 | **+25.1%** |
+| matrix | 5.65M | **0.3853** | 0.3730 | +3.3% |
+| mixed | 331K | **0.3295** | 0.2963 | **+11.2%** |
+| cryptonight | 23.09M | **0.2673** | 0.2478 | +7.9% |
 
-> 从 2026-07-27 基线（IPC 0.141-0.176）累计提升：Burst refill/writeback → 标签 LUTRAM + store 快速路径 → 0-cycle icache → dcache load 快速路径。各阶段增量与数据见 [DEVLOG.md](DEVLOG.md)。
+> 非阻塞改造要点：① store miss 当拍接受 + refill 合并（流水线在 refill 期间继续运行，消除 store miss 的 ~30 拍停顿）；② hit-under-miss 在 refill 期间同拍服务其他行的命中（stream 589,838 次、cryptonight 339,785 次、matrix 18,217 次）；③ load miss 当拍 `addr_ok`（消除 S1/S2 检测窗口）；④ **读回写**（cryptonight `scratchpad[x]=...` 命中正在 refill 的行）当拍接受并合并。附带修复 arbiter `R_ARB` 态突发截断缺陷（icache/dcache 读请求同时挂起时 dcache burst 被发为单拍，0-cycle icache + store 解耦后首次暴露，旧架构下流水线全停不会同时出现）。matrix 提升受限：其 miss 以 B 矩阵列主序 load 为主，顺序流水线中 load miss 延迟无法隐藏。详细设计见 [DEVLOG.md](DEVLOG.md)「非阻塞 DCache（hit-under-miss，单 MSHR）」。
+
+> 从 2026-07-27 基线（IPC 0.141-0.176）累计提升：Burst refill/writeback → 标签 LUTRAM + store 快速路径 → 0-cycle icache → dcache load 快速路径 → 非阻塞 dcache（hit-under-miss + store-miss 解耦 + 读回写合并）。各阶段增量与数据见 [DEVLOG.md](DEVLOG.md)。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-07-26）
 
@@ -189,18 +192,18 @@
 >
 > **BTFNT ID 级重定向已实现**：预测 taken 时在 ID 阶段通过 `bp_do_jump` 重定向 fetch，npc 在 EX 阶段抑制冗余 flush 并处理 misprediction 恢复。IPC 提升见上方性能表。
 
-### Cache 命中率（Verilator 仿真, 2026-07-31，0-cycle icache + dcache 快速路径）
+### Cache 命中率（Verilator 仿真, 2026-07-31，非阻塞 dcache）
 
-| 测试 | ICache 访问 | ICache 命中率 | DCache 访问 | DCache 命中率 | DCache 写回 |
-|------|------------|--------------|------------|--------------|------------|
-| Simple | 34.6K | 98.03% | 415 | 94.46% | 48 words |
-| Fibonacci | 144K | 99.90% | —（uncache 内核，dcache 旁路） | — | — |
-| Stream | 4.75M | 99.99% | 1.77M | 77.78% | 787K words |
-| Matrix | 6.14M | 99.99% | 2.89M | 91.93% | 885K words |
-| Mixed | 383K | 99.82% | 74K | 73.73% | 62K words |
-| Cryptonight | 24.68M | 100.00% | 4.85M | 54.22% | 8.88M words |
+| 测试 | ICache 访问 | ICache 命中率 | DCache 访问 | DCache 命中率 | DCache 写回 | hit-under-miss |
+|------|------------|--------------|------------|--------------|------------|----------------|
+| Simple | 34.6K | 98.03% | 415 | 94.46% | 48 words | 11 |
+| Fibonacci | 144K | 99.90% | —（uncache 内核，dcache 旁路） | — | — | — |
+| Stream | 4.75M | 99.99% | 1.57M | 75.00% | 787K words | **589,838** |
+| Matrix | 6.14M | 99.99% | 2.89M | 91.93% | 885K words | 18,217 |
+| Mixed | 383K | 99.82% | 74K | 73.73% | 62K words | 8,213 |
+| Cryptonight | 24.68M | 100.00% | 4.72M | 52.95% | 8.88M words | **339,785** |
 
-> 命中率取决于程序访存模式而非微架构（与早期测量一致，微小差异来自计数器口径：命中含快速路径同拍响应，miss 含 S2 回退误判）。ICache 访问数随总周期缩减而下降（Matrix 10.85M → 6.14M）。fast_path_load_hits（load 快速路径命中数）：Matrix 1.77M、Stream 0.59M、Cryptonight 仅 8.4K（其 load 几乎全为 scratchpad 强制 miss）。
+> 命中率取决于程序访存模式而非微架构（与早期测量一致）。hit-under-miss = refill 期间同拍服务的命中数（含读回写合并）：stream 的顺序写/读大量与 refill 重叠；cryptonight 的 `scratchpad[x]=…` 读回写全部走读回写合并路径（fast_path_load_hits 仅 8.4K——其 load 几乎全为 scratchpad 强制 miss）。
 
 ## 5. 开发环境搭建
 
@@ -275,7 +278,7 @@ FORCE_VERILATOR_REBUILD=1 make test-simple
 | `DifftestCSRState` | CSR 字段 |
 | `DifftestIdlePC` | regcpy 缓冲区对齐 |
 | `DifftestTrapEvent` | 陷阱事件（已定义，待接入） |
-| `DifftestCacheState` | ICache/DCache 性能计数器（hit/miss/access/writeback + dcache fast_path_load_hits） |
+| `DifftestCacheState` | ICache/DCache 性能计数器（hit/miss/access/writeback + dcache fast_path_load_hits + hit_under_miss_hits） |
 | `DifftestBranchState` | 分支预测性能计数器（total_branches/mispredictions） |
 | `DifftestStallState` | 流水线 stall 7 类拆解（DCache/ICache Refill, Load-Use, Branch Flush, Cache Hit Pipe, Other） |
 
@@ -286,7 +289,7 @@ difftest 正常退出时自动输出：
 - **IPC**：`指令数 / 总周期数`
 - **FPGA 运行时估测**：`总周期数 / 50MHz`（cpu_clk 频率）
 - **ICache 指标**：访问数 / hit / miss / 命中率
-- **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数 / fast_path_load_hits（load 快速路径命中数）
+- **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数 / fast_path_load_hits（load 快速路径命中数）/ hit_under_miss_hits（refill 期间同拍服务的命中数，含读回写合并）
 - **分支预测指标**：条件分支数 / 误预测数 / 准确率
 - **流水线 Stall 七类拆解**：按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other，输出各类周期数和占 stall 周期百分比
 

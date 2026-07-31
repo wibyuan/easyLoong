@@ -105,7 +105,10 @@ module axibus_arbiter import la32_common::*; (
                 end
             end
             R_ARB: begin
+                // Either requester can be served here; the dcache refill
+                // needs its burst length (the icache is always single-beat).
                 araddr  = (dreq.valid && dreq.strobe == 4'd0) ? dreq.addr : ireq.addr;
+                arlen   = (dreq.valid && dreq.strobe == 4'd0) ? {6'd0, dreq.burst_len} : 8'd0;
                 arvalid = 1'b1;
                 if (arready) begin
                     rnext = R_WAIT;

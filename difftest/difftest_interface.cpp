@@ -120,7 +120,8 @@ void v_difftest_CacheState(
     long long dcache_hit,
     long long dcache_miss,
     long long dcache_writeback,
-    long long dcache_fast_load
+    long long dcache_fast_load,
+    long long dcache_fast_hum
 ) {
     dut_cache.icache_access    = (uint64_t)icache_access;
     dut_cache.icache_hit       = (uint64_t)icache_hit;
@@ -133,6 +134,7 @@ void v_difftest_CacheState(
     dut_cache.dcache_miss      = (uint64_t)dcache_miss;
     dut_cache.dcache_writeback = (uint64_t)dcache_writeback;
     dut_cache.dcache_fast_load = (uint64_t)dcache_fast_load;
+    dut_cache.dcache_fast_hum  = (uint64_t)dcache_fast_hum;
 }
 
 void v_difftest_BranchState(

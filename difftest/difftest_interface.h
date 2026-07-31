@@ -69,6 +69,7 @@ struct difftest_cache_state_t {
     uint64_t dcache_miss;
     uint64_t dcache_writeback;
     uint64_t dcache_fast_load;
+    uint64_t dcache_fast_hum;
 };
 
 struct difftest_branch_state_t {
