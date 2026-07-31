@@ -460,7 +460,7 @@ librdi_synth.so(UParam::Base::reportTcl(...)+0x31d)
 
 **目标**：消除 DCache 存储命中流水线停顿（stall_dcache_hit_pipe 中 store 部分）。
 
-**分析**：当前 DCache 标签和数据均在 BRAM 中（1 周期读延迟），形成 2 级流水线 (S1→S2)。每次缓存访问（含命中）都需要等待标签和数据从 BRAM 返回（1 周期），导致流水线停顿。标签 RAM 仅 ~10.5Kb，可放入分布式 RAM (LUTRAM) 实现组合逻辑读取（0 周期），数据 RAM (64Kb) 必须保留 BRAM。加载命中因 BRAM 数据延迟无法消除停顿。
+**分析**：当前 DCache 标签和数据均在 BRAM 中（1 周期读延迟），形成 2 级流水线 (S1→S2)。每次缓存访问（含命中）都需要等待标签和数据从 BRAM 返回（1 周期），导致流水线停顿。标签 RAM 仅 ~10.5Kb，可放入分布式 RAM (LUTRAM) 实现组合逻辑读取（0 周期）。
 
 **实现**：
 
@@ -480,34 +480,7 @@ librdi_synth.so(UParam::Base::reportTcl(...)+0x31d)
 
 **借鉴**：rvcpu 的 0 周期标签比较设计思想（组合逻辑标签读取 + `data_ok` 同周期触发），但仅应用于标签（数据保留 BRAM），限存储命中场景。
 
-## 2026-07-29: 加载命中延迟分析与写缓冲区设计探讨
-
-> ⚠ **本节结论已被 2026-07-31 的 dcache load 快速路径推翻**：数据 RAM 声明组合读取端口（综合为分布式 RAM，读延迟 0）即可让 `dresp.data` 在请求拍就绪，`mem_wb_in` 同拍捕获正确数据——**无需重构核心数据路径**（rvcpu 式 WB 级组合读取旁路）。实现与数据见「2026-07-31：DCache Load 命中快速路径」。本节保留作历史分析。
-
-### 加载命中延迟消除（借鉴 rvcpu，架构评估后搁置）
-
-**目标**：借鉴 rvcpu 的加载命中 0 停顿设计，消除剩余的 DCache Hit Pipe（6-16%）。
-
-**rvcpu 的关键机制**（`DCache.sv:151-152`）：
-```verilog
-assign dresp.addr_ok = 1'b1;
-assign dresp.data_ok = (state == INIT && hit);  // 标签组合命中 → 同周期 data_ok
-```
-数据 RAM 为 `READ_LATENCY=1`（BRAM），`data_ok` 触发时 `dresp.data` 实际是旧数据。rvcpu 的关键在于 **Writeback 级直接组合读取 `dresp.data`**（不经过 MEM→WB 流水线寄存器）：
-```verilog
-.rd(dresp.data)   // writeback stage input — combinational, not pipelined
-```
-数据 1 周期后到达时，WB 级组合读取到正确值。
-
-**easyLoong 无法直接复现的原因**：
-
-当前数据路径：`dresp.data → LSU(字节提取) → mem_wb_in → mem_wb_out → regfile`
-
-`mem_wb_in` 在 `data_ok` 同周期捕捉 `lsu_rdata`，但 BRAM 数据晚 1 周期才就绪 → 捕捉到旧数据。延迟 `mem_valid` 1 周期会抵消无停顿收益。要在 WB 级直接组合读取 `dresp.data` 进行字节提取，需要重构核心数据路径（当前 `final_res` 经流水线寄存器）。
-
-**结论**：rvcpu 方案依赖特定的数据路径拓扑。easyLoong 需要在流水线结构层面设计数据 bypass 路径后再实施。
-
-### 写缓冲区设计探讨
+## 2026-07-29: 写缓冲区设计探讨
 
 **目标**：消除 DCache Refill 期间的 store 阻塞（占所有 stall 的 34-61%）。
 
@@ -522,7 +495,7 @@ assign dresp.data_ok = (state == INIT && hit);  // 标签组合命中 → 同周
 
 **更可行的方向**：DCache 内部存储队列。DCache 已经知道自身状态（S_IDLE 时 fast path，S_REFILL 期间缓冲 store），无需外部 busy 信号，且数据和标签在同一模块内，加载转发可利用 BRAM 读路径自然解决。
 
-**当前阶段结论**：标签 LUTRAM 优化已取得显著成果（+5-9% IPC），加载命中消除和写缓冲区均需更深入的设计准备后在后续阶段实施。
+**当前阶段结论**：标签 LUTRAM 优化已取得显著成果（+5-9% IPC），写缓冲区需更深入的设计准备后在后续阶段实施。
 
 ## 2026-07-29: CI 提交结果与后续时序优化注意事项
 
