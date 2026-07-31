@@ -718,17 +718,26 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 
 **单元测试**：`unittest/bne_load_use_bpflush/`（load 喂养的后向 bne，修复前 t8: ref=1, dut=2）。
 
-### Bug 8：icache keyword-forward 的 pc 配对错误 ⚠ 部分修复，调试中（a8f6b9a）
+### Bug 8：icache keyword-forward 的 pc 配对错误 ✅（a8f6b9a + 本会话三处修复）
 
 **现象**：`make test-fibonacci` 在 #167 失败——0x1c001060 处取到 0x288af1ad（应为 beq 0x580033c0），执行错误指令后 difftest mismatch（t1: ref=0x1c7f0088, dut=0）。
 
 **根因**：0-cycle icache 的 miss 不返回 `addr_ok`，fetch_unit 无法进入 WAIT_DATA 记录"缺失取指的 pc"（`captured_pc`）。refill 的 keyword forward（S_REFILL_WAIT 的 data_ok）与**当前** pc 配对——当 keyword 与 EX 重定向（bne/beq 误预测在 store stall 释放时触发）同拍到达时，keyword 的数据被配到重定向目标的 pc 上，目标指令被静默替换。
 
-**已修部分**（a8f6b9a）：S_IDLE 的 miss 分支补 `cpu_resp.addr_ok = 1`（AXI 式请求应答）→ fetch_unit 进入 WAIT_DATA → `captured_pc` 锁存 miss 的 pc → keyword forward 正确配对（追踪确认：(0x1c001040, keyword) 而非 (0x1c001060, keyword)）。
+**修复分四步**（a8f6b9a 为已提交的第一步）：
 
-**未闭合问题**：fibonacci 仍在 #167 失败——形态改变：错误路径指令（beq 的 fall-through，0x1c001040）现在拿到了**正确**的指令（keyword），但**未被重定向的 if_id_flush 杀掉**（IF v1 1c001040 存活并提交）。flush 时序的边角情况待查：需要确认 beq 的 EX 级 `ex_jump_flush` 与 keyword forward 同拍时的 if_id_flush/if_id_stall 交互。调试工具：`verilator_tb.v` 的 `MYCPU_PIPE_DEBUG` 环形缓冲（触发：提交 0x1c001040，含 ID 级/exj/if_id_flush/icache 内部信号），已还原，复现方法见 git diff 历史。
+1. **a8f6b9a（已提交）**：S_IDLE 的 miss 分支补 `cpu_resp.addr_ok = 1` → fetch_unit 进入 WAIT_DATA → `captured_pc` 锁存 miss 的 pc → keyword forward 正确配对。
+2. **fetch_unit.sv：WAIT_DATA 放弃陈旧取指**。重定向（EX 误预测 / ID / BP redirect）使 `pc_current` 偏离在飞的 miss 取指时，WAIT_DATA 立即回到 REQ 重新请求当前 pc（此前会一直等到 keyword 到达，把错误路径指令送进流水线）；`if_valid`/`captured_instr` 同步加 `pc_current == captured_pc` 门控。
+3. **icache.sv：keyword forward 按地址门控**。S_REFILL_WAIT 的 keyword forward 仅在 `cpu_req.addr[31:2] == {m_tag, m_idx, m_wo}` 时发出——重定向后 requester 已不再要该地址，旧 forward 若照发会在 REQ 态被配到新 pc 上（单独只有 2 或 3 都无法闭合，单元测试分别验证）。
+4. **hazard_unit.sv：keep_capture 收紧**。`jump_flush_keep_capture` 原条件 `pc_current == ex_jump_pc` 过松：pc 可以恰好推进到目标地址（分支位于行尾、fall-through 的 pc+4 恰为目标）而 if_id 里仍是上一拍捕获的 fall-through——flush 被误抑制，错误路径指令存活。现在要求 `if_id_in_valid && if_id_in_pc == ex_jump_pc`（在飞捕获确实是目标才保留）。
 
-### 测试状态（2026-07-31）
+**过程中发现的关联 bug**（同为 fibonacci 回归中暴露）：
+
+- **关联 bug（core.sv）：IF/ID 被 stall 扣住期间 ID 重复下发同一条指令**。WELCOME 循环的 bne 在 dcache refill stall 期间被扣在 IF/ID（`if_id_stall=1`），id_ex_stall 释放后 ID 每个周期重复解码同一指令 → 同一 bne 提交两次（s0 差 1，NEMU 多执行一次 addi）。修复：`id_ex_in.ctrl.valid = id_valid && !(if_id_stall && !if_id_flush)`——IF 级真正推进（未 stall 或被 flush）才允许下发。第一版 `!if_id_stall` 过严：JAL/branch 在重定向当拍 if_id_flush=1（副本被清）而目标取指在飞（if_id_stall=1）时被门控掉 → bl 丢失（READSERIAL 第三次调用被跳过，ra 停在旧值）。`!(if_id_stall && !if_id_flush)` 恰好兼容两种情形。
+
+**单元测试**：`unittest/icache_redirect_stale/`——真实 icache 例化在 core 与慢速 fake memory 之间（dresp 对特定地址延迟 5 拍模拟 dcache miss 把分支扣在 EX，imem 延迟 10 拍让 refill 在重定向后才出 keyword），精确复现 fibonacci 的时序。修复前 t8: ref=0xAA dut=0x55（fall-through 0x1c000010 错误提交），修复后通过。两个单独修复（只改 fetch_unit 或只改 icache）均失败，证明两部分缺一不可。
+
+### 测试状态（2026-07-31，Bug 8 闭合后全量回归）
 
 | 测试 | 状态 | 备注 |
 |------|------|------|
@@ -738,6 +747,12 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 | unittest/gpr_fwd_load_stall | ✅ | 1668 条 |
 | unittest/beq_redirect_target | ✅ | 1666 条 |
 | unittest/bne_load_use_bpflush | ✅ | 3747 条 |
-| make test-simple | ✅ | 24383 条，IPC 0.1663（修复前基线 0.1505） |
-| make test-fibonacci | ❌ | #167，Bug 8 未闭合 |
-| make test-stream/matrix/mixed/cryptonight | ⬜ | 未跑（等 fibonacci 闭合后回归） |
+| unittest/icache_redirect_stale | ✅ | 新增，3179 条 |
+| make test-simple | ✅ | 24383 条，IPC 0.1663（与修复前基线一致） |
+| make test-fibonacci | ✅ | 96857 条，D result memory PASS（32 字节比对一致），IPC 0.1360 |
+| make test-stream | ✅ | 395 万条，ExtRAM 3 MiB 数据比对 PASS，IPC 0.2101 |
+| make test-matrix | ✅ | 565 万条，matrix_expected 比对 PASS，IPC 0.3024 |
+| make test-mixed | ✅ | 33 万条，signature 比对 PASS，IPC 0.2894 |
+| make test-cryptonight | ✅ | 2309 万条，2 MiB 数据比对 PASS，IPC 0.2478 |
+
+> 性能基准（stream/matrix/mixed/cryptonight）为 0-cycle icache 分支首次全量回归，IPC 较 2026-07-29 的旧流水线提升 40%-62%（matrix +62%、mixed +56%、cryptonight +44%、stream +40%）属 0-cycle icache 预期效果（simple 与旧值一致）。
