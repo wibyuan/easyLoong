@@ -68,7 +68,17 @@ module fetch_unit import la32_common::*; (
                     next_state = REQ;
             end
             WAIT_DATA: begin
-                if (iresp.data_ok)
+                // A redirect (EX branch mispredict, ID or BP redirect) can
+                // move pc_current away from the outstanding fetch while the
+                // icache refill is still in flight. The refill's keyword
+                // forward would then deliver the missing line's word against
+                // the wrong pc, or as a stale instruction on the redirect's
+                // wrong path. Abandon the wait and re-issue for the current
+                // pc; the icache suppresses the stale forward (it only
+                // answers while cpu_req.addr still matches the refill).
+                if (pc_current != captured_pc)
+                    next_state = REQ;
+                else if (iresp.data_ok)
                     next_state = REQ;
             end
         endcase
@@ -83,12 +93,13 @@ module fetch_unit import la32_common::*; (
             if (iresp.data_ok)
                 captured_instr <= iresp.data;
         end
-        if (state == WAIT_DATA && iresp.data_ok) begin
+        if (state == WAIT_DATA && iresp.data_ok && pc_current == captured_pc) begin
             captured_instr <= iresp.data;
         end
     end
 
-    assign if_valid = (state == REQ && iresp.data_ok) || (state == WAIT_DATA && iresp.data_ok);
+    assign if_valid = (state == REQ && iresp.data_ok) ||
+                      (state == WAIT_DATA && iresp.data_ok && pc_current == captured_pc);
     assign if_pc = iresp.data_ok ? ((state == REQ) ? pc_current : captured_pc) : captured_pc;
     assign if_instr = iresp.data_ok ? iresp.data : captured_instr;
     assign if_pc_valid = 1'b1;

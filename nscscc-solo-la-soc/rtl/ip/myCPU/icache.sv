@@ -207,7 +207,16 @@ module icache import la32_common::*; (
 
             S_REFILL_WAIT: begin
                 if (mem_resp.data_ok) begin
-                    if (rf_cnt == m_wo && !rf_kw_sent) begin
+                    // Forward the keyword only while the requester still
+                    // wants this address: a redirect (EX branch mispredict /
+                    // ID / BP redirect) can move cpu_req.addr away from the
+                    // refilling line while the refill is in flight. The
+                    // forward would otherwise be captured against the new
+                    // pc, silently replacing the redirected target's
+                    // instruction (the fetch_unit abandons the stale wait
+                    // and re-issues for the current pc).
+                    if (rf_cnt == m_wo && !rf_kw_sent &&
+                        cpu_req.addr[31:2] == {m_tag, m_idx, m_wo}) begin
                         cpu_resp.addr_ok = 1'b1;
                         cpu_resp.data_ok = 1'b1;
                         cpu_resp.data    = mem_resp.data;
