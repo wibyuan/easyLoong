@@ -286,7 +286,7 @@ module dcache import la32_common::*; (
             && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
             cpu_resp.addr_ok = 1'b1;
             cpu_resp.data_ok = 1'b1;
-            if (!|cpu_req.strobe)
+            if (!(|cpu_req.strobe))
                 cpu_resp.data = data_rd_comb[req_hit_way][req_wo];
         end
 
@@ -712,7 +712,7 @@ module dcache import la32_common::*; (
                 && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
                 access_cnt <= access_cnt + 64'd1;
                 hit_cnt <= hit_cnt + 64'd1;
-                if (!|cpu_req.strobe)
+                if (!(|cpu_req.strobe))
                     fast_load_cnt <= fast_load_cnt + 64'd1;
             end
             if (state == S_WB_WRITE && mem_resp.addr_ok)
