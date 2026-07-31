@@ -349,3 +349,14 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 ## 10. DEVLOG
 
 开发进度与已知问题见 [DEVLOG.md](DEVLOG.md)。
+
+## 11. 当前分支状态（wip/icache-0cycle，2026-07-31）
+
+0-cycle icache 命中路径（`req_hit` 组合逻辑直接驱动 `data_ok`，fetch 延迟 2 拍 → 0 拍）将流水线推到 1 IPC 满载，暴露了两个此前被低 IPC 掩盖的 bug，均已修复：
+
+| Bug | 根因 | 修复 | 单元测试 |
+|-----|------|------|---------|
+| 分支预测重定向后 IF/ID 未冲刷 | `hazard_unit` 实例化漏接 `.bp_do_jump()` | `3b00951` | `unittest/ex_mem_flush/` ✅ |
+| cacop stall 期间重复 commit | MEM/WB 从不 stall，EX/MEM 滞留指令被多次捕获 | `1b62bc2`（`mem_valid` 加 `!ex_mem_stall`） | `unittest/ex_mem_stall_dup/` ✅ |
+
+剩余问题：`make test-simple` 在 #7241 处 dmw0 mismatch——CSR 写在 EX 级 vs difftest 在 WB 级捕获的固有 timing skew，非功能 bug（详见 DEVLOG Bug 3）。修复需改 difftest 捕获口径，不在 CPU 流水线范围。

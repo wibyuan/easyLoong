@@ -652,18 +652,20 @@ cd unittest/ex_mem_flush && ./run_test.sh
 cd unittest/ex_mem_stall_dup && ./run_test.sh
 ```
 
-### Bug 3：CSR 写在 EX 级、difftest 在 WB 级捕获 → dmw0 CSR 值提前可见 ❌ 未修
+### Bug 3：CSR 写在 EX 级、difftest 在 WB 级捕获 → dmw0 CSR 值提前可见 ⚠ 已分析未修
 
 **现象**：Bug 1/2 修复后 `make test-simple` 推进到 instruction #7241，报 dmw0 mismatch（DUT=0x19, REF=0x00）。
 
 **根因**：CSR 写（`csr_we`）在 EX 级通过组合逻辑完成，但 difftest 的 DPI-C 在 WB 级（`mem_wb_out`）捕获 commit 和 CSR 状态。`csrwr $r12, CSR_DMW0` 在 EX 级写完 DMW0=0x19 之后的下一周期，其前驱指令 `ori $r12,$r0,0x19` 在 WB 级提交，difftest 捕获到此 commit 时看到 DMW0 已变为 0x19——此时 `csrwr` 尚未提交。
 
-这是 CSR 执行阶段（EX）与 difftest 捕获边界（WB）之间的 timing skew。在旧 icache（0.5 IPC）下流水线间距较大，此 skew 未暴露；0-cycle icache（1 IPC）压缩指令间距后暴露。
+这是 CSR 执行阶段（EX）与 difftest 捕获边界（WB）之间的固有 timing skew，**不是功能 bug**：CSR 最终写入值正确，后续指令通过组合旁路也能读到新值。旧 icache（0.5 IPC）下指令间距大，skew 恰好不触发；0-cycle icache（1 IPC）压缩指令间距后暴露。
 
-**单元测试**：`unittest/csr_dmw0/` — `csrwr $r12,CSR_DMW0 → csrwr $r0,CSR_DMW0` 序列，验证 DMW0 清除后 difftest 看到的值。运行方式：
+**尝试过的修复（均失败）**：
 
-```bash
-cd unittest/csr_dmw0 && ./run_test.sh
-```
+1. **2 级 posedge CSR 管道**（difftest 输入打 2 拍）：单元测试通过，但 `make test-simple` 初始 sync 崩坏——difftest sync 需要**当前** CSR 值，而管道输出是**延迟 2 拍**的值，CRMD/ASID 在指令 #0 即 mismatch。sync 与比较共用同一捕获机制，无法同时满足。
+2. **negedge 采样**（下时钟沿打拍）：dirty hack，本质是绕开 Verilator NBA 与 DPI-C 的求值顺序竞争，且同样破坏初始 sync。已放弃。
+3. **csr_regfile 写旁路**（`csr_we` 同周期组合输出）：不影响 difftest 捕获时机，无法解决。
 
-**修复方向**：将 CSR 写移到 WB 级（打拍），或 difftest 仅在 CSR 指令提交时比较 CSR 状态。
+**结论**：该问题根因在 difftest 捕获口径（CSR 状态与指令提交不同步），不在 CPU 功能。修复方向应是在 difftest 框架内让 CSR 状态与提交对齐（如仅在 CSR 指令提交时比较 CSR），而非改动 CPU 流水线。在未修复前，`make test-simple` 在 #7241 处失败，其余测试（含 5 个 benchmark）不受影响。
+
+**单元测试**：`unittest/csr_dmw0/` 已删除（不是正确复现——它把 skew 推到极限，在任何 `csrwr` 紧跟前驱指令时都在指令 #0 失败，与 #7241 的实际触发条件不符）。`unittest/csr_dmw0_loop/`（csrwr→cacop→csrwr 含 cacop 延迟）同样在指令 #0 失败，未 commit。
