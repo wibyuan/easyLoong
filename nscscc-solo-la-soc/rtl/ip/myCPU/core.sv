@@ -531,7 +531,7 @@ module core import la32_common::*; #(
     );
 
     logic mem_valid;
-    assign mem_valid = ex_mem_out.ctrl.valid && lsu_ready;
+    assign mem_valid = ex_mem_out.ctrl.valid && lsu_ready && !ex_mem_stall;
 
     assign mem_wb_in.ctrl.valid     = mem_valid;
     assign mem_wb_in.ctrl.rf_we     = ex_mem_out.ctrl.rf_we & mem_valid;
