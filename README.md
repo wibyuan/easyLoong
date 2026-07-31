@@ -352,11 +352,24 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 
 ## 11. 当前分支状态（wip/icache-0cycle，2026-07-31）
 
-0-cycle icache 命中路径（`req_hit` 组合逻辑直接驱动 `data_ok`，fetch 延迟 2 拍 → 0 拍）将流水线推到 1 IPC 满载，暴露了两个此前被低 IPC 掩盖的 bug，均已修复：
+0-cycle icache 命中路径（`req_hit` 组合逻辑直接驱动 `data_ok`，fetch 延迟 2 拍 → 0 拍）将流水线推到 ~1 IPC 满载，陆续暴露了 5 个被低 IPC 掩盖的深层流水线 bug（全部零 IPC 代价修复）：
 
 | Bug | 根因 | 修复 | 单元测试 |
 |-----|------|------|---------|
 | 分支预测重定向后 IF/ID 未冲刷 | `hazard_unit` 实例化漏接 `.bp_do_jump()` | `3b00951` | `unittest/ex_mem_flush/` ✅ |
-| cacop stall 期间重复 commit | MEM/WB 从不 stall，EX/MEM 滞留指令被多次捕获 | `1b62bc2`（`mem_valid` 加 `!ex_mem_stall`） | `unittest/ex_mem_stall_dup/` ✅ |
+| cacop stall 期间重复 commit | MEM/WB 从不 stall，EX/MEM 滞留指令被多次捕获 | `1b62bc2` | `unittest/ex_mem_stall_dup/` ✅ |
+| CSR 写不在退休点 | CSR 写在 EX 级生效，difftest 每拍采样实时值 → 提交比较口径错位 | `f2213a1`（写移至 WB + 三级在飞转发） | `unittest/csr_dmw0_loop/` ✅ |
+| EX 操作数 ID 锁存陈旧 | stall 期间锁存操作数落后于已退休的写者（2-back RAW 跨 stalled load） | `e104547`（EX 级组合读 regfile） | `unittest/gpr_fwd_load_stall/` ✅ |
+| 重定向目标/被扣分支被 if_id_flush 杀 | `pc_current == jump_target` 时 flush 杀正确捕获；load_use 扣住的分支被自身 bp flush 清零 | `3467452` + `7ffb793` | `unittest/beq_redirect_target/` + `bne_load_use_bpflush/` ✅ |
+| icache keyword-forward pc 配对错误 | miss 无 addr_ok 应答，keyword 数据与当前 pc（可能已是重定向目标）配对 | `a8f6b9a`（miss 补 addr_ok → WAIT_DATA 锁存缺失取指 pc） | ⚠ 部分修复，见下 |
 
-剩余问题：`make test-simple` 在 #7241 处 dmw0 mismatch——CSR 写在 EX 级 vs difftest 在 WB 级捕获的固有 timing skew，非功能 bug（详见 DEVLOG Bug 3）。修复需改 difftest 捕获口径，不在 CPU 流水线范围。
+**测试状态**：
+
+| 测试 | 状态 |
+|------|------|
+| 6 个单元测试 | ✅ 全部通过 |
+| `make test-simple` | ✅ 24383 条 difftest 通过，IPC 0.1663（修复前基线 0.1505） |
+| `make test-fibonacci` | ❌ #167——Bug 8 未闭合（keyword 配对已修，但错误路径指令存活过 flush，调试中，详见 DEVLOG Bug 8） |
+| stream/matrix/mixed/cryptonight | ⬜ 等 fibonacci 闭合后回归 |
+
+详细根因分析与修复记录见 [DEVLOG.md](DEVLOG.md) 的「wip/icache-0cycle 分支修复记录（2026-07-31 续）」。

@@ -652,7 +652,7 @@ cd unittest/ex_mem_flush && ./run_test.sh
 cd unittest/ex_mem_stall_dup && ./run_test.sh
 ```
 
-### Bug 3：CSR 写在 EX 级、difftest 在 WB 级捕获 → dmw0 CSR 值提前可见 ⚠ 已分析未修
+### Bug 3：CSR 写在 EX 级、difftest 在 WB 级捕获 → dmw0 CSR 值提前可见 ✅（2026-07-31 修复，f2213a1）
 
 **现象**：Bug 1/2 修复后 `make test-simple` 推进到 instruction #7241，报 dmw0 mismatch（DUT=0x19, REF=0x00）。
 
@@ -666,6 +666,78 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 2. **negedge 采样**（下时钟沿打拍）：dirty hack，本质是绕开 Verilator NBA 与 DPI-C 的求值顺序竞争，且同样破坏初始 sync。已放弃。
 3. **csr_regfile 写旁路**（`csr_we` 同周期组合输出）：不影响 difftest 捕获时机，无法解决。
 
-**结论**：该问题根因在 difftest 捕获口径（CSR 状态与指令提交不同步），不在 CPU 功能。修复方向应是在 difftest 框架内让 CSR 状态与提交对齐（如仅在 CSR 指令提交时比较 CSR），而非改动 CPU 流水线。在未修复前，`make test-simple` 在 #7241 处失败，其余测试（含 5 个 benchmark）不受影响。
+**结论**：~~该问题根因在 difftest 捕获口径（CSR 状态与指令提交不同步），不在 CPU 功能。修复方向应是在 difftest 框架内让 CSR 状态与提交对齐（如仅在 CSR 指令提交时比较 CSR），而非改动 CPU 流水线。在未修复前，`make test-simple` 在 #7241 处失败，其余测试（含 5 个 benchmark）不受影响。~~ **已按"CPU 结构性修复"方向解决（f2213a1）**：CSR 写推迟到 WB 退休点 + EX 级三级在飞写转发（MEM/WB/WB-退休后 1 拍）+ csr_regfile 输出写旁路，顺带修掉潜伏的 `csrwr→csrrd` RAW 冒险。零 IPC 代价。详见下方 Bug 4。
 
-**单元测试**：`unittest/csr_dmw0/` 已删除（不是正确复现——它把 skew 推到极限，在任何 `csrwr` 紧跟前驱指令时都在指令 #0 失败，与 #7241 的实际触发条件不符）。`unittest/csr_dmw0_loop/`（csrwr→cacop→csrwr 含 cacop 延迟）同样在指令 #0 失败，未 commit。
+**单元测试**：`unittest/csr_dmw0/` 已删除（不是正确复现——它把 skew 推到极限，在任何 `csrwr` 紧跟前驱指令时都在指令 #0 失败，与 #7241 的实际触发条件不符）。`unittest/csr_dmw0_loop/`（csrwr→cacop→csrwr 含 cacop 延迟）已作为回归测试提交（5d2ffd3）。
+
+---
+
+## wip/icache-0cycle 分支修复记录（2026-07-31 续）
+
+0-cycle icache 将指令间距压缩到 ~1 IPC 后，陆续暴露了流水线深层的结构性问题。本会话共定位并修复 5 个 bug（均零 IPC 代价），simple 测试已通过；fibonacci 仍有 1 个未闭合问题（见 Bug 8）。
+
+### Bug 4：CSR 写不落在退休点 → difftest 比较口径错位 ✅（f2213a1）
+
+**现象**：`unittest/csr_dmw0_loop` 在指令 #0 失败（dmw0: DUT=0x19, REF=0x00）；simple 在 #7241 失败。
+
+**根因**：CSR 写在 EX 级生效（`csr_we` 由 `id_ex_out` 驱动），difftest 每拍采样实时 CSR 并在每次提交时全量比较——DUT 的 CSR 状态比退休点超前 2 条指令。0-cycle icache 把指令间距压缩后必然触发。附带潜伏 bug：`csrwr→csrrd`（同一 CSR 背靠背）时 `csr_read_stall` 因 `csr_num == csr_num_r` 不触发，`csr_rdata_r` 是写前旧值 → RAW 冒险。
+
+**修复**：CSR 写移至 WB（退休点）生效，`is_csrwr/is_csrxchg/csr_wdata` 贯穿 EX→MEM→WB；csr_regfile 26 个输出加写旁路（镜像 regfile `gpr_dbg` 模式）；EX 读路径三级在飞写转发（MEM → WB → WB 退休后 1 拍，覆盖 csrrd/csrxchg 在写者后 1/2/3 条的所有窗口）；DMW0/DMW1/CRMD 翻译路径加 MEM 级转发。全部组合逻辑，零新增 stall。
+
+**单元测试**：`unittest/csr_dmw0_loop/`（回归）。
+
+### Bug 5：EX 操作数在 ID 锁存 → stall 期间陈旧 ✅（e104547）
+
+**现象**：simple 在 WELCOME 循环失败——`addi.w $r23,$r23,0x44 → ld.b $r4,$r23,0 → addi.w $r23,$r23,1`（跨 stalled load 的 2-back RAW），DUT 提交 0x1c0022ad（应为 0x1c0022f1）。
+
+**根因**：`id_ex` 在 ID→EX 边界锁存 `rd1/rd2`。stall 把消费者扣在 EX 多拍时（dcache miss refill ~20 拍），Bug 2 修复的 `mem_valid` 门控在 WB 制造空泡，`fw_a_mw` 转发中途死亡，操作数回落到 ID 时锁存的旧值——而生产者已退休进阵列。1-back load→use 免疫（`load_use_hazard` 的 flush+hold 恰好对齐转发窗口）；5 个 benchmark 未踩中（窗口极窄）。
+
+**修复**：regfile 读口从 ID 移到 EX（`id_ex_out.data.rs1/rs2` 组合读 + 写旁路），操作数基底永远是"已退休 + WB 在飞"的架构值。转发 mux 不变。
+
+**单元测试**：`unittest/gpr_fwd_load_stall/`（dresp.data_ok 延迟 1 拍模拟 dcache 命中延迟，精确复现 simple 失败值）。
+
+### Bug 6：EX 重定向目标 == 当前取指 pc 时 if_id_flush 杀掉目标 ✅（3467452）
+
+**现象**：simple 的 putc `.WSERIAL` 丢失 `pcaddu12i`（la.global），后续 `ld.w` 以陈旧 r13 计算地址（0xfffffa00）返回 0。
+
+**根因**：0-cycle icache 让"重定向目标指令的 data_ok"与"EX 误预测 flush"同一拍到达。fetch_unit 的 Bug 6 旧修复（`do_ex_flush` 仅在 `pc_current != jump_target` 时生效）抑制了重定向，但 hazard_unit 的 `if_id_flush` 不知道这个抑制——目标指令的 IF/ID 捕获被 flush 杀掉，取指继续顺序前进，目标永久丢失。JAL 因 `ex_jump_flush_hazard = ex_jump_flush && !is_jal` 天然免疫；条件分支/jirl/ibar 全部中招。
+
+**修复**：hazard_unit 的 `if_id_flush` 的 `jump_flush` 项加 `!(pc_current == ex_jump_pc)` 门控（镜像 fetch_unit 逻辑）。
+
+**单元测试**：`unittest/beq_redirect_target/`（beq 目标 == 顺序取指位置）。
+
+### Bug 7：load_use 扣住的分支被自身 bp_do_jump flush 杀掉 + BP 重定向目标捕获被杀 ✅（7ffb793）
+
+**现象**：simple 的 WELCOME 循环后向 `bne`（1c0012cc）从未提交——DUT 提交流比 NEMU 少一条，第二个 `addi` 处 s0 mismatch（0x1c0022f2 vs 0x1c0022f1）。
+
+**根因**（两个机制，同一修复覆盖）：
+1. `bne $r4` 依赖 1-back 的 `ld.b $r4` → `load_use_hazard` 触发 id_ex_flush（杀 bne 的 ID→EX 条目）+ if_id_stall（把 bne 扣在 ID）。同一拍 bne 自己的预测（后向→taken）触发 `bp_do_jump` → if_id_flush——pipeline_reg 中 flush 优先于 stall——把正被扣在 if_id 里的 bne 本身清零。分支蒸发，取指沿（正确的）预测路径继续，循环照跑但 bne 永不提交。
+2. 下一拍 `bp_do_jump` 仍断言而 `pc_current == bp_jump_pc`（取指已在目标），fetch_unit 抑制重定向但 if_id_flush 照杀——目标的捕获被杀死（Bug 6 类问题在 BP 重定向上的翻版）。
+
+**修复**：`if_id_flush` 的 `id_jump_req`/`bp_do_jump` 两项补 `(pc_current != jump_pc)` + `!load_use_hazard` 门控。`id_ex_flush` 与 EX 重定向项不动。
+
+**单元测试**：`unittest/bne_load_use_bpflush/`（load 喂养的后向 bne，修复前 t8: ref=1, dut=2）。
+
+### Bug 8：icache keyword-forward 的 pc 配对错误 ⚠ 部分修复，调试中（a8f6b9a）
+
+**现象**：`make test-fibonacci` 在 #167 失败——0x1c001060 处取到 0x288af1ad（应为 beq 0x580033c0），执行错误指令后 difftest mismatch（t1: ref=0x1c7f0088, dut=0）。
+
+**根因**：0-cycle icache 的 miss 不返回 `addr_ok`，fetch_unit 无法进入 WAIT_DATA 记录"缺失取指的 pc"（`captured_pc`）。refill 的 keyword forward（S_REFILL_WAIT 的 data_ok）与**当前** pc 配对——当 keyword 与 EX 重定向（bne/beq 误预测在 store stall 释放时触发）同拍到达时，keyword 的数据被配到重定向目标的 pc 上，目标指令被静默替换。
+
+**已修部分**（a8f6b9a）：S_IDLE 的 miss 分支补 `cpu_resp.addr_ok = 1`（AXI 式请求应答）→ fetch_unit 进入 WAIT_DATA → `captured_pc` 锁存 miss 的 pc → keyword forward 正确配对（追踪确认：(0x1c001040, keyword) 而非 (0x1c001060, keyword)）。
+
+**未闭合问题**：fibonacci 仍在 #167 失败——形态改变：错误路径指令（beq 的 fall-through，0x1c001040）现在拿到了**正确**的指令（keyword），但**未被重定向的 if_id_flush 杀掉**（IF v1 1c001040 存活并提交）。flush 时序的边角情况待查：需要确认 beq 的 EX 级 `ex_jump_flush` 与 keyword forward 同拍时的 if_id_flush/if_id_stall 交互。调试工具：`verilator_tb.v` 的 `MYCPU_PIPE_DEBUG` 环形缓冲（触发：提交 0x1c001040，含 ID 级/exj/if_id_flush/icache 内部信号），已还原，复现方法见 git diff 历史。
+
+### 测试状态（2026-07-31）
+
+| 测试 | 状态 | 备注 |
+|------|------|------|
+| unittest/ex_mem_flush | ✅ | 3716 条 |
+| unittest/ex_mem_stall_dup | ✅ | 1672 条 |
+| unittest/csr_dmw0_loop | ✅ | 1668 条 |
+| unittest/gpr_fwd_load_stall | ✅ | 1668 条 |
+| unittest/beq_redirect_target | ✅ | 1666 条 |
+| unittest/bne_load_use_bpflush | ✅ | 3747 条 |
+| make test-simple | ✅ | 24383 条，IPC 0.1663（修复前基线 0.1505） |
+| make test-fibonacci | ❌ | #167，Bug 8 未闭合 |
+| make test-stream/matrix/mixed/cryptonight | ⬜ | 未跑（等 fibonacci 闭合后回归） |
