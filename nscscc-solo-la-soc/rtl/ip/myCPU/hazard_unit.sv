@@ -18,6 +18,8 @@ module hazard_unit (
     input  logic        id_jump_req,
     input  logic        bp_do_jump,
     input  logic        wb_jump_req,
+    input  logic        if_id_in_valid,
+    input  logic [31:0] if_id_in_pc,
     input  logic [31:0] pc_current,
     input  logic [31:0] ex_jump_pc,
     input  logic [31:0] id_jump_pc,
@@ -33,9 +35,14 @@ module hazard_unit (
     // If the EX redirect target equals the current fetch pc, the fetch_unit
     // suppresses its own redirect (the target is already being fetched) — the
     // if_id capture in that cycle IS the target, so the flush must not kill
-    // it (mirrors the fetch_unit's pc_current != jump_target gating).
+    // it. The pc_current equality alone is not sufficient: the fetch can
+    // reach the target address while the if_id still holds the branch's
+    // fall-through captured one cycle earlier (e.g. the branch at the last
+    // word of a line whose fall-through is the sequential pc+4 equal to the
+    // target). Only keep the capture when it really is the target.
     logic jump_flush_keep_capture;
-    assign jump_flush_keep_capture = jump_flush && (pc_current == ex_jump_pc);
+    assign jump_flush_keep_capture = jump_flush && (pc_current == ex_jump_pc) &&
+                                     if_id_in_valid && (if_id_in_pc == ex_jump_pc);
 
     always_comb begin
         pc_stall     = pipeline_stall || load_use_hazard || if_not_ready;
