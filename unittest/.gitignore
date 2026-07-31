@@ -1,0 +1,5 @@
+# Unittest build artifacts
+*.o
+*.elf
+*.bin
+obj_dir/
