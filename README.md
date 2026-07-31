@@ -50,8 +50,8 @@
 
 ### Cache 系统
 
-- **icache**：2 路组相联、256 组、16 字节行、8KB、只读、PLRU、关键字优先
-- **dcache**：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先
+- **icache**：2 路组相联、256 组、16 字节行、8KB、只读、PLRU、关键字优先；**0-cycle 命中**（标签 LUTRAM + 数据组合读取，`addr_ok`+`data_ok`+数据同拍响应，fetch 延迟 2 拍 → 0 拍）
+- **dcache**：2 路组相联、256 组、16 字节行、8KB、写回+写分配、PLRU、关键字优先；**0-cycle 命中**（load/store 均旁路 S1/S2 流水线：标签 LUTRAM 组合比较 + 数据组合读取，请求拍内返回数据；miss 仍走 S1/S2 管道）
 - **参数化**：dcache 支持 NR_SETS / NR_WAYS / NR_WORDS 三参数配置，组数/路数/行大小可独立调整。icache 同理（独立参数）。`core_top.sv` 中通过 `DCACHE_SETS`, `ICACHE_SETS` 及其他模组参数统一控制。
 - **CACOP**：支持 `cacop 0x00` (I$ 索引无效)、`cacop 0x01` (D$ 索引无效)、`cacop 0x09` (D$ 索引写回无效)
 - **IBAR**：支持 hint=0 流水线冲刷
@@ -157,6 +157,19 @@
 | Other | 5.4% | 8.4% | 5.4% | 1.4% |
 
 > DCache Hit Pipe 占比从 10-21% 降至 6-16%（存储命中延迟已消除）。DCache Refill 仍为最大瓶颈（34-61%）。下一步优先考虑写缓冲（消除 refill 期间 store 阻塞）或非阻塞 cache（hit-under-miss）。
+
+### 当前性能指标（Verilator difftest, 2026-07-31，0-cycle icache + dcache load 快速路径）
+
+| 测试 | 指令数 | IPC | 说明 |
+|------|--------|-----|------|
+| simple | 24K | 0.1669 | 与旧流水线基线 0.1505 相比 +11% |
+| fibonacci | 97K | 0.1360 | UART 串口读写主导（DCache Hit Pipe 来自串口轮询） |
+| stream | 3.96M | 0.2241 | |
+| matrix | 5.65M | **0.3730** | load 密集（91% 命中），dcache load 快速路径收益最大 |
+| mixed | 331K | 0.2963 | |
+| cryptonight | 23.09M | 0.2478 | load 几乎全为 2MB scratchpad 强制 miss，无命中可提速 |
+
+> 从 2026-07-27 基线（IPC 0.141-0.176）累计提升：Burst refill/writeback → 标签 LUTRAM + store 快速路径 → 0-cycle icache → dcache load 快速路径。各阶段增量与数据见 [DEVLOG.md](DEVLOG.md)。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-07-26）
 
@@ -350,7 +363,9 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 
 开发进度与已知问题见 [DEVLOG.md](DEVLOG.md)。
 
-## 11. 当前分支状态（wip/icache-0cycle，2026-07-31）
+## 11. 分支状态（wip/icache-0cycle → master，2026-07-31）
+
+> **2026-07-31：wip/icache-0cycle 已 fast-forward 合并至 master**（36 个提交：0-cycle icache + 7 个流水线 bug 修复 + dcache load 快速路径 + 7 个单元测试 + 文档）。以下为本分支全部工作的最终状态。
 
 0-cycle icache 命中路径（`req_hit` 组合逻辑直接驱动 `data_ok`，fetch 延迟 2 拍 → 0 拍）将流水线推到 ~1 IPC 满载，陆续暴露了 7 个被低 IPC 掩盖的深层流水线 bug（全部零 IPC 代价修复）：
 

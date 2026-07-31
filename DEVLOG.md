@@ -674,6 +674,8 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 
 ## wip/icache-0cycle 分支修复记录（2026-07-31 续）
 
+> **2026-07-31：本分支已 fast-forward 合并至 master**（含 Bug 8 闭合三处修复、关联 bug 两处修复、dcache load 命中快速路径、7 个单元测试）。CI：submit-20260731-1910 通过（Bug 8 修复）；1950/1953 因 `!|` 语法被 Vivado 2019.2 拒绝而失败（37518fc 修复）；2005 为最新提交（待结果）。
+
 0-cycle icache 将指令间距压缩到 ~1 IPC 后，陆续暴露了流水线深层的结构性问题。本会话共定位并修复 5 个 bug（均零 IPC 代价），simple 测试已通过；fibonacci 仍有 1 个未闭合问题（见 Bug 8）。
 
 ### Bug 4：CSR 写不落在退休点 → difftest 比较口径错位 ✅（f2213a1）
