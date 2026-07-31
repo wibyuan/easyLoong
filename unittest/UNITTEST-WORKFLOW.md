@@ -111,10 +111,21 @@ endmodule
 |------|------|
 | `iresp` | 0-cycle 响应（`addr_ok=1`，`data_ok` 来自 inst_rom） |
 | `dresp` | 始终 ready（无实际访存时可行） |
-| `cacop_done` | 立即完成（非 cache 测试时可简化） |
+| `cacop_done` | 见下方"cacop_done 配置"说明 |
+| `cacop_not_ready` 行为 | 由 `cacop_done` 决定，控制流水线 stall 行为 |
 | `data_ok_en` | reset 释放后延迟 1 拍使能，让 fetch_unit 完成 IDLE→REQ |
 
 **关键设计决策 — `data_ok_en`**：真实 icache 在上电后有 S_INIT 延迟，确保 fetch_unit 进入 REQ 状态后才有 data_ok。纯组合逻辑 ROM 需要在 testbench 端复制此延迟，否则第一条指令 (PCINIT) 会因 fetch_unit 状态未就绪而丢失。
+
+**关键设计决策 — `cacop_done` 的延迟控制**：不同的 bug 需要不同的 cacop 行为：
+
+| 场景 | `cacop_done` 配置 | 适用 bug |
+|------|-------------------|---------|
+| 立即完成 | `assign cacop_done = cacop_req.valid;` | 分支冲刷类（非 stall 相关） |
+| 1 拍延迟 | `always_ff @(posedge clk) cacop_done <= cacop_req.valid;` | EX/MEM stall 重复提交 |
+| 多拍延迟 | 计数器递减 | 多周期 stall 交互 |
+
+**原理**：`cacop_not_ready = cacop_in_ex && !cacop_done` 直接驱动 `pipeline_stall`。如果 cacop_done 立即返回，`cacop_not_ready` 永远为 0，pipeline 永不 stall——无法复现 stall 导致的重复 commit。真实系统中 cacop 与 icache 模块通信有延迟，单元测试需通过 `cacop_done` 延时来模拟此行为。
 
 ---
 
@@ -164,16 +175,53 @@ cd unittest/ex_mem_flush
 [DIFFTEST] initialized with .../la32r-nemu-interpreter-so, image test_prog.bin (60 bytes)
 [difftest] state synced at startup
 [difftest] mismatch at instruction #12
-============== Register Diff ==============
+=============== Register Diff ==============
 ...
 ```
 
 **FAIL** 时 difftest 打印 register diff 并以 exit code 1 退出。  
 **PASS** 时 difftest 正常结束（exit 0）或 timeout。
 
+**注意**：difftest 用**第一条 commit 做 state sync**（不参与比较），第二条起逐指令比较。如果 bug 在指令 #0 就触发（如 CSR 写被 difftest 提前捕获），错误信息显示 "mismatch at instruction #0"。
+
 ---
 
-## 10. 与完整 difftest 的关系
+## 10. 调试技巧：管道级 $display 输出
+
+当 difftest 报错但根因不明显时，在 test_tb.sv 中添加逐周期流水线状态打印非常有效：
+
+```systemverilog
+always_ff @(posedge clk) begin
+    if (!reset && debug_cycle < 40) begin
+        debug_cycle <= debug_cycle + 1;
+        $display("[CYC%0d] pc=%08x next_pc=%08x", debug_cycle, u_core.pc, u_core.next_pc_reg);
+        $display("  IF_ID_IN:  v=%0d pc=%08x", u_core.if_id_in.ctrl.valid, u_core.if_id_in.data.pc);
+        $display("  IF_ID_OUT: v=%0d pc=%08x", u_core.if_id_out.ctrl.valid, u_core.if_id_out.data.pc);
+        $display("  ID_EX_OUT: v=%0d pc=%08x pred_taken=%0d", u_core.id_ex_out.ctrl.valid, u_core.id_ex_out.data.pc, u_core.id_ex_out.ctrl.predict_taken);
+        $display("  EX_MEM_OUT: v=%0d pc=%08x", u_core.ex_mem_out.ctrl.valid, u_core.ex_mem_out.data.pc);
+        $display("  MEM_WB_OUT: v=%0d pc=%08x", u_core.mem_wb_out.ctrl.valid, u_core.mem_wb_out.data.pc);
+        $display("  FLUSH: if_id=%0d id_ex=%0d ex_jump=%0d", u_core.if_id_flush, u_core.id_ex_flush, u_core.ex_jump_flush);
+        $display("  STALL: pc=%0d if_id=%0d id_ex=%0d ex_mem=%0d", u_core.pc_stall, u_core.if_id_stall, u_core.id_ex_stall, u_core.ex_mem_stall);
+        $display("  BRANCH: bp_do_jump=%0d bp_pc=%08x ex_jump_pc=%08x br_taken=%0d", u_core.bp_do_jump, u_core.bp_jump_pc, u_core.ex_jump_pc, u_core.br_taken);
+    end
+end
+```
+
+**关键信号速查**：
+
+| 信号 | 含义 | 排查方向 |
+|------|------|---------|
+| `bp_do_jump` | BTFNT 预测 taken 时重定向 | 检查 `if_id_flush` 是否同时为 1 |
+| `ex_jump_flush` | EX 级分支/跳转冲刷请求 | 检查 NPC mispredict 逻辑 |
+| `if_id_flush` / `id_ex_flush` | 是否真的冲刷了 | 与 `bp_do_jump`/`ex_jump_flush` 对照 |
+| `ex_mem_stall` | EX/MEM 被阻塞 | 检查 `cacop_not_ready` / `lsu_not_ready` |
+| `mem_valid` | 指令是否被 MEM/WB 捕获 | 每个 cycle 为 1 可能表示重复捕获 |
+
+**原理**：Verilator 允许 `$display` 访问模块层级内部信号（如 `u_core.if_id_out`）。在 testbench 中直接引用 `u_core.*` 即可。`always_ff @(posedge clk)` 确保在 difftest DPI-C 之前打印，避免 error abort 截断输出。
+
+---
+
+## 11. 与完整 difftest 的关系
 
 | | 完整 difftest (make test-*) | 单元测试 |
 |---|---|---|
@@ -182,5 +230,6 @@ cd unittest/ex_mem_flush
 | 仿真时间 | 数秒至数分钟 | < 1 秒 |
 | 复现稳定性 | 全系统交互（cache、UART、SRAM） | 仅 core + 最小指令集 |
 | 适用场景 | 回归验证、集成测试 | 快速迭代、根因隔离 |
+| cacop_done | 真实 icache 交互延迟 | 可控（0/1/N 拍），按需配置 |
 
 ---
