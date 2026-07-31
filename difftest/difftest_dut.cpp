@@ -452,10 +452,10 @@ void DifftestEngine::finish() {
             fprintf(stdout, "[difftest] estimated FPGA runtime (50MHz): %.3f s\n",
                     runtime_us / 1e6);
         else if (runtime_us >= 1e3)
-            fprintf(stdout, "[difftest] estimated FPGA runtime (33MHz): %.3f ms\n",
+            fprintf(stdout, "[difftest] estimated FPGA runtime (50MHz): %.3f ms\n",
                     runtime_us / 1e3);
         else
-            fprintf(stdout, "[difftest] estimated FPGA runtime (33MHz): %.2f us\n",
+            fprintf(stdout, "[difftest] estimated FPGA runtime (50MHz): %.2f us\n",
                     runtime_us);
     }
     display_cache_metrics();

@@ -33,6 +33,9 @@
 ├── difftest/                    # ★ Differential test 框架 (DPI-C)
 ├── la32r-nemu/                  # NEMU 参考模型（项目自有代码）
 ├── docs/                        # 参考文档、评测说明
+├── unittest/                    # 流水线 bug 单元测试（core 直连 NEMU difftest）
+├── scripts/                     # CI 提交等辅助脚本（submit-ci.sh）
+├── experiments/                 # cache 参数扫描等实验脚本
 ├── Makefile                     # 根构建/测试入口
 ├── DEVLOG.md                    # 开发进度
 └── README.md
@@ -119,7 +122,7 @@
 
 > 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过。
 
-### 当前性能指标（Verilator difftest 估测 vs 实板, AXI INCR Burst Refill + Writeback 2026-07-27）
+### 性能指标（AXI INCR Burst Refill + Writeback, 2026-07-27）
 
 | 测试 | 指令数 | 周期数 | IPC | IPC(旧) | 提升 |
 |------|--------|--------|-----|---------|------|
@@ -144,19 +147,19 @@
 
 > 将 DCache 标签 RAM 从 BRAM 迁移至分布式 RAM (LUTRAM)，实现组合逻辑标签读取。在 S2 空闲时，存储命中请求在同周期内触发 `addr_ok`+`data_ok` 并直写 BRAM，旁路 S1/S2 流水线。借鉴 rvcpu 的 0 周期标签比较设计思想，但仅将标签（~10.5Kb）放入 LUTRAM，数据 RAM（64Kb）保留 BRAM。IPC 提升 5-9%。
 
-### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-29 标签 LUTRAM，优先级降序）
+### 流水线 Stall 七类拆解（Verilator difftest, 2026-07-31，0-cycle icache + dcache 快速路径，优先级降序）
 
-| 类别 | Mixed | Matrix | Stream | Cryptonight |
-|------|:-----:|:------:|:------:|:-----------:|
-| DCache Refill | **40.0%** | **34.2%** | **50.7%** | **60.9%** |
-| ICache Refill | 0.4% | 0.0% | 0.0% | 0.0% |
-| Load-Use | 0.8% | 0.2% | 5.3% | 0.0% |
-| Branch Flush | 20.1% | 19.4% | 12.0% | 15.8% |
-| DCache Hit Pipe | 9.8% | 15.7% | 10.8% | 6.0% |
-| ICache Hit Pipe | 23.5% | 22.0% | 15.7% | 15.8% |
-| Other | 5.4% | 8.4% | 5.4% | 1.4% |
+| 类别 | Simple | Fibonacci | Stream | Matrix | Mixed | Cryptonight |
+|------|:------:|:---------:|:------:|:------:|:-----:|:-----------:|
+| DCache Refill | 0.5% | 0.0% | **80.4%** | **76.9%** | **70.5%** | **89.4%** |
+| ICache Refill | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| Load-Use | 2.7% | 3.8% | 0.0% | 0.0% | 0.4% | 0.0% |
+| Branch Flush | 2.0% | 0.2% | 0.0% | 0.1% | 0.8% | 1.0% |
+| DCache Hit Pipe | 57.8% | **87.4%** | 9.1% | 5.6% | 14.4% | 6.6% |
+| ICache Hit Pipe | 27.3% | 0.7% | 0.2% | 0.4% | 4.3% | 0.0% |
+| Other | 9.6% | 7.9% | 10.2% | 16.9% | 9.5% | 2.9% |
 
-> DCache Hit Pipe 占比从 10-21% 降至 6-16%（存储命中延迟已消除）。DCache Refill 仍为最大瓶颈（34-61%）。下一步优先考虑写缓冲（消除 refill 期间 store 阻塞）或非阻塞 cache（hit-under-miss）。
+> Simple/Fibonacci 的 DCache Hit Pipe 高占比来自**非缓存 UART 串口轮询**（S_UNCACHED 路径，`in_refill` 不覆盖而计入 Hit Pipe），非 cache 命中停顿。性能型 benchmark（stream/matrix/mixed/cryptonight）中 **DCache Refill 为绝对主瓶颈（70-89%）**；load 密集的 matrix 的 Hit Pipe 已由 load 快速路径大幅消除。残余 Hit Pipe 主要为 `!s2_valid` 门控下 miss 的 S1/S2 窗口内到达的请求（回退 S2 管道）。下一步优先考虑写缓冲（消除 refill 期间 store 阻塞）或非阻塞 cache（hit-under-miss）。
 
 ### 当前性能指标（Verilator difftest, 2026-07-31，0-cycle icache + dcache load 快速路径）
 
@@ -186,16 +189,18 @@
 >
 > **BTFNT ID 级重定向已实现**：预测 taken 时在 ID 阶段通过 `bp_do_jump` 重定向 fetch，npc 在 EX 阶段抑制冗余 flush 并处理 misprediction 恢复。IPC 提升见上方性能表。
 
-### Cache 命中率（Verilator 仿真, 2026-07-27 Burst 后）
+### Cache 命中率（Verilator 仿真, 2026-07-31，0-cycle icache + dcache 快速路径）
 
 | 测试 | ICache 访问 | ICache 命中率 | DCache 访问 | DCache 命中率 | DCache 写回 |
 |------|------------|--------------|------------|--------------|------------|
-| Mixed | 610K | 99.98% | 66K | 70.46% | 62K words |
-| Matrix | 10.85M | 100.00% | 2.66M | 91.26% | 885K words |
-| Stream | 9.09M | 100.00% | 1.57M | 75.00% | 787K words |
-| Cryptonight | 47.81M | 100.00% | 4.72M | 52.95% | 8.88M words |
+| Simple | 34.6K | 98.03% | 415 | 94.46% | 48 words |
+| Fibonacci | 144K | 99.90% | —（uncache 内核，dcache 旁路） | — | — |
+| Stream | 4.75M | 99.99% | 1.77M | 77.78% | 787K words |
+| Matrix | 6.14M | 99.99% | 2.89M | 91.93% | 885K words |
+| Mixed | 383K | 99.82% | 74K | 73.73% | 62K words |
+| Cryptonight | 24.68M | 100.00% | 4.85M | 54.22% | 8.88M words |
 
-> 命中率与 burst 改造前一致（取决于程序访存模式而非微架构），ICache 访问数因总周期缩减而下降。
+> 命中率取决于程序访存模式而非微架构（与早期测量一致，微小差异来自计数器口径：命中含快速路径同拍响应，miss 含 S2 回退误判）。ICache 访问数随总周期缩减而下降（Matrix 10.85M → 6.14M）。fast_path_load_hits（load 快速路径命中数）：Matrix 1.77M、Stream 0.59M、Cryptonight 仅 8.4K（其 load 几乎全为 scratchpad 强制 miss）。
 
 ## 5. 开发环境搭建
 
@@ -270,7 +275,7 @@ FORCE_VERILATOR_REBUILD=1 make test-simple
 | `DifftestCSRState` | CSR 字段 |
 | `DifftestIdlePC` | regcpy 缓冲区对齐 |
 | `DifftestTrapEvent` | 陷阱事件（已定义，待接入） |
-| `DifftestCacheState` | ICache/DCache 性能计数器（hit/miss/access/writeback） |
+| `DifftestCacheState` | ICache/DCache 性能计数器（hit/miss/access/writeback + dcache fast_path_load_hits） |
 | `DifftestBranchState` | 分支预测性能计数器（total_branches/mispredictions） |
 | `DifftestStallState` | 流水线 stall 7 类拆解（DCache/ICache Refill, Load-Use, Branch Flush, Cache Hit Pipe, Other） |
 
@@ -281,7 +286,7 @@ difftest 正常退出时自动输出：
 - **IPC**：`指令数 / 总周期数`
 - **FPGA 运行时估测**：`总周期数 / 50MHz`（cpu_clk 频率）
 - **ICache 指标**：访问数 / hit / miss / 命中率
-- **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数
+- **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数 / fast_path_load_hits（load 快速路径命中数）
 - **分支预测指标**：条件分支数 / 误预测数 / 准确率
 - **流水线 Stall 七类拆解**：按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other，输出各类周期数和占 stall 周期百分比
 
@@ -350,6 +355,14 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 | submit-20260729-1031 | ⏳ 超时 | 0.564 (Place) | 0 | 2026-07-29 |
 | submit-20260729-1630 | ⏳ 超时 | 5.388 (Synth) | 0 | 2026-07-29 |
 | submit-20260729-1747 | ⏳ CI 中 | 7.728 (Synth) | 0 | 2026-07-29 |
+| submit-20260731-1910 | ✅ 通过 | — | 0 | 2026-07-31 |
+| submit-20260731-1950 | ❌ 综合失败（Vivado 2019.2 不接受 `!|` 语法） | — | — | 2026-07-31 |
+| submit-20260731-1953 | ❌ 同上 | — | — | 2026-07-31 |
+| submit-20260731-2005 | ⏳ CI 中（`37518fc` 修复后） | — | 0 | 2026-07-31 |
+
+> **submit-20260731-1910**：含 Bug 8 闭合三处修复 + 关联 bug 两处修复（fetch_unit WAIT_DATA 放弃 / icache keyword 地址门控 / keep_capture 收紧 / ID 重复下发门控）。综合、实现、时序全通过。
+>
+> **submit-20260731-1950/1953**：含 dcache load 快速路径。`!|cpu_req.strobe` 为合法 SystemVerilog（Verilator 接受），但 Vivado 2019.2 解析器报 `syntax error near |`，综合在 elaboration 阶段失败。`37518fc` 改为括号形式 `!(|cpu_req.strobe)` 修复。
 
 > **submit-20260729-1747**：含 mul.w 16 位部分积分解 + CSR 读打拍 + EX mux 拆分。Synthesis WNS 5.388→7.728ns（+43%），DSP48E1 级联从关键路径消除，新最差路径转移至 dcache just_hit → pc_reg。IPC 不变。详见 DEVLOG。
 

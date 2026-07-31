@@ -48,11 +48,11 @@
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
-- [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试
+- [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试（最近一次已知结果：2026-07-27 提交 Cryptonight 50 分，CDC 疑因）
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
-- [ ] dcache 写缓冲（write buffer）实现：store 命中后异步写 BRAM，消除 MEM 级寄存器延迟空泡
+- [ ] dcache 写缓冲（write buffer）：store 命中已 0-cycle（2026-07-29 快速路径），剩余目标为消除 **refill 期间 store 阻塞**（占 stall 的 70-89% 主瓶颈）
 
-## 当前 difftest 状态（2026-07-26，icache workaround + dcache workaround 修复后）
+## difftest 状态（2026-07-26，icache workaround + dcache workaround 修复后）
 
 | 测试 | DIFF=1 difftest | 数据比对 | 指令数 |
 |------|-----------------|----------|--------|
@@ -482,6 +482,8 @@ librdi_synth.so(UParam::Base::reportTcl(...)+0x31d)
 
 ## 2026-07-29: 加载命中延迟分析与写缓冲区设计探讨
 
+> ⚠ **本节结论已被 2026-07-31 的 dcache load 快速路径推翻**：数据 RAM 声明组合读取端口（综合为分布式 RAM，读延迟 0）即可让 `dresp.data` 在请求拍就绪，`mem_wb_in` 同拍捕获正确数据——**无需重构核心数据路径**（rvcpu 式 WB 级组合读取旁路）。实现与数据见「2026-07-31：DCache Load 命中快速路径」。本节保留作历史分析。
+
 ### 加载命中延迟消除（借鉴 rvcpu，架构评估后搁置）
 
 **目标**：借鉴 rvcpu 的加载命中 0 停顿设计，消除剩余的 DCache Hit Pipe（6-16%）。
@@ -620,7 +622,7 @@ FSM (`mul_in_progress`)：
 > **关键**：DSP48E1 级联（~5.4ns，占原路径 37%）被三个并行 16 位部分积 + 寄存器完全消除。新最差路径转移至 dcache LUTRAM 组合逻辑标签命中检测（MUXF8×2、CARRY4×9）→ NPC，但 WNS 7.73ns 提供充足 Implementation 收敛余量。
 
 
-**CI**：`submit-20260729-1630` 已推送，待结果。
+**CI**：`submit-20260729-1630` 已推送（结果：综合 WNS 5.388ns，超时未完成实现）；`submit-20260729-1747` 随后推送（综合 WNS 7.728ns，见 README CI 提交记录）。
 
 ## 已知问题（wip/icache-0cycle 分支，2026-07-31）
 
