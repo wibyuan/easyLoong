@@ -632,7 +632,9 @@ module core import la32_common::*; #(
         .jump_flush(ex_jump_flush_hazard),
         .id_jump_req(id_jump_req),
         .bp_do_jump(bp_do_jump),
-        .wb_jump_req(1'b0)
+        .wb_jump_req(1'b0),
+        .pc_current(pc),
+        .ex_jump_pc(ex_jump_pc)
     );
 
     // ==================== DEBUG OUTPUT ====================
