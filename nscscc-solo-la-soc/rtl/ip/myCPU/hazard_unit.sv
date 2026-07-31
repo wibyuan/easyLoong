@@ -19,7 +19,9 @@ module hazard_unit (
     input  logic        bp_do_jump,
     input  logic        wb_jump_req,
     input  logic [31:0] pc_current,
-    input  logic [31:0] ex_jump_pc
+    input  logic [31:0] ex_jump_pc,
+    input  logic [31:0] id_jump_pc,
+    input  logic [31:0] bp_jump_pc
 );
 
     assign load_use_hazard = id_ex_mem_re &&
@@ -44,9 +46,18 @@ module hazard_unit (
         id_ex_flush  = wb_jump_req || ( !(lsu_not_ready || cacop_not_ready || ex_not_ready) &&
                        (jump_flush || load_use_hazard || (if_not_ready && !id_jump_req && !bp_do_jump)) );
 
+        // id_jump/bp redirects flush the wrong-path if_id capture, but must
+        // not kill the branch instruction itself: when the load_use hazard
+        // holds the branch in ID (its ID->EX entry was already flushed), the
+        // if_id register still contains the branch — flushing it destroys the
+        // instruction while the fetch continues down the predicted path.
+        // Also mirror the fetch_unit's pc_current != jump_target redirect
+        // suppression: when the fetch is already at the target, the if_id
+        // capture in flight IS the target and must survive.
         if_id_flush  = wb_jump_req || ( !(lsu_not_ready || cacop_not_ready || ex_not_ready) &&
                        ((jump_flush && !jump_flush_keep_capture) ||
-                        (id_jump_req && !id_ex_stall) || (bp_do_jump && !id_ex_stall)) );
+                        (id_jump_req && (pc_current != id_jump_pc) && !id_ex_stall && !load_use_hazard) ||
+                        (bp_do_jump && (pc_current != bp_jump_pc) && !id_ex_stall && !load_use_hazard)) );
     end
 
 endmodule
