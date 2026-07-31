@@ -247,22 +247,32 @@ module core import la32_common::*; #(
     logic id_valid;
     assign id_valid = if_id_out.ctrl.valid;
 
-    assign id_ex_in.ctrl.valid      = id_valid;
-    assign id_ex_in.ctrl.rf_we      = dec_rf_we & id_valid;
-    assign id_ex_in.ctrl.mem_re     = dec_mem_re & id_valid;
-    assign id_ex_in.ctrl.mem_we     = dec_mem_we & id_valid;
-    assign id_ex_in.ctrl.is_branch  = dec_is_branch & id_valid;
-    assign id_ex_in.ctrl.is_cond_branch = (dec_is_branch & id_valid) && (dec_br_type != BR_NONE);
-    assign id_ex_in.ctrl.predict_taken  = id_predict_taken & id_valid;
-    assign id_ex_in.ctrl.is_jal     = dec_is_jal & id_valid;
-    assign id_ex_in.ctrl.is_jalr    = dec_is_jalr & id_valid;
-    assign id_ex_in.ctrl.is_pcadd   = dec_is_pcadd & id_valid;
-    assign id_ex_in.ctrl.is_cpucfg  = dec_is_cpucfg & id_valid;
-    assign id_ex_in.ctrl.is_csrrd   = dec_is_csrrd & id_valid;
-    assign id_ex_in.ctrl.is_csrwr   = dec_is_csrwr & id_valid;
-    assign id_ex_in.ctrl.is_csrxchg = dec_is_csrxchg & id_valid;
-    assign id_ex_in.ctrl.is_cacop   = dec_is_cacop & id_valid;
-    assign id_ex_in.ctrl.is_ibar    = dec_is_ibar  & id_valid;
+    // The ID stage must not re-issue the instruction held in IF/ID while
+    // the IF stage is stalled: with if_id_stall=1 the register holds its
+    // content (a branch predicted taken, an instruction behind a stalled
+    // fetch, ...) and the ID would decode the SAME instruction again after
+    // id_ex_stall released — the instruction executes twice (observed:
+    // duplicate commit of the WELCOME loop's bne after a dcache refill
+    // stall). Only issue to EX when the IF stage actually advances — i.e.
+    // when it is not stalled, or when it is being flushed (a redirect
+    // discards the IF/ID copy; the JAL/branch must still be issued so it
+    // is not lost entirely).
+    assign id_ex_in.ctrl.valid      = id_valid && !(if_id_stall && !if_id_flush);
+    assign id_ex_in.ctrl.rf_we      = dec_rf_we & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.mem_re     = dec_mem_re & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.mem_we     = dec_mem_we & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_branch  = dec_is_branch & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_cond_branch = (dec_is_branch & id_ex_in.ctrl.valid) && (dec_br_type != BR_NONE);
+    assign id_ex_in.ctrl.predict_taken  = id_predict_taken & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_jal     = dec_is_jal & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_jalr    = dec_is_jalr & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_pcadd   = dec_is_pcadd & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_cpucfg  = dec_is_cpucfg & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_csrrd   = dec_is_csrrd & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_csrwr   = dec_is_csrwr & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_csrxchg = dec_is_csrxchg & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_cacop   = dec_is_cacop & id_ex_in.ctrl.valid;
+    assign id_ex_in.ctrl.is_ibar    = dec_is_ibar  & id_ex_in.ctrl.valid;
 
     assign id_ex_in.data.fw_a_ex_hit  = (dec_rs1 != 5'd0) && (dec_rs1 == id_ex_out.data.rd);
     assign id_ex_in.data.fw_a_mem_hit = (dec_rs1 != 5'd0) && (dec_rs1 == ex_mem_out.data.rd);
@@ -633,6 +643,8 @@ module core import la32_common::*; #(
         .id_jump_req(id_jump_req),
         .bp_do_jump(bp_do_jump),
         .wb_jump_req(1'b0),
+        .if_id_in_valid(if_id_in.ctrl.valid),
+        .if_id_in_pc(if_id_in.data.pc),
         .pc_current(pc),
         .ex_jump_pc(ex_jump_pc),
         .id_jump_pc(id_jump_pc),
