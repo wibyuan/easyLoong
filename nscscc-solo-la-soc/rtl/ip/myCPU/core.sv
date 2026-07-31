@@ -65,7 +65,6 @@ module core import la32_common::*; #(
         logic [31:0] imm;
         logic [31:0] target_pc;
         logic [31:0] pc_plus_4;
-        logic [31:0] rd1, rd2;
         logic        fw_a_ex_hit, fw_a_mem_hit, fw_b_ex_hit, fw_b_mem_hit;
         alu_op_t     alu_op;
         br_type_t    br_type;
@@ -235,11 +234,11 @@ module core import la32_common::*; #(
         .bp_correct_pc()
     );
 
-    logic [31:0] dec_rd1, dec_rd2;
     logic [31:0] gpr_state [31:0];
     regfile rf_unit (
         .clk,
-        .ra1(dec_rs1), .ra2(dec_rs2), .rd1(dec_rd1), .rd2(dec_rd2),
+        .ra1(id_ex_out.data.rs1), .ra2(id_ex_out.data.rs2),
+        .rd1(rf_rd1), .rd2(rf_rd2),
         .wa(mem_wb_out.data.rd), .wd(mem_wb_out.data.final_res),
         .wen(mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid),
         .gpr_dbg(gpr_state)
@@ -278,8 +277,6 @@ module core import la32_common::*; #(
     assign id_ex_in.data.imm        = dec_imm;
     assign id_ex_in.data.target_pc  = if_id_out.data.pc + dec_imm;
     assign id_ex_in.data.pc_plus_4  = if_id_out.data.pc + 32'd4;
-    assign id_ex_in.data.rd1        = dec_rd1;
-    assign id_ex_in.data.rd2        = dec_rd2;
     assign id_ex_in.data.alu_op     = dec_alu_op;
     assign id_ex_in.data.br_type    = dec_br_type;
     assign id_ex_in.data.alu_src_sel = dec_alu_src_sel;
@@ -296,6 +293,11 @@ module core import la32_common::*; #(
     );
 
     // ==================== EXECUTE ====================
+    // Operands are read combinationally from the regfile at EX (with the
+    // WB write-bypass), not latched at ID: a pipeline stall can hold the
+    // EX stage for many cycles (e.g. dcache miss refill), during which a
+    // producer may retire; only a live regfile read stays consistent.
+    logic [31:0] rf_rd1, rf_rd2;
     logic [31:0] forward_a, forward_b, alu_result;
     logic fw_a_em, fw_a_mw, fw_b_em, fw_b_mw;
     assign fw_a_em = id_ex_out.data.fw_a_ex_hit  && ex_mem_out.ctrl.rf_we && ex_mem_out.ctrl.valid && !ex_mem_out.ctrl.mem_re;
@@ -306,11 +308,11 @@ module core import la32_common::*; #(
     always_comb begin
         if (fw_a_em)      forward_a = ex_mem_out.data.alu_res;
         else if (fw_a_mw) forward_a = mem_wb_out.data.final_res;
-        else              forward_a = id_ex_out.data.rd1;
+        else              forward_a = rf_rd1;
 
         if (fw_b_em)      forward_b = ex_mem_out.data.alu_res;
         else if (fw_b_mw) forward_b = mem_wb_out.data.final_res;
-        else              forward_b = id_ex_out.data.rd2;
+        else              forward_b = rf_rd2;
     end
 
     alu alu_unit (
