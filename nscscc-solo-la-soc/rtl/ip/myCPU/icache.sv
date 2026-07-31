@@ -140,24 +140,6 @@ module icache import la32_common::*; (
     // ==================== Init registers ====================
     index_t init_addr;
 
-    // ==================== Debug ====================
-    logic [31:0] dbg_cyc;
-    always_ff @(posedge clk) begin
-        if (reset) dbg_cyc <= 32'd0;
-        else dbg_cyc <= dbg_cyc + 32'd1;
-    end
-
-    logic [31:0] dbg_dataok_addr;
-    logic [31:0] dbg_dataok_data;
-    always_ff @(posedge clk) begin
-        if (cpu_resp.data_ok) begin
-            dbg_dataok_addr <= cpu_req.addr;
-            dbg_dataok_data <= cpu_resp.data;
-            $display("[ICACHE %0d] data_ok: addr=%08x data=%08x state=%0d rf_cnt=%0d",
-                dbg_cyc, cpu_req.addr, cpu_resp.data, state, rf_cnt);
-        end
-    end
-
     // ==================== FSM combinational ====================
     always_comb begin
         next_state = state;
@@ -315,10 +297,6 @@ module icache import la32_common::*; (
                     rf_kw_sent <= 1'b1;
                 rf_cnt <= (rf_cnt == 2'd3) ? 2'd0 : (rf_cnt + 1);
             end
-
-            if (state == S_REFILL_REQ && !mem_req_r.valid)
-                $display("[ICACHE %0d] refill req send: addr=%08x m_tag=%08x m_idx=%0d rf_cnt=%0d",
-                    dbg_cyc, {m_tag, m_idx, rf_cnt, 2'b00}, m_tag, m_idx, rf_cnt);
 
             if (state == S_REFILL_WRITE) begin
                 rf_cnt <= rf_cnt + 1;
