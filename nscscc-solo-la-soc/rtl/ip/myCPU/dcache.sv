@@ -17,6 +17,7 @@ module dcache import la32_common::*; (
     output logic [63:0] perf_hit,
     output logic [63:0] perf_miss,
     output logic [63:0] perf_writeback,
+    output logic [63:0] perf_fast_load,
 
     output logic        in_refill
 );
@@ -40,6 +41,11 @@ module dcache import la32_common::*; (
     logic        data_rd_ena;
     index_t      data_rd_addr;
     logic [31:0] data_rd_out [0:NR_WAYS-1][0:NR_WORDS-1];
+    // Combinational read port (0-cycle hit path, mirrors the icache): the
+    // load-hit fast path delivers data the same cycle the request is seen.
+    // The registered port (data_rd_out) stays for the S2/miss/writeback and
+    // cacop paths. Both read the same array (distributed RAM, 2 read ports).
+    logic [31:0] data_rd_comb [0:NR_WAYS-1][0:NR_WORDS-1];
     logic        data_wr_ena;
     way_t        data_wr_way;
     index_t      data_wr_addr;
@@ -64,6 +70,8 @@ module dcache import la32_common::*; (
                     if (data_rd_ena)
                         data_rd_out[gw][gb] <= mem[data_rd_addr];
                 end
+
+                assign data_rd_comb[gw][gb] = mem[req_idx];
             end
         end
     endgenerate
@@ -272,10 +280,14 @@ module dcache import la32_common::*; (
         cpu_resp.data     = 32'd0;
         cpu_resp.data_last = 1'b0;
 
-        if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+        // Store AND load hits are served in the request cycle (0-cycle, the
+        // store fast path + the load-hit fast path bypass the S1/S2 pipe).
+        if (state == S_IDLE && !s2_valid && cpu_req.valid
             && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
             cpu_resp.addr_ok = 1'b1;
             cpu_resp.data_ok = 1'b1;
+            if (!|cpu_req.strobe)
+                cpu_resp.data = data_rd_comb[req_hit_way][req_wo];
         end
 
         if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
@@ -341,14 +353,16 @@ module dcache import la32_common::*; (
                         next_state = S_CACOP_ST;
                     else if (cacop_req.code[4:3] == 2'b01)
                         next_state = S_CACOP_WB_READ;
-                end else if (!s2_valid && cpu_req.valid && |cpu_req.strobe
+                end else if (!s2_valid && cpu_req.valid
                            && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
-                    data_wr_ena  = 1'b1;
-                    data_wr_way  = req_hit_way;
-                    data_wr_addr = req_idx;
-                    data_wr_wo   = req_wo;
-                    data_wr_we   = cpu_req.strobe;
-                    data_wr_data = cpu_req.data;
+                    if (|cpu_req.strobe) begin
+                        data_wr_ena  = 1'b1;
+                        data_wr_way  = req_hit_way;
+                        data_wr_addr = req_idx;
+                        data_wr_wo   = req_wo;
+                        data_wr_we   = cpu_req.strobe;
+                        data_wr_data = cpu_req.data;
+                    end
                 end else if (s2_valid) begin
                     if (!is_cachable(s2_addr, s2_cacheable)) begin
                         mem_req_next.valid  = 1'b1;
@@ -502,7 +516,7 @@ module dcache import la32_common::*; (
             end
 
             if (!s1_stall) begin
-                if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+                if (state == S_IDLE && !s2_valid && cpu_req.valid
                     && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
                     s1_valid <= 1'b0;
                 end else begin
@@ -540,7 +554,7 @@ module dcache import la32_common::*; (
                 s1_valid <= 1'b0;
             end
 
-            if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+            if (state == S_IDLE && !s2_valid && cpu_req.valid
                 && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
                 just_hit <= 1'b1;
                 last_hit_addr <= cpu_req.addr;
@@ -550,7 +564,7 @@ module dcache import la32_common::*; (
                     last_hit_addr <= s2_addr;
             end
 
-            if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+            if (state == S_IDLE && !s2_valid && cpu_req.valid
                 && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
                 if (NR_WAYS == 2) begin
                     plru[0][req_idx] <= ~req_hit_way;
@@ -561,7 +575,8 @@ module dcache import la32_common::*; (
                         node = 2*node + 1 + int'(req_hit_way[b]);
                     end
                 end
-                dirty[req_hit_way][req_idx] <= 1'b1;
+                if (|cpu_req.strobe)
+                    dirty[req_hit_way][req_idx] <= 1'b1;
             end
 
             if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
@@ -671,10 +686,12 @@ module dcache import la32_common::*; (
     assign mem_req = mem_req_r;
 
     logic [63:0] access_cnt, hit_cnt, miss_cnt, wb_cnt64;
+    logic [63:0] fast_load_cnt;
     assign perf_access    = access_cnt;
     assign perf_hit       = hit_cnt;
     assign perf_miss      = miss_cnt;
     assign perf_writeback = wb_cnt64;
+    assign perf_fast_load = fast_load_cnt;
 
     always_ff @(posedge clk) begin
         if (reset) begin
@@ -682,6 +699,7 @@ module dcache import la32_common::*; (
             hit_cnt    <= 64'd0;
             miss_cnt   <= 64'd0;
             wb_cnt64   <= 64'd0;
+            fast_load_cnt <= 64'd0;
         end else begin
             if (state == S_IDLE && s2_valid && is_cachable(s2_addr, s2_cacheable)) begin
                 access_cnt <= access_cnt + 64'd1;
@@ -690,10 +708,12 @@ module dcache import la32_common::*; (
                 else
                     miss_cnt <= miss_cnt + 64'd1;
             end
-            if (state == S_IDLE && !s2_valid && cpu_req.valid && |cpu_req.strobe
+            if (state == S_IDLE && !s2_valid && cpu_req.valid
                 && is_cachable(cpu_req.addr, cpu_req.cacheable) && req_hit) begin
                 access_cnt <= access_cnt + 64'd1;
                 hit_cnt <= hit_cnt + 64'd1;
+                if (!|cpu_req.strobe)
+                    fast_load_cnt <= fast_load_cnt + 64'd1;
             end
             if (state == S_WB_WRITE && mem_resp.addr_ok)
                 wb_cnt64 <= wb_cnt64 + 64'd1;

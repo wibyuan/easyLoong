@@ -373,6 +373,7 @@ static void display_cache_metrics() {
         double dh_rate = (double)(cs->dcache_hit) / (double)(cs->dcache_access) * 100.0;
         fprintf(stdout, "[difftest] DCache: access=%lu, hit=%lu, miss=%lu, hit_rate=%.2f%%\n",
                 cs->dcache_access, cs->dcache_hit, cs->dcache_miss, dh_rate);
+        fprintf(stdout, "[difftest] DCache: fast_path_load_hits=%lu\n", cs->dcache_fast_load);
     } else {
         fprintf(stdout, "[difftest] DCache: no accesses recorded\n");
     }

@@ -369,8 +369,10 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 | 测试 | 状态 |
 |------|------|
 | 7 个单元测试（含新增 icache_redirect_stale） | ✅ 全部通过 |
-| `make test-simple` | ✅ 24383 条，IPC 0.1663（与修复前基线一致） |
+| `make test-simple` | ✅ 24447 条，IPC 0.1669（修复前基线 0.1663） |
 | `make test-fibonacci` | ✅ 96857 条，数据比对 PASS，IPC 0.1360 |
-| `make test-stream/matrix/mixed/cryptonight` | ✅ 全通过，数据比对 PASS，IPC 0.2101/0.3024/0.2894/0.2478 |
+| `make test-stream/matrix/mixed/cryptonight` | ✅ 全通过，数据比对 PASS，IPC 0.2241/0.3730/0.2963/0.2478 |
+
+> **2026-07-31 追加：DCache load 命中快速路径（0-cycle，镜像 icache）**——数据 RAM 组合读取端口 + fast-path cpu_resp 的 load 分支，load 命中同拍返回数据（store 快速路径 2026-07-29 已就位）。matrix IPC 0.3024→0.3730（+23.3%，load 密集），stream +6.7%，mixed +2.4%，simple +0.4%；cryptonight 不变（其 load 几乎全为 scratchpad 强制 miss，无命中可提速）。详见 DEVLOG。
 
 详细根因分析与修复记录见 [DEVLOG.md](DEVLOG.md) 的「wip/icache-0cycle 分支修复记录（2026-07-31 续）」。

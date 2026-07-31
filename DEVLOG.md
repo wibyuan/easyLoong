@@ -756,3 +756,32 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 | make test-cryptonight | ✅ | 2309 万条，2 MiB 数据比对 PASS，IPC 0.2478 |
 
 > 性能基准（stream/matrix/mixed/cryptonight）为 0-cycle icache 分支首次全量回归，IPC 较 2026-07-29 的旧流水线提升 40%-62%（matrix +62%、mixed +56%、cryptonight +44%、stream +40%）属 0-cycle icache 预期效果（simple 与旧值一致）。
+
+## 2026-07-31：DCache Load 命中快速路径（0-cycle，镜像 icache）
+
+**目标**：消除 dcache load 命中的 S1/S2 流水线停顿（stall_dcache_hit_pipe 中 load 部分，旧占比 6-16%）。
+
+**分析**：icache 的 0-cycle 命中 = 标签 LUTRAM 组合读取 + 数据组合读取 + `data_ok` 同拍响应。dcache 的标签 LUTRAM 组合读取与 store 命中快速路径（2026-07-29）已就位，只差数据组合读取端口与 load 分支——2026-07-29 曾判定"load 命中因 BRAM 数据延迟无法消除"，但 icache-0cycle 的工作证明：数据 RAM 声明为组合读取后综合为分布式 RAM（LUTRAM），读延迟为 0，无需 rvcpu 式的 WB 级旁路重构。
+
+**实现**（dcache.sv，与 store 快速路径完全对称）：
+
+1. **数据组合读取端口**：`assign data_rd_comb[gw][gb] = mem[req_idx]`（分布式 RAM 双读端口：组合读供快速路径，注册读 data_rd_out 保留给 S2/miss/writeback/cacop 路径）。
+2. **fast-path cpu_resp 增加 load 分支**：`S_IDLE && !s2_valid && cpu_req.valid && is_cachable && req_hit` 时对 load 同拍返回 `addr_ok + data_ok + data`（store 分支不变，条件从 `|cpu_req.strobe` 放宽到所有 cacheable 命中）。
+3. **S1 捕获抑制 / just_hit / PLRU / 性能计数器** 同步放宽到 load 命中（PLRU 更新；dirty 仅在 store 时置位）。
+4. **新性能指标** `fast_path_load_hits`（difftest 结尾输出）——load 快速路径命中数。
+
+**load 数据正确性**：`dresp.data`（组合读）→ LSU 字节提取（组合）→ `mem_wb_in.final_res`，全部在同一周期内稳定，`mem_valid` 在请求拍置位，WB 捕获即正确数据——无需改动 core/LSU。
+
+**结果**（Verilator difftest，全 6 测试 + 7 单元测试 PASS）：
+
+| 测试 | 旧 IPC | 新 IPC | ΔIPC | 说明 |
+|------|--------|--------|------|------|
+| simple | 0.1663 | 0.1669 | +0.4% | |
+| stream | 0.2101 | 0.2241 | +6.7% | |
+| matrix | 0.3024 | 0.3730 | **+23.3%** | load 密集（91% 命中），Hit Pipe 占 stall 从 15.7%→5.6% |
+| mixed | 0.2894 | 0.2963 | +2.4% | |
+| cryptonight | 0.2478 | 0.2478 | 0% | load 几乎全为 2MB scratchpad 强制 miss（load 2.23M vs miss 2.22M，fast_path_load_hits 仅 8.4K），无命中可提速 |
+
+> cryptonight 的 load 命中路径无收益属预期（其 load 为随机 scratchpad 访问，容量 miss 主导；命中主要来自栈 store，2026-07-29 已走快速路径）。残余 hit-pipe（matrix 3.5% 周期）来自 `!s2_valid` 门控下 miss 的 S1/S2 窗口内到达的请求（回退 S2 管道，正确但 2 拍）——与 icache 类似地整体拆除 S1/S2（组合 miss 检测）可进一步消除，留待后续。
+
+**资源影响**：dcache 数据 64Kb 由 BRAM 迁移至分布式 RAM（~1024 LUT），组合读路径（LUTRAM 读 + tag 比较 + data_ok + LSU 字节提取）进入 50MHz 关键路径，需 CI 时序确认。
