@@ -183,6 +183,13 @@ module icache import la32_common::*; (
                     cpu_resp.data_ok = 1'b1;
                     cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
                 end else if (cpu_req.valid && !ghost) begin
+                    // Acknowledge the miss so the fetch_unit enters WAIT_DATA
+                    // and latches the missing fetch's pc (captured_pc). The
+                    // refill keyword forward is then paired with that pc —
+                    // without the ack, the forward pairs with whatever
+                    // pc_current is at the keyword's arrival, which can be a
+                    // redirect target, corrupting the fetched instruction.
+                    cpu_resp.addr_ok = 1'b1;
                     next_state = S_MISS;
                 end
             end
