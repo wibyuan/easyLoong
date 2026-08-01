@@ -917,3 +917,18 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 1. **cacop 特权检查不一致**：NEMU 在 PLV=3（用户态）执行非 0x10 的 cacop 报 IPE 异常（`special.h`），DUT（`core.sv` cacop 通路）无特权检查。内核只在特权态用 cacop，暂未暴露；若用户程序执行 cacop 会 difftest 分叉。修复需在 DUT decode/EX 增加 PLV 检查。
 2. **difftest store queue overflow 静默降级**：出现 `difftest store queue overflow, difftest store commit disabled` 时 store 提交校验被禁用（baseline 日志可见），该段无覆盖。NEMU 侧 store 队列应加大或至少显式告警。
 3. **difftest 不比内存**：cacop/flush/写回类错误（如本次 1/2/3）difftest 全绿、只有 ExtRAM compare 能抓。任何 cache 一致性改动必须跑 compare_ext 类测试。
+
+## 2026-08-01（深夜）: 并发写回/refill 重叠上板验证通过 —— 全测试优于串行版
+
+上板实测（8B 行默认 + 并发写回，2026-08-01）：
+
+| 测试 | 8B 无并发 | 8B+并发写回 | 16B 无并发 | difftest 预估 | 偏差 |
+|------|:---:|:---:|:---:|:---:|:---:|
+| cryptonight | 1883ms | **1600ms** | 2446ms | 1580ms | **+1.3%** |
+| matrix | 444ms | **391ms** | 374ms | 384ms | -1.8% |
+| stream | 473ms | **442ms** | 395ms | 436ms | -1.4% |
+| mixed | 25ms | **23ms** | 25ms | 24.2ms | +5.0% |
+
+- 相对 16B 无并发：cryptonight **-35%**、stream +12%（16B 行对 stream 更优但并发缩小差距）、matrix +4.5%、mixed -8%。
+- **difftest 估时与上板偏差 ≤5%**（并发前 +5~14%）：写回移出 load 关键路径后，EXTRA_LATENCY=7 校准模型的"关键字等待"假设更贴近实际。
+- 与 2026-07-31 的 `4c7f524` 失败（上板 50 分）对比：根因是并发写回期间写回完成（bvalid）被误认作 refill 读数据（`data_ok` 读写合并的竞态窗口），1:1 Verilator 踩不到、2:1 上板触发。`rdata_ok`（读通道专属数据有效）分离后根治。
