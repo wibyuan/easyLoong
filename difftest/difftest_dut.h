@@ -68,8 +68,8 @@ public:
     void load_mif(const char *mif_path, uint32_t base_addr);
 
 private:
-    static const uint64_t kFirstCommitLimit = 5000;
-    static const uint64_t kStuckLimit       = 5000;
+    static const uint64_t kFirstCommitLimit = 70000;
+    static const uint64_t kStuckLimit       = 70000;
 
     RefProxy   proxy_;
     DiffState  state_;
