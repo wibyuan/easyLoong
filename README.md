@@ -125,16 +125,16 @@
 
 ### 当前性能指标（Verilator difftest, 2026-08-01，**4B 行默认配置**）
 
-| 测试 | 指令数 | 周期数 | IPC | 估计耗时（50MHz） |
-|------|--------|--------|-----|-------------------|
-| simple | 24K | 146,405 | 0.1669 | 2.9 ms |
-| fibonacci | 97K | 712,173 | 0.1360 | 14.2 ms |
-| stream | 3.96M | 27.67M | 0.1430 | 553 ms |
-| matrix | 5.65M | 23.54M | 0.2399 | 471 ms |
-| mixed | 332K | 1.34M | 0.2483 | 26.7 ms |
-| cryptonight | 23.09M | 68.79M | **0.3357** | **1376 ms** |
+| 测试 | 指令数 | 周期数 | IPC (difftest) | 估计耗时（50MHz） | 上板实测 | 真实 IPC（上板） |
+|------|--------|--------|----------------|-------------------|:---:|:---:|
+| simple | 24,431 | 146,405 | 0.1669 | 2.9 ms | — | — |
+| fibonacci | 96,857 | 712,173 | 0.1360 | 14.2 ms | — | — |
+| stream | 3,956,595 | 27.67M | 0.1430 | 553 ms | **756 ms** | **0.1047** |
+| matrix | 5,647,061 | 23.54M | 0.2399 | 471 ms | **578 ms** | **0.1954** |
+| mixed | 331,623 | 1.34M | 0.2483 | 26.7 ms | **33 ms** | **0.2010** |
+| cryptonight | 23,093,115 | 68.79M | **0.3357** | **1376 ms** | **1699 ms** | **0.2718** |
 
-> 2026-08-01 行宽实测后默认改为 **4B 行**（原 16B 行：cryptonight 121.9M 周期 / IPC 0.1894 / 估时 2438ms）。4B 行对 cryptonight 是净优化（随机访问，refill 只取需要的 1 word，周期 -44%）；matrix/stream 因空间局部性以 16B 行为优（matrix 0.3104→0.2399、stream 0.2293→0.1430），这是明确权衡——cryptonight 为核心指标。非阻塞 dcache（store-miss 解耦 + hit-under-miss）与行宽优化叠加的完整路径见 [DEVLOG.md](DEVLOG.md)（2026-07-31「非阻塞 DCache」、2026-08-01「DCache 行宽/相联度实测」）。历史阶段增量（Burst refill → 标签 LUTRAM → 0-cycle icache → load 快速路径）数据均保留在 [DEVLOG.md](DEVLOG.md)。
+> 真实 IPC = 指令数 ÷ (上板耗时 × 50MHz)。上板耗时按 EXTRA_LATENCY=16 未重新标定的 difftest 估计偏差 +23~37%（4B 行事务数大增），故真实 IPC 系统性低于 difftest IPC；16B 行时期上板偏差 ≤2.7%，difftest IPC 可直接对照。simple/fibonacci 无上板数据。2026-08-01 行宽实测后默认改为 **4B 行**（原 16B 行：cryptonight 121.9M 周期 / IPC 0.1894 / 估时 2438ms / 上板 2446ms / 真实 IPC 0.1889）。4B 行对 cryptonight 是净优化（随机访问，refill 只取需要的 1 word）；matrix/stream 因空间局部性以 16B 行为优（matrix 0.3104→0.2399、stream 0.2293→0.1430），这是明确权衡——cryptonight 为核心指标。非阻塞 dcache（store-miss 解耦 + hit-under-miss）与行宽优化叠加的完整路径见 [DEVLOG.md](DEVLOG.md)（2026-07-31「非阻塞 DCache」、2026-08-01「DCache 行宽/相联度实测」）。历史阶段增量（Burst refill → 标签 LUTRAM → 0-cycle icache → load 快速路径）数据均保留在 [DEVLOG.md](DEVLOG.md)。
 
 ### 流水线 Stall 拆解（Verilator difftest, 2026-08-01，4B 行默认，占总周期 %）
 
