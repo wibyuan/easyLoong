@@ -28,6 +28,9 @@ module dcache import la32_common::*; (
     parameter int NR_WORDS = 4;
     localparam WORD_WIDTH  = $clog2(NR_WORDS);
     localparam LINE_OFFSET = WORD_WIDTH + 2;
+    // (1 << (LINE_OFFSET-2)) - 1: word-offset mask.  Zero for a 1-word
+    // line so the offset expression never slices a backward range.
+    localparam WOFF_MASK   = (LINE_OFFSET > 2) ? ((1 << (LINE_OFFSET - 2)) - 1) : 0;
     localparam INDEX_WIDTH = $clog2(NR_SETS);
     localparam TAG_WIDTH   = 32 - LINE_OFFSET - INDEX_WIDTH;
     localparam WAY_BITS    = $clog2(NR_WAYS);
@@ -181,6 +184,19 @@ module dcache import la32_common::*; (
     logic [CNT_WIDTH-1:0] cacop_wb_cnt;
     word_t                cacop_wb_buf [0:NR_WORDS-1];
 
+    // Writeback target address of the cacop 0x09 flow, per-word for
+    // multi-word lines, base address for the 1-word line.  Generated so
+    // the empty-slice form (WORD_WIDTH=0) is never elaborated.
+    wire [31:0] cacop_wb_addr;
+    generate
+        if (WORD_WIDTH > 0) begin : g_cacop_wb_addr
+            assign cacop_wb_addr = {cacop_etag, cacop_idx,
+                                    cacop_wb_cnt[WORD_WIDTH-1:0], 2'b00};
+        end else begin : g_cacop_wb_addr_1w
+            assign cacop_wb_addr = {cacop_etag, cacop_idx, 2'b00};
+        end
+    endgenerate
+
     // ==================== Init registers ====================
     index_t init_addr;
     way_t   init_wr_way;
@@ -204,9 +220,16 @@ module dcache import la32_common::*; (
     wire woffset_t req_wo;
     assign req_idx = cpu_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
     assign req_tag = cpu_req.addr[31:INDEX_WIDTH+LINE_OFFSET];
-    // NR_WORDS==1 makes the word-offset field empty (addr[1:2] would be an
-    // ascending slice); guard it so a 1-word line always selects word 0.
-    assign req_wo  = (NR_WORDS == 1) ? '0 : cpu_req.addr[LINE_OFFSET-1:2];
+    // With a 1-word line the word-offset field is empty (addr[1:2] is a
+    // backward range that some verilator versions reject); generate both
+    // forms so only the active one is elaborated.
+    generate
+        if (NR_WORDS > 1) begin : g_req_wo
+            assign req_wo = cpu_req.addr[LINE_OFFSET-1:2];
+        end else begin : g_req_wo_1word
+            assign req_wo = '0;
+        end
+    endgenerate
 
     logic [TAG_WIDTH:0] req_tag_data [0:NR_WAYS-1];
     always_comb begin
@@ -576,16 +599,13 @@ module dcache import la32_common::*; (
 
             S_CACOP_WB_WRITE: begin
                 mem_req_next.valid  = 1'b1;
-                // With a 1-word line WORD_WIDTH is 0 and the empty slice
-                // cacop_wb_cnt[WORD_WIDTH-1:0] (= [-1:0]) is treated by
-                // the compiler as a 2-bit slice, making the concat 34 bits
-                // wide and dropping the top two tag bits of the writeback
-                // address.  Guard the slice so a 1-word line emits
-                // {etag, idx, 2'b00} exactly.
-                mem_req_next.addr   = (WORD_WIDTH > 0) ?
-                    {cacop_etag, cacop_idx,
-                     cacop_wb_cnt[WORD_WIDTH-1:0], 2'b00} :
-                    {cacop_etag, cacop_idx, 2'b00};
+                // cacop_wb_addr is built in a generate (below): with a
+                // 1-word line WORD_WIDTH is 0 and the empty slice
+                // cacop_wb_cnt[WORD_WIDTH-1:0] (= [-1:0]) is rejected by
+                // some verilator versions and/or widened to 2 bits (the
+                // concat then drops the top two tag bits of the writeback
+                // address), so the 1-word form must not be elaborated.
+                mem_req_next.addr   = cacop_wb_addr;
                 mem_req_next.strobe = 4'b1111;
                 mem_req_next.data   = cacop_wb_buf[cacop_wb_cnt];
                 if (mem_resp.addr_ok)
@@ -662,7 +682,11 @@ module dcache import la32_common::*; (
                 s1_size  <= cpu_req.size;
                 s1_wdata <= cpu_req.data;
                 s1_wstrb <= cpu_req.strobe;
-                s1_wo    <= (NR_WORDS == 1) ? '0 : cpu_req.addr[LINE_OFFSET-1:2];
+                // Word offset as (addr >> 2) & mask: the slice form
+                // addr[LINE_OFFSET-1:2] is a backward range when the line
+                // is 1 word wide (rejected by some verilator versions);
+                // the mask is 0 in that case, selecting word 0.
+                s1_wo    <= woffset_t'((cpu_req.addr >> 2) & WOFF_MASK);
                 s1_idx   <= cpu_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
                 s1_tag   <= cpu_req.addr[31:INDEX_WIDTH+LINE_OFFSET];
                 s1_cacheable <= cpu_req.cacheable;
