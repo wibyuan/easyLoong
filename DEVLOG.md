@@ -2,6 +2,7 @@
 
 ## 已验证
 
+- [x] 上板实测通过（2026-08-01）：`30e9c97`（非阻塞 dcache，当前 master）FPGA 实机全部测试通过；`2c4f3298`（写回/refill 重叠）上板全部 50 分已回退，排查记录见「写回/refill 重叠上板失败排查」
 - [x] 非阻塞 DCache（hit-under-miss，单 MSHR）（2026-07-31）：store miss 当拍接受 + refill 合并、refill 期间同拍服务其他行命中、读回写合并进 refill 写、load miss 当拍 addr_ok；修复 arbiter R_ARB 突发截断缺陷。stream IPC +25.1%、mixed +11.2%、cryptonight +7.9%、matrix +3.3%，全 6 测试 difftest + 数据比对 + 7 单元测试通过。详见下方「非阻塞 DCache（hit-under-miss，单 MSHR）」章节
 - [x] ICache 0-cycle 命中路径实现（2026-07-30，wip/icache-0cycle）：ICache 标签 LUTRAM + 数据 BRAM 组合读取 + 去除 S1/S2 流水线。`req_hit` 组
 合逻辑直接驱动 `data_ok`，fetch 延迟从 2 拍降至 0 拍。Ghost hit 仅用于 miss 检测（防止 redirect 当拍捕获错误地址），不再抑制 `data_ok`。fetch_unit 修复：所有状态下 `ireq.addr` 保持 `pc_current`（断开旧实现中 `data_ok→addr=0` 的组合环路）。功能验证到 instruction #35（difftest 因 pipeline EX/MEM flush 缺失导致的重复 commit 而失败，此为独立问题，非 icache 引入）。
@@ -49,9 +50,9 @@
 ## 待完成
 
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
-- [ ] FPGA 上板实测：bitstream 烧录后实机运行各阶段测试（最近一次已知结果：2026-07-27 提交 Cryptonight 50 分，CDC 疑因）
+- [x] FPGA 上板实测（2026-08-01）：`30e9c97`（非阻塞 dcache）实机全部测试通过；写回/refill 重叠（`2c4f3298`）全部 50 分已回退（见「写回/refill 重叠上板失败排查」）
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
-- [x] dcache 写缓冲/非阻塞化（2026-07-31）：store miss 当拍接受 + refill 合并、读回写合并进 refill 写、hit-under-miss 同拍服务其他行命中——refill 期间 store 不再阻塞（原占 stall 70-89% 的主瓶颈，见「非阻塞 DCache」章节）。残余阻塞：refill 期间到达的二次 miss（单 MSHR 上限）、顺序 load miss 延迟、写回→refill 串行
+- [x] dcache 写缓冲/非阻塞化（2026-07-31）：store miss 当拍接受 + refill 合并、读回写合并进 refill 写、hit-under-miss 同拍服务其他行命中——refill 期间 store 不再阻塞（原占 stall 70-89% 的主瓶颈，见「非阻塞 DCache」章节）。残余阻塞：refill 期间到达的二次 miss（单 MSHR 上限）、顺序 load miss 延迟、写回→refill 串行（写回/refill 重叠已实现但上板失败回退，见「写回/refill 重叠上板失败排查」）
 
 ## difftest 状态（2026-07-26，icache workaround + dcache workaround 修复后）
 
@@ -819,3 +820,24 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 2. **MSHR 多路 outstanding**（load-under-miss × N）：顺序流水线 + 单 LSU 下，后续 load 无法越过在飞的 load miss 发起新请求；需要 LSU 重排序缓冲 + 乱序完成，侵入流水线核心，未做。
 3. **refill 行 store 合并的 word 已写情形**（S_REFILL_WRITE 中 `rf_wr_cnt > req_wo` 的 store）：需第三个合并槽或写缓冲，窗口仅 1-4 拍，未做。
 4. **icache 非阻塞**：取指为单流顺序，miss 即阻塞取指单元本身，无并行请求可服务（ICache Refill 占 stall 0.0%），无意义。
+
+---
+
+## 2026-08-01: 写回/refill 重叠上板失败排查（已回退）
+
+### 现象
+
+`4c7f524`（写回/refill 重叠，IPC +12~26%）的 CI 提交 `2c4f3298` 上板**全部测试稳定 50 分**：程序能完整跑完（UART 输出正常、boot 消息可见），但数据比对失败——cryptonight 首个 mismatch 在 `0x1c400000`（ExtRAM 首字节）：`actual=0x00, expected=0x51`。上一版本 `30e9c97`（非阻塞 dcache，串行写回）同一平台全部通过。**差异仅 dcache.sv 的写回/refill 重叠（+37/-25 行）**。
+
+### 排查过程
+
+1. **cbor 上板日志分析**（平台事件流）：ExtRAM 读回 2MB 内容与 crypto.bin 仅 0.46% 字节匹配（≈随机），211 个 4B 字匹配均匀分散、无连续块——排除地址偏移；`actual[0]=0x00` 恰为 fill 初值（`pad[0]=0`）——指向算法阶段（load→refill→store 读回写 + 脏写回）写入丢失/未生效，而非顺序写路径。cryptonight 初始化是全量的（`st.w pad[i]=i` 覆盖 2MB），排除"上板 ExtRAM 初始随机"假设。
+2. **CDC 约束缺陷发现（已修复但非根因）**：本地复现 CI 流水线（docker + 解析后的 src/soc 树 + CI 版 flow tcl）发现 CI `soc.xdc` 的 `get_pins -hierarchical *CLKOUT0/1` 在网表中**匹配不到任何引脚**（clk_wiz 端口编号 ≠ plle2 引脚编号，工具推导时钟为 `cpu_clk_clk_pll`(50MHz) 挂 **CLKOUT0**、`sys_clk_clk_pll`(25MHz) 挂 **CLKOUT1**）——原版 `set_clock_groups` 一直是空操作，cpu_clk↔sys_clk CDC 路径（Axi_CDC 五通道 FIFO 指针同步器）被当同步路径分析（本地确认 199 条被分析路径，最差穿过 `u_Axi_CDC/rFifo` BRAM）。显式引脚版修复后本地 Inter-Clock 表跨时钟路径 199→0 条，CI 构建（`d08c8a90`）**上板仍 50 分**——**CDC 约束缺陷被证伪，不是根因**。
+3. **2:1 谐波复现尝试**（wip 分支 `CDC_ASYNC_SIM`）：Verilator 默认 `cpu_clk==sys_clk` 同源同频，跨时钟行为完全掩盖。临时改造仿真：tb 时钟 50MHz 当 cpu_clk、`sys_clk=clk/2`（25MHz，UART 不变），difftest 步进改到 CPU 时钟沿。simple 通过；cryptonight 在该配置下未跑完（挂起，待查）——复现工作未闭合。
+
+### 结论
+
+- 写回/refill 重叠在 FPGA 上系统性失败（全测试、稳定复现），Verilator（同源同频）无法暴露
+- CDC 时序约束缺陷是真实存在的历史问题（原版 `set_clock_groups` 从未生效），修复后上板仍失败——非根因
+- 根因未定位（跨时钟 FIFO 功能性问题 / SRAM 物理时序 / 其他），相关代码与调试状态保存在 `wip/wb-overlap-xdc` 分支
+- **已回退**：master 回到 `48c0dfd`（非阻塞 dcache，上板通过）
