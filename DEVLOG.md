@@ -3,6 +3,7 @@
 ## 已验证
 
 - [x] 上板实测通过（2026-08-01）：`30e9c97`（非阻塞 dcache，当前 master）FPGA 实机全部测试通过；`2c4f3298`（写回/refill 重叠）上板全部 50 分已回退，排查记录见「写回/refill 重叠上板失败排查」
+- [x] SRAM 固定时延校准（2026-08-01）：`axi2sram_sp_external.v` `ifdef VERILATOR` 每笔事务首拍 +16 周期，4 基准 difftest 估计 vs 上板偏差 -0.4%/-2.7%/-12.6%/-0.3%；**cryptonight 定为后续核心优化指标**（详见文末「SRAM 固定时延校准」章节）
 - [x] 非阻塞 DCache（hit-under-miss，单 MSHR）（2026-07-31）：store miss 当拍接受 + refill 合并、refill 期间同拍服务其他行命中、读回写合并进 refill 写、load miss 当拍 addr_ok；修复 arbiter R_ARB 突发截断缺陷。stream IPC +25.1%、mixed +11.2%、cryptonight +7.9%、matrix +3.3%，全 6 测试 difftest + 数据比对 + 7 单元测试通过。详见下方「非阻塞 DCache（hit-under-miss，单 MSHR）」章节
 - [x] ICache 0-cycle 命中路径实现（2026-07-30，wip/icache-0cycle）：ICache 标签 LUTRAM + 数据 BRAM 组合读取 + 去除 S1/S2 流水线。`req_hit` 组
 合逻辑直接驱动 `data_ok`，fetch 延迟从 2 拍降至 0 拍。Ghost hit 仅用于 miss 检测（防止 redirect 当拍捕获错误地址），不再抑制 `data_ok`。fetch_unit 修复：所有状态下 `ireq.addr` 保持 `pc_current`（断开旧实现中 `data_ok→addr=0` 的组合环路）。功能验证到 instruction #35（difftest 因 pipeline EX/MEM flush 缺失导致的重复 commit 而失败，此为独立问题，非 icache 引入）。
@@ -841,3 +842,39 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 - CDC 时序约束缺陷是真实存在的历史问题（原版 `set_clock_groups` 从未生效），修复后上板仍失败——非根因
 - 根因未定位（跨时钟 FIFO 功能性问题 / SRAM 物理时序 / 其他），相关代码与调试状态保存在 `wip/wb-overlap-xdc` 分支
 - **已回退**：master 回到 `48c0dfd`（非阻塞 dcache，上板通过）
+
+---
+
+## 2026-08-01: SRAM 固定时延校准（difftest ↔ 上板 50MHz）+ cryptonight 核心指标
+
+### 背景
+
+上板实测与 Verilator difftest 折算（`ticks_/50MHz`）不符，difftest 系统性偏快。根因：板上 PLL 输出 cpu_clk=50MHz / **sys_clk=25MHz**（2:1，`src/soc/xilinx_ip/clk_pll/clk_pll.xci`），AXI CDC / crossbar / SRAM / UART 全挂 25MHz sys_clk，每笔 SRAM 访问在 CPU 时钟域折合更多周期；而 Verilator（`soc_top.v` SIMULATION 分支）`cpu_clk=sys_clk=clk` 1:1，SRAM 模型（`sim/sram.v`）组合读零时延，未建模该固定时延。
+
+### 实现（`rtl/ip/Bus_interconnects/axi2sram_sp_external.v`，仅 `ifdef VERILATOR`）
+
+- 每笔 SRAM 事务**首拍**（读关键字 / 写首字）前插入固定 `EXTRA_LATENCY=16` 周期等待；综合/上板分支恒为 0，板载 RTL 不变。
+- **只加首拍的原因**（两轮实测迭代得出）：per-beat 加时延几乎全被吸收（L=2/beat 时 mixed 仅 +76K 周期，预期 +285K）——非阻塞 dcache（hit-under-miss）下 refill 后续拍与流水线执行重叠；实测加入量 ≈ **load-miss 关键字数 × 16**，只有关键字等待 1:1 落在关键路径上。
+- 验证（4 测试全部 difftest PASS + 数据比对 PASS）：
+
+| 基准 | difftest 估计 | 上板实测 | 偏差 |
+|------|:---:|:---:|:---:|
+| **cryptonight** | **2438ms** | 2446ms | **-0.3%** |
+| mixed | 24.9ms | 25ms | -0.4% |
+| matrix | 363.8ms | 374ms | -2.7% |
+| stream | 345.1ms | 395ms | -12.6% |
+
+- stream 偏差来源：写回占比最高（787K words / 写回 196.8K 事务），写路径时延在板上同样翻倍但仿真侧被 hit-under-miss 吸收更多，单一常量无法同时拟合（如需可给写路径加权重）。
+
+### cryptonight 校准后指标（difftest，核心优化指标）
+
+| 指标 | 数值 |
+|------|------|
+| 指令 / 周期 / IPC | 23.09M / 121.9M / **0.1894** |
+| 估计耗时（50MHz） | **2438ms**（上板 2446ms，-0.3%） |
+| ICache | 24.68M 访问，**100.00% 命中**（仅 692 miss），s1_accept/cycle=0.9997 |
+| DCache | 4.72M 访问，52.95% 命中，2.22M miss，写回 8.88M words，hit-under-miss 339,785 |
+| 分支预测 | 1,578,423 分支，仅 821 误预测，**99.95% 准确率** |
+| Stall 构成 | **DCache Refill 占 79.2% 总周期**（97.7% 的 stall 周期），其余均 <1.5% |
+
+> 瓶颈定位：DCache Refill 为绝对主瓶颈——2MiB scratchpad 随机 load miss（容量 miss 主导），顺序流水线必须等待关键字返回，无法隐藏（2026-07-31 结论在真实时延下占比更显著：79.2% vs 无校准的 70.6%）。ICache 0-cycle 命中与 BTFNT 在 cryptonight 上近乎完美（100% / 99.95%），无可优化空间。后续优化以 cryptonight 周期数/估时（上板偏差 -0.3%）为对照基准；stream 因校准偏差 -12.6% 不宜作精确对比。

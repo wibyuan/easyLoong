@@ -101,9 +101,24 @@ module axi2sram_sp_external #(
     localparam              FIXED       = 2'b00;
     localparam              INCR        = 2'b01;
     localparam              WRAP        = 2'b10;
+
+`ifdef VERILATOR
+    // sim-only calibration: emulate the on-board fixed SRAM access latency.
+    // On the FPGA sys_clk=25MHz (cpu_clk=50MHz, 2:1), so each SRAM transaction
+    // costs extra cpu cycles vs the 1:1 Verilator clock model. Applied to the
+    // first beat only (keyword / first write): later beats overlap pipeline
+    // execution (hit-under-miss) and only the first beat is on the critical path.
+    // Fitted to on-board runtimes (EXTRA_LATENCY=16):
+    //   cryptonight 2438ms vs 2446ms, mixed 24.9ms vs 25ms, matrix 363.8ms vs 374ms,
+    //   stream 345.1ms vs 395ms (write-heavy, absorbed by hit-under-miss)
+    localparam              EXTRA_LATENCY = 8'd16;
+`else
+    localparam              EXTRA_LATENCY = 8'd0;
+`endif
     
     reg [AXI_ADDR_WIDTH-1:0] req_addr_d, req_addr_q;
     reg [7:0]                cnt_d, cnt_q;
+    reg [7:0]                lat_d, lat_q;
 
     function automatic [AXI_ADDR_WIDTH-1:0] get_wrap_boundary;
         input [AXI_ADDR_WIDTH-1:0] unaligned_address;
@@ -146,6 +161,7 @@ module axi2sram_sp_external #(
         ax_req_d_burst  = ax_req_q_burst;
         req_addr_d      = req_addr_q;
         cnt_d           = cnt_q;
+        lat_d           = lat_q;
         // Memory default assignments
         data_o = s_wdata;
         be_o   = s_wstrb;
@@ -233,6 +249,11 @@ module axi2sram_sp_external #(
                 // keep request to memory high
                 req_o  = 1'b1;
                 addr_o = req_addr_q;
+                if ((lat_q < EXTRA_LATENCY) && (cnt_q == 8'd1)) begin
+                    // fixed SRAM access latency, first beat only (sim-only)
+                    lat_d   = lat_q + 1'b1;
+                    s_rvalid = 1'b0;
+                end else begin
                 // send the response
                 s_rvalid = 1'b1;
                 s_rdata  = data_i;
@@ -248,6 +269,7 @@ module axi2sram_sp_external #(
                     else begin
                         state_d = READ_ADDR;
                     end
+                end
                 end
             end
 
@@ -286,7 +308,13 @@ module axi2sram_sp_external #(
             //ext SRAM need nop between continuous write operations
             WRITE_NOP: begin
                 s_wready = 1'b0;
-                state_d  = WRITE;
+                if ((lat_q < EXTRA_LATENCY) && (cnt_q == 8'd1)) begin
+                    // fixed SRAM write latency, first word only (sim-only)
+                    lat_d   = lat_q + 1'b1;
+                end else begin
+                    lat_d   = 8'd0;
+                    state_d = WRITE;
+                end
             end
 
             // ~> we already wrote the first word here
@@ -352,6 +380,7 @@ module axi2sram_sp_external #(
             ax_req_q_size   <= 3'h0;
             req_addr_q      <= 'h0;
             cnt_q           <= 8'h0;
+            lat_q           <= 8'd0;
         end else begin
             state_q         <= state_d;
             ax_req_q_addr   <= ax_req_d_addr;
@@ -361,6 +390,7 @@ module axi2sram_sp_external #(
             ax_req_q_size   <= ax_req_d_size;
             req_addr_q      <= req_addr_d;
             cnt_q           <= cnt_d;
+            lat_q           <= lat_d;
         end
     end
 

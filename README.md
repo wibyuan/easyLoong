@@ -205,6 +205,32 @@
 
 > 命中率取决于程序访存模式而非微架构（与早期测量一致）。hit-under-miss = refill 期间同拍服务的命中数（含读回写合并）：stream 的顺序写/读大量与 refill 重叠；cryptonight 的 `scratchpad[x]=…` 读回写全部走读回写合并路径（fast_path_load_hits 仅 8.4K——其 load 几乎全为 scratchpad 强制 miss）。
 
+### 上板耗时校准（Verilator 固定 SRAM 时延, 2026-08-01）
+
+上板实测与 difftest 折算不符（difftest 偏快）：板上 sys_clk=25MHz（cpu_clk=50MHz，2:1），SRAM 访问在 CPU 时钟域折合更多周期，而 Verilator 同源同频 1:1 未建模。在 `axi2sram_sp_external.v` 的 `ifdef VERILATOR` 分支给**每笔 SRAM 事务首拍**（读关键字/写首字）插入固定 `EXTRA_LATENCY=16` 周期时延（上板 RTL 不变），校准后 difftest 估计 vs 上板：
+
+| 基准 | difftest 估计 | 上板实测 | 偏差 |
+|------|:---:|:---:|:---:|
+| **cryptonight** | **2438ms** | 2446ms | **-0.3%** |
+| mixed | 24.9ms | 25ms | -0.4% |
+| matrix | 363.8ms | 374ms | -2.7% |
+| stream | 345.1ms | 395ms | -12.6% |
+
+> 只加首拍的原因：实测加入量 ≈ load-miss 关键字数 × 16——非阻塞 dcache（hit-under-miss）下 refill 后续拍与流水线执行重叠被吸收，仅关键字等待在关键路径上。stream 偏差最大因其写回占比最高（787K words）。**cryptonight 定为后续核心优化指标**（估时与上板偏差 -0.3%，可直接用 difftest 周期数对照优化）。
+
+### cryptonight 校准后指标（difftest, 2026-08-01，核心优化指标）
+
+| 指标 | 数值 |
+|------|------|
+| 指令 / 周期 / IPC | 23.09M / 121.9M / **0.1894** |
+| 估计耗时（50MHz） | **2438ms**（上板 2446ms，-0.3%） |
+| ICache | 24.68M 访问，**100.00% 命中**（仅 692 miss），s1_accept/cycle=0.9997 |
+| DCache | 4.72M 访问，52.95% 命中，2.22M miss，写回 8.88M words，hit-under-miss 339,785 |
+| 分支预测 | 1,578,423 分支，仅 821 误预测，**99.95% 准确率** |
+| Stall 构成 | **DCache Refill 占 79.2% 总周期**（97.7% 的 stall 周期），其余 <1.5% |
+
+> 瓶颈定位：DCache Refill 为绝对主瓶颈——2MiB scratchpad 随机 load miss（容量 miss 主导），顺序流水线必须等待关键字返回，无法隐藏（与 2026-07-31 结论一致，校准后占比更显著）。ICache 0-cycle 命中与 BTFNT 在 cryptonight 上近乎完美（100% 命中 / 99.95% 分支准确率），无可优化空间。
+
 ## 5. 开发环境搭建
 
 ### Clone
