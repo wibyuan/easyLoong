@@ -878,6 +878,8 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 | Stall 构成 | **DCache Refill 占 62.4% 总周期**（94.0% 的 stall 周期），其余 <5.8% |
 
 > 2026-08-01 行宽实测后默认改为 4B 行：随机访问 2MiB scratchpad 的 refill 只取需要的 1 word，周期 121.9M→68.8M（-44%）。DCache Refill 仍是主瓶颈，进一步优化方向是 refill 时延本身（多 MSHR、关键字加速）。16B 行旧指标（IPC 0.1894 / 估时 2438ms，上板偏差 -0.3%）作为校准基准保留；stream 因校准偏差 -12.6% 不宜作精确对比。全配置实测数据见文末「DCache 行宽/相联度实测」章节。
+>
+> **4B 行上板实测（2026-08-01）**：cryptonight **1699ms**（16B 行 2446ms，**-31%**）、matrix 578ms、stream 756ms、mixed 33ms。EXTRA_LATENCY=16 按 16B 行标定，4B 行下 difftest 估计系统性偏快（cryptonight +23.5%、matrix +22.7%、stream +36.7%、mixed +23.6%）——4B 行 refill 为每 miss 单笔事务（事务数大增），首拍时延常量需按 4B 行重新标定才能精确对照。
 
 ## 2026-08-01: DCache 行宽/相联度实测 —— cryptonight 最优 cacheline = 4B
 

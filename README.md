@@ -180,7 +180,7 @@
 
 ### 上板耗时校准（Verilator 固定 SRAM 时延）
 
-上板实测与 difftest 折算不符（difftest 偏快）：板上 sys_clk=25MHz（cpu_clk=50MHz，2:1），SRAM 访问在 CPU 时钟域折合更多周期，而 Verilator 同源同频 1:1 未建模。在 `axi2sram_sp_external.v` 的 `ifdef VERILATOR` 分支给**每笔 SRAM 事务首拍**（读关键字/写首字）插入固定 `EXTRA_LATENCY=16` 周期时延（上板 RTL 不变），校准后 difftest 估计 vs 上板（16B 行时期实测）：
+上板实测与 difftest 折算不符（difftest 偏快）：板上 sys_clk=25MHz（cpu_clk=50MHz，2:1），SRAM 访问在 CPU 时钟域折合更多周期，而 Verilator 同源同频 1:1 未建模。在 `axi2sram_sp_external.v` 的 `ifdef VERILATOR` 分支给**每笔 SRAM 事务首拍**（读关键字/写首字）插入固定 `EXTRA_LATENCY=16` 周期时延（上板 RTL 不变）。16B 行时期标定（difftest 估计 vs 上板实测）：
 
 | 基准 | difftest 估计（16B 行） | 上板实测 | 偏差 |
 |------|:---:|:---:|:---:|
@@ -189,7 +189,16 @@
 | matrix | 363.8ms | 374ms | -2.7% |
 | stream | 345.1ms | 395ms | -12.6% |
 
-> 只加首拍的原因：实测加入量 ≈ load-miss 关键字数 × 16——非阻塞 dcache（hit-under-miss）下 refill 后续拍与流水线执行重叠被吸收，仅关键字等待在关键路径上。stream 偏差最大因其写回占比最高。**cryptonight 定为核心优化指标**（估时与上板偏差 -0.3%，difftest 周期数可直接对照）。4B 行默认配置的 difftest 估时：cryptonight 1376ms、matrix 471ms、stream 553ms、mixed 26.7ms（尚未上板复测）。
+**4B 行默认配置**（EXTRA_LATENCY=16 未重新标定，difftest 估计 vs 上板实测，2026-08-01）：
+
+| 基准 | difftest 估计（4B 行） | 上板实测 | 偏差 |
+|------|:---:|:---:|:---:|
+| **cryptonight** | **1376ms** | 1699ms | **+23.5%** |
+| matrix | 471ms | 578ms | +22.7% |
+| stream | 553ms | 756ms | +36.7% |
+| mixed | 26.7ms | 33ms | +23.6% |
+
+> 只加首拍的原因：实测加入量 ≈ load-miss 关键字数 × 16——非阻塞 dcache 下 refill 后续拍与流水线执行重叠被吸收，仅关键字等待在关键路径上。16B 行下标定偏差 ≤2.7%（stream 例外，写回占比高）；**4B 行下 refill 变为每 miss 单笔事务（事务数大增），EXTRA_LATENCY=16 按 16B 行标定，偏差重新放大到 +23~37%（系统性偏快）**——如需精确对照上板，应按 4B 行的 miss 事务数重新标定该常量。cryptonight 仍为核心优化指标：上板 1699ms（16B 行 2446ms，-31%）。
 
 ### cryptonight 校准后指标（difftest, 2026-08-01，核心优化指标，**4B 行默认配置**）
 
