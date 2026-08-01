@@ -1089,17 +1089,17 @@ int main(int argc, char** argv) {
             if (trace_data_addr_en) {
                 uint32_t trace_line = trace_data_phys & ~0xfU;
                 uint32_t trace_word = trace_data_phys & ~0x3U;
-                uint32_t trace_tag = trace_data_phys >> 12;
-                uint32_t trace_index = (trace_data_phys >> 4) & 0xffU;
-                uint32_t trace_offset_word = trace_data_phys & 0xcU;
-                uint32_t req_phys = (static_cast<uint32_t>(top.data_tag) << 12) |
-                                    (static_cast<uint32_t>(top.data_index) << 4) |
-                                    static_cast<uint32_t>(top.data_offset);
+                // Geometry-independent address match: the cryptonight
+                // scratchpad lives in the DMW direct-mapped window, so the
+                // exposed vaddr equals the physical address.
+                uint32_t trace_index_w = (trace_data_phys >> 2) & 0xffU;
                 if (top.data_valid && top.data_op && top.data_addr_ok &&
-                    ((req_phys & ~0x3U) == trace_word)) {
+                    ((static_cast<uint32_t>(top.data_vaddr) & ~0x3U) == trace_word)) {
                     std::cout << "[DSTORE_ACCEPT] t=" << main_time
-                              << " phys=0x" << std::hex << req_phys
                               << " vaddr=0x" << top.data_vaddr
+                              << " st=0x" << static_cast<unsigned>(top.dcache_main_state)
+                              << " hit=" << static_cast<unsigned>(top.dcache_cache_hit)
+                              << " way=0x" << static_cast<unsigned>(top.dcache_way_hit)
                               << " wstrb=0x" << static_cast<unsigned>(top.data_wstrb)
                               << " wdata=0x" << top.data_wdata
                               << " wb_pc=0x" << top.debug_wb_pc
@@ -1107,8 +1107,7 @@ int main(int argc, char** argv) {
                 }
                 if (trace_target_lookup_pending) {
                     if (top.dcache_write_full &&
-                        static_cast<uint32_t>(top.dcache_write_index) == trace_index &&
-                        (static_cast<uint32_t>(top.dcache_write_offset) & 0xcU) == trace_offset_word) {
+                        static_cast<uint32_t>(top.dcache_write_index) == trace_index_w) {
                         std::cout << "[DSTORE_COMMIT] t=" << main_time
                                   << " index=0x" << std::hex << static_cast<unsigned>(top.dcache_write_index)
                                   << " off=0x" << static_cast<unsigned>(top.dcache_write_offset)
@@ -1119,10 +1118,8 @@ int main(int argc, char** argv) {
                     }
                     trace_target_lookup_pending = false;
                 }
-                if ((top.dcache_main_state & 0x02U) && top.dcache_req_op &&
-                    static_cast<uint32_t>(top.data_tag) == trace_tag &&
-                    static_cast<uint32_t>(top.dcache_req_index) == trace_index &&
-                    (static_cast<uint32_t>(top.dcache_req_offset) & 0xcU) == trace_offset_word) {
+                if (top.dcache_req_op &&
+                    ((static_cast<uint32_t>(top.data_vaddr) & ~0x3U) == trace_word)) {
                     std::cout << "[DLOOKUP_TARGET] t=" << main_time
                               << " tag_in=0x" << std::hex << top.data_tag
                               << " index=0x" << static_cast<unsigned>(top.dcache_req_index)
@@ -1134,31 +1131,19 @@ int main(int argc, char** argv) {
                               << std::dec << "\n";
                     trace_target_lookup_pending = true;
                 }
-                if ((top.dcache_main_state & 0x02U) && top.dcache_req_dcacop &&
-                    static_cast<uint32_t>(top.dcache_req_index) == trace_index) {
-                    std::cout << "[DCACOP_TARGET_SET] t=" << main_time
-                              << " mode=" << std::dec << static_cast<unsigned>(top.dcache_req_cacop_mode)
-                              << " off=0x" << std::hex << static_cast<unsigned>(top.dcache_req_offset)
-                              << " tag_in=0x" << top.data_tag
-                              << " way_d=0x" << static_cast<unsigned>(top.dcache_way_d)
-                              << " repl_way=0x" << static_cast<unsigned>(top.dcache_replace_way)
-                              << " repl_d=" << std::dec << static_cast<unsigned>(top.dcache_replace_d)
-                              << " repl_v=" << static_cast<unsigned>(top.dcache_replace_v)
-                              << " repl_tag=0x" << std::hex << top.dcache_replace_tag
-                              << " pc=0x" << top.debug_wb_pc
+                if (top.dcache_req_dcacop) {
+                    std::cout << "[DCACOP] t=" << main_time
+                              << " target=0x" << std::hex << static_cast<uint32_t>(top.dcache_cacop_addr)
+                              << " mode=0x" << static_cast<unsigned>(top.dcache_req_cacop_mode)
+                              << " st=0x" << static_cast<unsigned>(top.dcache_main_state)
                               << std::dec << "\n";
                 }
-                if (top.data_wr_req && ((top.data_wr_addr & ~0xfU) == trace_line)) {
-                    uint32_t lane = (trace_data_phys >> 2) & 3U;
-                    uint32_t line_word = top.data_wr_data[lane];
-                    std::cout << "[DWRITEBACK_REQ] t=" << main_time
-                              << " line=0x" << std::hex << top.data_wr_addr
-                              << " lane=" << std::dec << lane
-                              << " word=0x" << std::hex << line_word
-                              << " w0=0x" << top.data_wr_data[0]
-                              << " w1=0x" << top.data_wr_data[1]
-                              << " w2=0x" << top.data_wr_data[2]
-                              << " w3=0x" << top.data_wr_data[3]
+                if (top.dcache_main_state == 11 && top.data_wr_req) {
+                    std::cout << "[CACOP_WB] t=" << main_time
+                              << " addr=0x" << std::hex << top.data_wr_addr
+                              << " idx=0x" << static_cast<unsigned>(top.dcache_cacop_idx)
+                              << " etag=0x" << top.dcache_cacop_etag
+                              << " data=0x" << top.data_wr_data[0]
                               << std::dec << "\n";
                 }
                 if (top.ext_ram_write_fire) {

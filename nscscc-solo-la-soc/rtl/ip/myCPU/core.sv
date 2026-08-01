@@ -2,7 +2,9 @@
 
 module core import la32_common::*; #(
     parameter int ICACHE_SETS = 256,
-    parameter int DCACHE_SETS = 256
+    parameter int DCACHE_SETS = 256,
+    parameter int DCACHE_WAYS = 2,
+    parameter int DCACHE_WORDS = 4
 )(
     input  logic       clk,
     input  logic       reset,
@@ -504,8 +506,16 @@ module core import la32_common::*; #(
     assign ex_mem_in.data.rd        = id_ex_out.data.rd;
 
     logic [31:0] cpucfg_result;
-    localparam ICACHE_CFG = 32'h04000001 | ($clog2(ICACHE_SETS) << 16);
-    localparam DCACHE_CFG = 32'h04000001 | ($clog2(DCACHE_SETS) << 16);
+    // CPUCFG.0x11/0x12 use the kernel-private encoding
+    // (offset_bits[30:24], index_bits[23:16], max_way[15:0]).  The reported
+    // geometry MUST match the parameterized cache: the kernel flushes the
+    // dcache by walking set << offset_bits, and NEMU mirrors these values
+    // via the ICACHE_INDEX_BITS/DCACHE_* build defines, so any geometry
+    // change must update both sides in lockstep.
+    localparam ICACHE_CFG = (4 << 24) | ($clog2(ICACHE_SETS) << 16) | 1;
+    localparam DCACHE_CFG = (($clog2(DCACHE_WORDS) + 2) << 24) |
+                            ($clog2(DCACHE_SETS) << 16) |
+                            (DCACHE_WAYS - 1);
     always_comb begin
         cpucfg_result = 32'd0;
         case (forward_a)

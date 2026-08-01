@@ -98,7 +98,10 @@ module dcache import la32_common::*; (
 
     // ==================== Dirty + PLRU ====================
     (* ram_style = "distributed" *) logic [NR_SETS-1:0] dirty [0:NR_WAYS-1];
-    (* ram_style = "distributed" *) logic [NR_SETS-1:0] plru [0:NR_WAYS-2];
+    // Sized NR_WAYS-1 so a direct-mapped (NR_WAYS=1) cache keeps a valid
+    // (empty at runtime) array declaration; all PLRU reads/writes are
+    // gated by NR_WAYS>1 conditions and never touch the array in 1-way.
+    (* ram_style = "distributed" *) logic [NR_SETS-1:0] plru [0:NR_WAYS-1];
 
     // ==================== State ====================
     enum logic [3:0] {
@@ -201,7 +204,9 @@ module dcache import la32_common::*; (
     wire woffset_t req_wo;
     assign req_idx = cpu_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
     assign req_tag = cpu_req.addr[31:INDEX_WIDTH+LINE_OFFSET];
-    assign req_wo  = cpu_req.addr[LINE_OFFSET-1:2];
+    // NR_WORDS==1 makes the word-offset field empty (addr[1:2] would be an
+    // ascending slice); guard it so a 1-word line always selects word 0.
+    assign req_wo  = (NR_WORDS == 1) ? '0 : cpu_req.addr[LINE_OFFSET-1:2];
 
     logic [TAG_WIDTH:0] req_tag_data [0:NR_WAYS-1];
     always_comb begin
@@ -288,12 +293,18 @@ module dcache import la32_common::*; (
     // in-cycle as long as its word has not been written to the data RAM
     // yet; it is merged into the refill write (second merge slot, the
     // later store wins over the store-miss merge at the same word).
+    // There is exactly ONE merge slot: a second store arriving while a
+    // merge is already pending must be refused (the LSU holds it and it
+    // hits normally once the refill completes).  Accepting it would
+    // overwrite the pending merge and silently lose the first store —
+    // with a 1-word line every store maps to the same word offset, so
+    // the old "same word" guard (req_wo != st_merge_wo) never fired.
     wire store_refill_ok = in_refill && cpu_req.valid && |cpu_req.strobe
-                           && is_cachable(cpu_req.addr, cpu_req.cacheable)
-                           && (req_idx == m_idx) && (req_tag == m_tag)
-                           && ((state != S_REFILL_WRITE) ||
-                               (rf_wr_cnt < req_wo))
-                           && !(st_merge_pending && (req_wo != st_merge_wo));
+        && is_cachable(cpu_req.addr, cpu_req.cacheable)
+        && (req_idx == m_idx) && (req_tag == m_tag)
+        && ((state != S_REFILL_WRITE) ||
+            (rf_wr_cnt < req_wo))
+        && !st_merge_pending;
 
     // ==================== Stall condition ====================
     logic s1_stall;
@@ -565,7 +576,16 @@ module dcache import la32_common::*; (
 
             S_CACOP_WB_WRITE: begin
                 mem_req_next.valid  = 1'b1;
-                mem_req_next.addr   = {cacop_etag, cacop_idx, cacop_wb_cnt, 2'b00};
+                // With a 1-word line WORD_WIDTH is 0 and the empty slice
+                // cacop_wb_cnt[WORD_WIDTH-1:0] (= [-1:0]) is treated by
+                // the compiler as a 2-bit slice, making the concat 34 bits
+                // wide and dropping the top two tag bits of the writeback
+                // address.  Guard the slice so a 1-word line emits
+                // {etag, idx, 2'b00} exactly.
+                mem_req_next.addr   = (WORD_WIDTH > 0) ?
+                    {cacop_etag, cacop_idx,
+                     cacop_wb_cnt[WORD_WIDTH-1:0], 2'b00} :
+                    {cacop_etag, cacop_idx, 2'b00};
                 mem_req_next.strobe = 4'b1111;
                 mem_req_next.data   = cacop_wb_buf[cacop_wb_cnt];
                 if (mem_resp.addr_ok)
@@ -642,7 +662,7 @@ module dcache import la32_common::*; (
                 s1_size  <= cpu_req.size;
                 s1_wdata <= cpu_req.data;
                 s1_wstrb <= cpu_req.strobe;
-                s1_wo    <= cpu_req.addr[LINE_OFFSET-1:2];
+                s1_wo    <= (NR_WORDS == 1) ? '0 : cpu_req.addr[LINE_OFFSET-1:2];
                 s1_idx   <= cpu_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
                 s1_tag   <= cpu_req.addr[31:INDEX_WIDTH+LINE_OFFSET];
                 s1_cacheable <= cpu_req.cacheable;
@@ -731,6 +751,15 @@ module dcache import la32_common::*; (
                 m_eway   <= victim_way(s2_idx);
                 m_edirty <= dirty[victim_way(s2_idx)][s2_idx];
                 m_etag   <= tag_r_tag[victim_way(s2_idx)];
+                // The S2 miss path is taken for cacheable requests that
+                // could not use the combinational fast path (a previous
+                // request still in the S2 stage).  A store reaching the
+                // S2 miss path must carry its data/strb to the refill
+                // merge exactly like the fast-path miss accept does;
+                // without this the refill writes stale m_wdata/m_wstrb
+                // and the store's data is silently lost.
+                m_wdata  <= s2_wdata;
+                m_wstrb  <= s2_wstrb;
             end
 
             // Combinational miss accept: capture the miss context from the
@@ -752,7 +781,17 @@ module dcache import la32_common::*; (
             if (state == S_IDLE && cacop_req.valid
                 && cacop_req.code[2:0] == 3'd1 && !s2_valid) begin
                 cacop_way <= cacop_req.addr[WAY_BITS-1:0];
+                // Index-based cacop ops decode the set with the SAME
+                // parameterized line geometry as the data arrays.  The
+                // CPUCFG-reported geometry (which the kernel's flush walk
+                // follows) is parameterized in lockstep with the dcache
+                // line size, so the walk covers every row exactly once.
                 cacop_idx <= cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
+                // The dirty probe must decode from the CURRENT cycle's
+                // address (like cacop_way above): using the registered
+                // cacop_idx mixes this cycle's way with the PREVIOUS
+                // cacop's set, which makes back-to-back flush ops read
+                // the wrong row's dirty bit and drop the writeback.
                 if (cacop_req.code[4:3] == 2'b00) begin
                     dirty[cacop_req.addr[WAY_BITS-1:0]][cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET]] <= 1'b0;
                 end

@@ -4,7 +4,9 @@
 module core_top #(
     parameter TLBNUM = 32,
     parameter int DCACHE_SETS = 256,
-    parameter int ICACHE_SETS = 256
+    parameter int ICACHE_SETS = 256,
+    parameter int DCACHE_WAYS = 2,
+    parameter int DCACHE_WORDS = 1
 )(
     input           aclk,
     input           aresetn,
@@ -98,7 +100,8 @@ module core_top #(
     logic [63:0] stall_dcache_hit_pipe, stall_icache_hit_pipe;
     logic [63:0] stall_other;
 
-    core #(.ICACHE_SETS(ICACHE_SETS), .DCACHE_SETS(DCACHE_SETS)) u_core (
+    core #(.ICACHE_SETS(ICACHE_SETS), .DCACHE_SETS(DCACHE_SETS),
+           .DCACHE_WAYS(DCACHE_WAYS), .DCACHE_WORDS(DCACHE_WORDS)) u_core (
         .clk,
         .reset(~aresetn),
         .ireq,
@@ -123,7 +126,7 @@ module core_top #(
         .stall_other(stall_other)
     );
 
-    dcache #(.NR_SETS(DCACHE_SETS), .NR_WAYS(2), .NR_WORDS(4)) u_dcache (
+    dcache #(.NR_SETS(DCACHE_SETS), .NR_WAYS(DCACHE_WAYS), .NR_WORDS(DCACHE_WORDS)) u_dcache (
         .clk,
         .reset(~aresetn),
         .cpu_req(dreq),

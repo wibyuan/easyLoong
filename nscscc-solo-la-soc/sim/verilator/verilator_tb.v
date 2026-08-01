@@ -28,7 +28,7 @@ module verilator_tb (
     output        data_op,
     output        data_addr_ok,
     output [7:0]  data_index,
-    output [19:0] data_tag,
+    output [31:0] data_tag,
     output [3:0]  data_offset,
     output [3:0]  data_wstrb,
     output [31:0] data_wdata,
@@ -51,11 +51,14 @@ module verilator_tb (
     output [1:0]  dcache_write_way,
     output        dcache_req_dcacop,
     output [1:0]  dcache_req_cacop_mode,
+    output [31:0] dcache_cacop_addr,
+    output [7:0]  dcache_cacop_idx,
+    output [31:0] dcache_cacop_etag,
     output [1:0]  dcache_way_d,
     output [1:0]  dcache_replace_way,
     output        dcache_replace_d,
     output        dcache_replace_v,
-    output [19:0] dcache_replace_tag,
+    output [31:0] dcache_replace_tag,
     output        csr_da,
     output        csr_pg,
     output [31:0] csr_dmw1
@@ -174,49 +177,56 @@ assign cpu_aw_fire        = u_soc_top.cpu_awvalid && u_soc_top.cpu_awready;
 assign cpu_aw_addr        = u_soc_top.cpu_awaddr;
 
 `ifdef MYCPU_OPENLA500_PROBES
-assign data_uncache_en    = u_soc_top.u_cpu.data_uncache_en;
-assign data_valid         = u_soc_top.u_cpu.data_valid;
-assign data_op            = u_soc_top.u_cpu.data_op;
-assign data_addr_ok       = u_soc_top.u_cpu.data_addr_ok;
-assign data_index         = u_soc_top.u_cpu.data_index;
-assign data_tag           = u_soc_top.u_cpu.data_tag;
-assign data_offset        = u_soc_top.u_cpu.data_offset;
-assign data_wstrb         = u_soc_top.u_cpu.data_wstrb;
-assign data_wdata         = u_soc_top.u_cpu.data_wdata;
-assign data_rd_addr       = u_soc_top.u_cpu.data_rd_addr;
-assign data_vaddr         = u_soc_top.u_cpu.data_vaddr;
-assign data_wr_req        = u_soc_top.u_cpu.data_wr_req;
-assign data_wr_addr       = u_soc_top.u_cpu.data_wr_addr;
-assign data_wr_data       = u_soc_top.u_cpu.data_wr_data;
-assign dcache_main_state  = u_soc_top.u_cpu.dcache.main_state;
-assign dcache_cache_hit   = u_soc_top.u_cpu.dcache.cache_hit;
-assign dcache_way_hit     = u_soc_top.u_cpu.dcache.way_hit;
-assign dcache_write_full  = u_soc_top.u_cpu.dcache.write_state_is_full;
-assign dcache_req_op      = u_soc_top.u_cpu.dcache.request_buffer_op;
-assign dcache_req_index   = u_soc_top.u_cpu.dcache.request_buffer_index;
-assign dcache_req_offset  = u_soc_top.u_cpu.dcache.request_buffer_offset;
-assign dcache_req_wdata   = u_soc_top.u_cpu.dcache.request_buffer_wdata;
-assign dcache_write_index = u_soc_top.u_cpu.dcache.write_buffer_index;
-assign dcache_write_offset= u_soc_top.u_cpu.dcache.write_buffer_offset;
-assign dcache_write_wdata = u_soc_top.u_cpu.dcache.write_buffer_wdata;
-assign dcache_write_way   = u_soc_top.u_cpu.dcache.write_buffer_way;
-assign dcache_req_dcacop  = u_soc_top.u_cpu.dcache.request_buffer_dcacop;
-assign dcache_req_cacop_mode = u_soc_top.u_cpu.dcache.request_buffer_cacop_op_mode;
-assign dcache_way_d       = u_soc_top.u_cpu.dcache.way_d;
-assign dcache_replace_way = u_soc_top.u_cpu.dcache.replace_way;
-assign dcache_replace_d   = u_soc_top.u_cpu.dcache.replace_d;
-assign dcache_replace_v   = u_soc_top.u_cpu.dcache.replace_v;
-assign dcache_replace_tag = u_soc_top.u_cpu.dcache.replace_tag;
-assign csr_da             = u_soc_top.u_cpu.csr_da;
-assign csr_pg             = u_soc_top.u_cpu.csr_pg;
-assign csr_dmw1           = u_soc_top.u_cpu.csr_dmw1;
+// Probes into the current dcache implementation.  The tag width depends on
+// the line geometry (parameterized NR_WORDS/NR_SETS), so data_tag and
+// dcache_replace_tag are exposed wide (32b) and only meaningful where used.
+assign data_uncache_en    = 1'b0;
+assign data_valid         = u_soc_top.u_cpu.u_dcache.cpu_req.valid;
+assign data_op            = |u_soc_top.u_cpu.u_dcache.cpu_req.strobe;
+assign data_addr_ok       = u_soc_top.u_cpu.u_dcache.cpu_resp.addr_ok;
+assign data_index         = u_soc_top.u_cpu.u_dcache.req_idx;
+assign data_tag           = u_soc_top.u_cpu.u_dcache.req_tag;
+assign data_offset        = u_soc_top.u_cpu.u_dcache.req_wo;
+assign data_wstrb         = u_soc_top.u_cpu.u_dcache.cpu_req.strobe;
+assign data_wdata         = u_soc_top.u_cpu.u_dcache.cpu_req.data;
+assign data_rd_addr       = u_soc_top.u_cpu.u_dcache.data_rd_addr;
+assign data_vaddr         = u_soc_top.u_cpu.u_dcache.cpu_req.addr;
+assign data_wr_req        = u_soc_top.u_cpu.u_dcache.mem_req.valid && |u_soc_top.u_cpu.u_dcache.mem_req.strobe;
+assign data_wr_addr       = u_soc_top.u_cpu.u_dcache.mem_req.addr;
+assign data_wr_data       = {96'b0, u_soc_top.u_cpu.u_dcache.mem_req.data};
+assign dcache_main_state  = u_soc_top.u_cpu.u_dcache.state;
+assign dcache_cache_hit   = u_soc_top.u_cpu.u_dcache.req_hit;
+assign dcache_way_hit     = u_soc_top.u_cpu.u_dcache.req_hit_way;
+assign dcache_write_full  = (u_soc_top.u_cpu.u_dcache.state == 4'd8); // S_REFILL_WRITE
+assign dcache_req_op      = |u_soc_top.u_cpu.u_dcache.cpu_req.strobe;
+assign dcache_req_index   = u_soc_top.u_cpu.u_dcache.req_idx;
+assign dcache_req_offset  = u_soc_top.u_cpu.u_dcache.req_wo;
+assign dcache_req_wdata   = u_soc_top.u_cpu.u_dcache.cpu_req.data;
+assign dcache_write_index = u_soc_top.u_cpu.u_dcache.m_idx;
+assign dcache_write_offset= u_soc_top.u_cpu.u_dcache.data_wr_wo;
+assign dcache_write_wdata = u_soc_top.u_cpu.u_dcache.data_wr_data;
+assign dcache_write_way   = u_soc_top.u_cpu.u_dcache.m_eway;
+assign dcache_req_dcacop  = u_soc_top.u_cpu.u_dcache.cacop_req.valid &&
+                            (u_soc_top.u_cpu.u_dcache.cacop_req.code[2:0] == 3'd1);
+assign dcache_req_cacop_mode = u_soc_top.u_cpu.u_dcache.cacop_req.code[1:0];
+assign dcache_cacop_addr    = u_soc_top.u_cpu.u_dcache.cacop_req.addr;
+assign dcache_cacop_idx     = u_soc_top.u_cpu.u_dcache.cacop_idx;
+assign dcache_cacop_etag    = u_soc_top.u_cpu.u_dcache.cacop_etag;
+assign dcache_way_d       = u_soc_top.u_cpu.u_dcache.dirty[0][u_soc_top.u_cpu.u_dcache.req_idx];
+assign dcache_replace_way = u_soc_top.u_cpu.u_dcache.m_eway;
+assign dcache_replace_d   = u_soc_top.u_cpu.u_dcache.m_edirty;
+assign dcache_replace_v   = 1'b1;
+assign dcache_replace_tag = u_soc_top.u_cpu.u_dcache.m_etag;
+assign csr_da             = 1'b0;
+assign csr_pg             = 1'b0;
+assign csr_dmw1           = 32'b0;
 `else
 assign data_uncache_en    = 1'b0;
 assign data_valid         = 1'b0;
 assign data_op            = 1'b0;
 assign data_addr_ok       = 1'b0;
 assign data_index         = '0;
-assign data_tag           = 20'b0;
+assign data_tag           = 32'b0;
 assign data_offset        = 4'b0;
 assign data_wstrb         = 4'b0;
 assign data_wdata         = 32'b0;
@@ -239,11 +249,14 @@ assign dcache_write_wdata = 32'b0;
 assign dcache_write_way   = 2'b0;
 assign dcache_req_dcacop  = 1'b0;
 assign dcache_req_cacop_mode = 2'b0;
+assign dcache_cacop_addr    = 32'b0;
+assign dcache_cacop_idx     = 8'b0;
+assign dcache_cacop_etag    = 32'b0;
 assign dcache_way_d       = 2'b0;
 assign dcache_replace_way = 2'b0;
 assign dcache_replace_d   = 1'b0;
 assign dcache_replace_v   = 1'b0;
-assign dcache_replace_tag = 20'b0;
+assign dcache_replace_tag = 32'b0;
 assign csr_da             = 1'b0;
 assign csr_pg             = 1'b0;
 assign csr_dmw1           = 32'b0;

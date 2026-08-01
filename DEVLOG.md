@@ -878,3 +878,36 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 | Stall 构成 | **DCache Refill 占 79.2% 总周期**（97.7% 的 stall 周期），其余均 <1.5% |
 
 > 瓶颈定位：DCache Refill 为绝对主瓶颈——2MiB scratchpad 随机 load miss（容量 miss 主导），顺序流水线必须等待关键字返回，无法隐藏（2026-07-31 结论在真实时延下占比更显著：79.2% vs 无校准的 70.6%）。ICache 0-cycle 命中与 BTFNT 在 cryptonight 上近乎完美（100% / 99.95%），无可优化空间。后续优化以 cryptonight 周期数/估时（上板偏差 -0.3%）为对照基准；stream 因校准偏差 -12.6% 不宜作精确对比。
+
+## 2026-08-01: DCache 行宽/相联度实测 —— cryptonight 最优 cacheline = 4B
+
+### 背景与改造
+
+将 dcache 参数化（`NR_SETS/NR_WAYS/NR_WORDS` 经 `core_top` 透传），并**将 CPUCFG.0x12 编码参数化**（offset_bits = clog2(行宽)、index_bits = clog2(sets)、max_way = ways-1，内核私有编码 [30:24]/[23:16]/[15:0]）。NEMU 侧同步：`scripts/build.mk` 增加 `-DDCACHE_OFFSET_BITS/-DDCACHE_MAX_WAY` 宏（与既有 `DCACHE_INDEX_BITS` 同机制），`special.h` 用宏拼 `cfg_val`。**换配置必须同步 NEMU 宏并 `rm -rf NEMU/build` 强制重编**（make 不跟踪宏变化，本次踩坑：`special.o` 未重编导致 difftest mismatch）。
+
+### 实测数据（Verilator difftest，全测试 PASS）
+
+| 配置 | cryptonight (cycles / IPC) | matrix | stream | mixed |
+|---|---|---|---|---|
+| 2w/16B（旧默认） | 121.90M / 0.1894 | 0.3104 | 0.2293 | 0.2665 |
+| 2w/8B | 109.32M / 0.2112 | 0.2295 | 0.1695 | 0.2348 |
+| 1w/16B | 122.07M / 0.1892 | 0.2991 | **0.0669** | 0.2614 |
+| **2w/4B（新默认）** | **68.79M / 0.3357** | 0.2399 | 0.1430 | 0.2483 |
+| 1w/4B | 68.81M / 0.3356 | 0.1892 | 0.1429 | 0.2467 |
+
+- **去掉两路组相联对 cryptonight 无收益**（命中率由 2MiB 容量 miss 主导，52.95→52.87%）；对 stream 是灾难（0.2293→0.0669，容量减半+顺序冲突）。
+- **4B line 使 cryptonight 周期减半（-44%），IPC +77%**：随机访问下 refill 只取需要的 1 个 word。matrix/stream（有空间局部性）以 16B 为最优，这是明确的权衡——cryptonight 为核心指标，故 4B line 定为新默认。
+
+### 修复的三个正确性缺陷（4B line 下暴露，difftest 全绿但 ExtRAM 数据错）
+
+1. **CPUCFG 几何与 RTL 脱节**：CPUCFG 固定报 16B 行 → 内核 FLUSH_DCACHE（`cacop 0x09`，`set<<offset_bits` 遍历）漏掉 3/4 的行 → 测试收尾 dirty 行未写回，数据丢失。修复：CPUCFG 全参数化（DUT + NEMU 锁步）。
+2. **空 slice 被编译器当 2 位**：`cacop_wb_cnt[WORD_WIDTH-1:0]`（WORD_WIDTH=0 → `[-1:0]`）被 Verilator 解析为 2 位 slice → S_CACOP_WB_WRITE 地址拼接 34 位、截断丢 etag 高 2 位 → cacop 写回地址错乱到 0x71xxxxxx（ExtRAM 窗外）。修复：`(WORD_WIDTH > 0) ? … : {etag, idx, 2'b00}` 三元守卫。
+3. **cacop dirty 检查混用两拍地址**：`dirty[当前拍 addr[0]][寄存器(上一拍) cacop_idx]` → 背靠背 cacop 读错行 dirty → 直接 INV 丢写回。修复：dirty 索引用当前拍地址解码（与 cacop_way 同拍）。
+
+另修两个潜伏缺陷：`store_refill_ok` 单槽覆盖（原 `req_wo != st_merge_wo` 守卫在 1-word 下恒放行，第二个 store 覆盖第一个）；S2 miss 路径缺 `m_wdata/m_wstrb` 捕获（refill 合并写旧值）。
+
+### difftest 规范问题（未修，录入备忘）
+
+1. **cacop 特权检查不一致**：NEMU 在 PLV=3（用户态）执行非 0x10 的 cacop 报 IPE 异常（`special.h`），DUT（`core.sv` cacop 通路）无特权检查。内核只在特权态用 cacop，暂未暴露；若用户程序执行 cacop 会 difftest 分叉。修复需在 DUT decode/EX 增加 PLV 检查。
+2. **difftest store queue overflow 静默降级**：出现 `difftest store queue overflow, difftest store commit disabled` 时 store 提交校验被禁用（baseline 日志可见），该段无覆盖。NEMU 侧 store 队列应加大或至少显式告警。
+3. **difftest 不比内存**：cacop/flush/写回类错误（如本次 1/2/3）difftest 全绿、只有 ExtRAM compare 能抓。任何 cache 一致性改动必须跑 compare_ext 类测试。
