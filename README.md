@@ -54,14 +54,14 @@
 ### Cache 系统
 
 - **icache**：2 路组相联、256 组、16 字节行、8KB、只读、PLRU、关键字优先；**0-cycle 命中**（标签 LUTRAM + 数据组合读取，`addr_ok`+`data_ok`+数据同拍响应，fetch 延迟 2 拍 → 0 拍）
-- **dcache**：2 路组相联、256 组、**4 字节行**（NR_WORDS=1）、2KB、写回+写分配、PLRU、关键字优先；**0-cycle 命中**（load/store 均旁路 S1/S2 流水线：标签 LUTRAM 组合比较 + 数据组合读取，请求拍内返回数据；miss 仍走 S1/S2 管道）
+- **dcache**：2 路组相联、256 组、**8 字节行**（NR_WORDS=2）、4KB、写回+写分配、PLRU、关键字优先；**0-cycle 命中**（load/store 均旁路 S1/S2 流水线：标签 LUTRAM 组合比较 + 数据组合读取，请求拍内返回数据；miss 仍走 S1/S2 管道）
 - **非阻塞（hit-under-miss，单 MSHR）**：请求拍内组合判定命中/缺失，store miss **当拍接受**（数据在 refill 写入阶段合并进新行，流水线在 refill 期间继续运行）；refill 期间命中其他行（load 恒可、store 在写口空闲时）同拍响应；**读回写**（store 命中正在 refill 的行）当拍接受并合并进 refill 写（第二合并槽，后写者优先）；load miss 当拍 `addr_ok` 应答，数据经关键字转发返回。无法处理的二次 miss 等待当前 refill 完成（单 MSHR 上限）
 - **参数化**：dcache 支持 NR_SETS / NR_WAYS / NR_WORDS 三参数配置，组数/路数/行大小可独立调整（`core_top.sv` 的 `DCACHE_SETS/DCACHE_WAYS/DCACHE_WORDS`）。icache 同理。**CPUCFG.0x12 的缓存几何编码随参数化**（offset_bits/index_bits/max_way），NEMU 侧由 `scripts/build.mk` 的 `-DDCACHE_OFFSET_BITS/-DDCACHE_INDEX_BITS/-DDCACHE_MAX_WAY` 宏镜像——**换几何必须两侧同步，且 `rm -rf NEMU/build` 强制重编 NEMU**（make 不跟踪宏变化）。内核 FLUSH_DCACHE 按 CPUCFG 报告的几何遍历，几何不一致会导致收尾 dirty 行漏写回（2026-08-01 实测踩坑，见 DEVLOG）。
 - **CACOP**：支持 `cacop 0x00` (I$ 索引无效)、`cacop 0x01` (D$ 索引无效)、`cacop 0x09` (D$ 索引写回无效)
 - **IBAR**：支持 hint=0 流水线冲刷
 - **Cacheability**：基于 CRMD/DMW 区分 cacheable/uncacheable，支持 auto 和 uncache 两种 kernel 构建
 
-> 行宽实测结论（2026-08-01）：**4 字节行是 cryptonight 最优**（随机访问下 refill 只取需要的 1 word，周期 121.9M→68.8M，IPC 0.1894→0.3357，+77%），定为新默认。2 路组相联对 cryptonight 无收益（容量 miss 主导）但保护 stream（1-way 下 0.2293→0.0669）。matrix/stream 因空间局部性仍以 16B 行为优——这是明确权衡，cryptonight 为核心指标。详见 [DEVLOG.md](DEVLOG.md)「DCache 行宽/相联度实测」。
+> 行宽实测结论（2026-08-01，三配置上板实测）：**8 字节行是总分最优**——cryptonight 1883ms（16B 2446 / 4B 1699），stream 473ms（16B 395 / 4B 756），matrix 444ms（16B 374 / 4B 578），四测试合计 8B 2825ms < 4B 3066ms < 16B 3240ms。4B 行对 cryptonight 最优但 stream/matrix 严重受损（空间局部性丢失）；8B 行是折中，定为新默认。2 路组相联对 cryptonight 无收益（容量 miss 主导）但保护 stream（1-way 下 0.2293→0.0669）。详见 [DEVLOG.md](DEVLOG.md)「DCache 行宽/相联度实测」。
 
 ### 指令集覆盖
 
@@ -92,7 +92,7 @@
 | `npc.sv` | 下一 PC 计算 |
 | `fetch_unit.sv` | 取指单元 |
 | `lsu.sv` | 访存单元 |
-| `dcache.sv` | 数据 Cache（2 路组相联、4B 行、2KB、写回） |
+| `dcache.sv` | 数据 Cache（2 路组相联、8B 行、4KB、写回） |
 | `icache.sv` | 指令 Cache（2 路组相联、8KB、只读） |
 | `hazard_unit.sv` | 流水线冒险控制 |
 | `axibus_arbiter.sv` | ibus/dbus AXI4 仲裁 |
@@ -123,32 +123,32 @@
 
 > 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过。
 
-### 当前性能指标（Verilator difftest, 2026-08-01，**4B 行默认**，EXTRA_LATENCY=7 校准）
+### 当前性能指标（Verilator difftest, 2026-08-01，**8B 行默认**，EXTRA_LATENCY=7 校准）
 
 | 测试 | 指令数 | 周期数 | IPC (difftest) | 估计耗时（50MHz） | 上板实测 | 真实 IPC（上板） | 校准偏差 |
 |------|--------|--------|----------------|-------------------|:---:|:---:|:---:|
-| simple | 24,431 | 163,019 | 0.1485 | 3.3 ms | — | — | — |
+| simple | 24,431 | 162,844 | 0.1488 | 3.3 ms | — | — | — |
 | fibonacci | 96,857 | 714,295 | 0.1329 | 14.3 ms | — | — | — |
-| stream | 3,956,595 | 38.70M | 0.1022 | 774 ms | **756 ms** | **0.1047** | +2.4% |
-| matrix | 5,647,061 | 29.23M | 0.1932 | 585 ms | **578 ms** | **0.1954** | +1.2% |
-| mixed | 331,623 | 1.75M | 0.1890 | 35.1 ms | **33 ms** | **0.2010** | +6.4% |
-| cryptonight | 23,093,115 | 87.15M | **0.2650** | **1743 ms** | **1699 ms** | **0.2718** | **+2.6%** |
+| stream | 3,956,595 | 24.94M | 0.1587 | 499 ms | **473 ms** | **0.1673** | +5.5% |
+| matrix | 5,647,061 | 23.40M | 0.2414 | 468 ms | **444 ms** | **0.2544** | +5.4% |
+| mixed | 331,623 | 1.42M | 0.2336 | 28.4 ms | **25 ms** | **0.2653** | +13.5% |
+| cryptonight | 23,093,115 | 102.28M | **0.2258** | **2046 ms** | **1883 ms** | **0.2453** | **+8.7%** |
 
-> 真实 IPC = 指令数 ÷ (上板耗时 × 50MHz)。EXTRA_LATENCY=7 校准（模拟板载 SRAM 首拍时延）后 difftest 估时与上板偏差 ≤6.4%，difftest IPC 可直接对照上板。2026-08-01 行宽实测后默认 **4B 行**（原 16B 行：cryptonight 121.9M 周期 / 估时 2438ms / 上板 2446ms / 真实 IPC 0.1889）。4B 行对 cryptonight 是净优化（随机访问，refill 只取需要的 1 word）；matrix/stream 因空间局部性以 16B 行为优（matrix 0.3104→0.2399、stream 0.2293→0.1430，均为无校准口径），这是明确权衡——cryptonight 为核心指标。非阻塞 dcache（store-miss 解耦 + hit-under-miss）与行宽优化叠加的完整路径见 [DEVLOG.md](DEVLOG.md)（2026-07-31「非阻塞 DCache」、2026-08-01「DCache 行宽/相联度实测」）。历史阶段增量（Burst refill → 标签 LUTRAM → 0-cycle icache → load 快速路径）数据均保留在 [DEVLOG.md](DEVLOG.md)。
+> 真实 IPC = 指令数 ÷ (上板耗时 × 50MHz)。EXTRA_LATENCY=7 校准后 difftest 估时与上板偏差 +5~14%（8B 行事务数为 4B 行一半，7 拍常量略偏大，未重新标定）。行宽三配置上板实测：cryptonight 16B 2446 / 8B 1883 / 4B 1699ms；stream 395 / 473 / 756ms；matrix 374 / 444 / 578ms；mixed 25 / 25 / 33ms——**8B 行合计最优（2825ms）**，定为默认。非阻塞 dcache（store-miss 解耦 + hit-under-miss）与行宽优化叠加的完整路径见 [DEVLOG.md](DEVLOG.md)。历史阶段增量数据均保留在 [DEVLOG.md](DEVLOG.md)。
 
-### 流水线 Stall 拆解（Verilator difftest, 2026-08-01，4B 行默认 + EXTRA_LATENCY=7 校准，占总周期 %）
+### 流水线 Stall 拆解（Verilator difftest, 2026-08-01，8B 行默认 + EXTRA_LATENCY=7 校准，占总周期 %）
 
 | 类别 | Simple | Fibonacci | Stream | Matrix | Mixed | Cryptonight |
 |------|:------:|:---------:|:------:|:------:|:-----:|:-----------:|
-| DCache Refill | — | — | **85.36%** | **73.98%** | **68.95%** | **70.33%** |
+| DCache Refill | — | — | **80.41%** | **67.51%** | **63.20%** | **76.00%** |
 | ICache Refill | — | — | 0.00% | 0.00% | 0.00% | 0.00% |
-| Load-Use | — | — | 0.01% | 0.01% | 0.19% | 0.00% |
-| Branch Flush | — | — | 0.01% | 0.04% | 0.37% | 0.00% |
-| DCache Hit Pipe | — | — | 2.21% | 2.54% | 4.88% | 0.08% |
-| ICache Hit Pipe | — | — | 0.13% | 0.18% | 2.94% | 0.06% |
-| Other | — | — | 2.06% | 3.94% | 3.75% | 3.02% |
+| Load-Use | — | — | 0.01% | 0.01% | 0.23% | 0.00% |
+| Branch Flush | — | — | 0.01% | 0.05% | 0.46% | 0.00% |
+| DCache Hit Pipe | — | — | 1.86% | 0.30% | 5.18% | 0.07% |
+| ICache Hit Pipe | — | — | 0.21% | 0.22% | 3.66% | 0.05% |
+| Other | — | — | 1.64% | 7.77% | 3.91% | 1.30% |
 
-> 4B 行下 **hit-under-miss 恒为 0**（refill 缩短到 1 beat，流水线下一条请求到达时 refill 已完成，无需重叠服务）。校准（模拟真实 SRAM 首拍时延）后 DCache Refill 占比更高：stream 顺序流每访问必 miss（命中率 0.02%），matrix/cryptonight/mixed 的 load miss 在顺序流水线中必须等待关键字返回。Simple/Fibonacci 的 Hit Pipe 占比高来自非缓存 UART 轮询与 uncache 内核。进一步优化方向：refill 时延本身（多 MSHR / load-under-miss，让独立 load miss 并行发起）。
+> 8B 行 refill 为 2-beat burst，关键字（首 beat）返回后剩余 beat 与流水线执行重叠（hit-under-miss 重新出现：cryptonight 262,180、stream 786,462），DCache Refill 仍是主瓶颈（load miss 关键字等待 + 单口 SRAM 串行读）。Simple/Fibonacci 的 Hit Pipe 占比高来自非缓存 UART 轮询与 uncache 内核。优化空间受单口 SRAM + 顺序提交约束（读时延无法并行/乱序隐藏），见 [DEVLOG.md](DEVLOG.md)「优化方向分析」。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-08-01，4B 行默认）
 
@@ -165,44 +165,44 @@
 >
 > **BTFNT ID 级重定向已实现**：预测 taken 时在 ID 阶段通过 `bp_do_jump` 重定向 fetch，npc 在 EX 阶段抑制冗余 flush 并处理 misprediction 恢复。IPC 提升见上方性能表。
 
-### Cache 命中率（Verilator 仿真, 2026-08-01，4B 行默认）
+### Cache 命中率（Verilator 仿真, 2026-08-01，8B 行默认）
 
-| 测试 | ICache 访问 | ICache 命中率 | DCache 访问 | DCache 命中率 | DCache 写回 |
-|------|------------|--------------|------------|--------------|------------|
-| Simple | 34.6K | 98.04% | 403 | 81.89% | 43 words |
-| Fibonacci | 144K | 99.90% | —（uncache 内核，dcache 旁路） | — | — |
-| Stream | 4.75M | 99.99% | 1.57M | **0.02%** | 786K words |
-| Matrix | 6.14M | 99.99% | 3.10M | 70.85% | 885K words |
-| Mixed | 383K | 99.82% | 66K | 13.21% | 41K words |
-| Cryptonight | 24.68M | 95.75% | 4.72M | 44.49% | 2.62M words |
+| 测试 | ICache 访问 | ICache 命中率 | DCache 访问 | DCache 命中率 | DCache 写回 | hit-under-miss |
+|------|------------|--------------|------------|--------------|------------|----------------|
+| Simple | 34.6K | 98.04% | 403 | 81.89% | 43 words | 11 |
+| Fibonacci | 144K | 99.90% | —（uncache 内核，dcache 旁路） | — | — | — |
+| Stream | 4.75M | 99.99% | 1.57M | 50.01% | 786K words | **786,462** |
+| Matrix | 6.14M | 99.99% | 2.89M | 84.19% | 885K words | 37 |
+| Mixed | 383K | 99.82% | 66K | 50.99% | 48K words | 16,420 |
+| Cryptonight | 24.68M | 95.75% | 4.72M | 50.09% | 4.71M words | **262,180** |
 
-> 4B 行（每行 1 word）下命中率整体下降：stream 顺序流每访问必 miss（0.02%）、cryptonight 每行只覆盖 1 word（52.95%→44.49%）；但 refill 只取需要的数据，cryptonight 总周期反而 -44%（行宽权衡见 [DEVLOG.md](DEVLOG.md)「DCache 行宽/相联度实测」）。ICache 除 cryptonight 外近满命中；cryptonight 的 ICache 命中率 95.75% 是 0-cycle 命中 + 流水线节奏变化下的计数口径（指令流正确性由 difftest 保证）。
+> 8B 行每行 2 word：cryptonight 命中率 50.09%（16B 52.95% / 4B 44.49%），stream 顺序流命中率大幅回升至 50.01%（4B 行 0.02%——相邻访问命中同一行）。hit-under-miss 在 8B 行下重新活跃（2-beat refill 的后续 beat 与流水线执行重叠）。
 
 ### 上板耗时校准（Verilator 固定 SRAM 时延）
 
-上板实测与 difftest 折算不符（difftest 偏快）：板上 sys_clk=25MHz（cpu_clk=50MHz，2:1），SRAM 访问在 CPU 时钟域折合更多周期，而 Verilator 同源同频 1:1 未建模。在 `axi2sram_sp_external.v` 的 `ifdef VERILATOR` 分支给**每笔 SRAM 事务首拍**（读关键字 / 写首字）插入固定 `EXTRA_LATENCY` 周期等待（上板 RTL 不变），并对**每笔读事务后清零时延计数器**（否则连续读事务只有第一笔被限速，校准失效——2026-08-01 修复）。4B 行默认下标定 `EXTRA_LATENCY=7`：
+上板实测与 difftest 折算不符（difftest 偏快）：板上 sys_clk=25MHz（cpu_clk=50MHz，2:1），SRAM 访问在 CPU 时钟域折合更多周期，而 Verilator 同源同频 1:1 未建模。在 `axi2sram_sp_external.v` 的 `ifdef VERILATOR` 分支给**每笔 SRAM 事务首拍**（读关键字 / 写首字）插入固定 `EXTRA_LATENCY=7` 周期等待（上板 RTL 不变），并对**每笔读事务后清零时延计数器**（否则连续读事务只有第一笔被限速，校准失效——2026-08-01 修复）。8B 行默认下标定：
 
 | 基准 | difftest 估计 | 上板实测 | 偏差 |
 |------|:---:|:---:|:---:|
-| **cryptonight** | **1743ms** | 1699ms | **+2.6%** |
-| matrix | 585ms | 578ms | +1.2% |
-| stream | 774ms | 756ms | +2.4% |
-| mixed | 35.1ms | 33ms | +6.4% |
+| **cryptonight** | **2046ms** | 1883ms | **+8.7%** |
+| matrix | 468ms | 444ms | +5.4% |
+| stream | 499ms | 473ms | +5.5% |
+| mixed | 28.4ms | 25ms | +13.5% |
 
-> 校准后 difftest 估时与上板偏差 ≤6.4%，difftest 周期数可直接对照上板（16B 行时期曾以 EXTRA_LATENCY=16 标定，当时读时延计数器未清零、仅部分读事务被限速，偏差表作废；历史数据见 [DEVLOG.md](DEVLOG.md)）。cryptonight 为核心优化指标：上板 1699ms（16B 行 2446ms，-31%）。
+> 校准后 difftest 估时与上板偏差 +5~14%（常量按 4B 行事务数标定，8B 行事务数减半、7 拍略偏大，可再标定但偏差已可用）。行宽三配置上板实测（2026-08-01）：cryptonight 16B 2446 / **8B 1883** / 4B 1699ms；stream 395 / **473** / 756ms；matrix 374 / **444** / 578ms；mixed 25 / **25** / 33ms——**8B 行四测试合计 2825ms 最优**，为默认配置。
 
-### cryptonight 校准后指标（difftest, 2026-08-01，核心优化指标，**4B 行默认**）
+### cryptonight 校准后指标（difftest, 2026-08-01，核心优化指标，**8B 行默认**）
 
 | 指标 | 数值 |
 |------|------|
-| 指令 / 周期 / IPC | 23.09M / 87.15M / **0.2650** |
-| 估计耗时（50MHz） | **1743ms**（上板 1699ms，+2.6%） |
+| 指令 / 周期 / IPC | 23.09M / 102.28M / **0.2258** |
+| 估计耗时（50MHz） | **2046ms**（上板 1883ms，+8.7%） |
 | ICache | 24.68M 访问，95.75% 命中，s1_accept/cycle=0.9995 |
-| DCache | 4.72M 访问，44.49% 命中，2.62M miss，写回 2.62M words（hit-under-miss 恒 0） |
+| DCache | 4.72M 访问，50.09% 命中，2.36M miss，写回 4.71M words，hit-under-miss 262,180 |
 | 分支预测 | 1,578,418 分支，仅 821 误预测，**99.95% 准确率** |
-| Stall 构成 | **DCache Refill 占 70.3% 总周期**（95.8% 的 stall 周期），其余 <3.1% |
+| Stall 构成 | **DCache Refill 占 76.0% 总周期**（98.2% 的 stall 周期），其余 <1.4% |
 
-> 2026-08-01 行宽实测后默认 4B 行（NR_WORDS=1）：随机访问 2MiB scratchpad 的 refill 只取需要的 1 word，上板 1699ms（16B 行 2446ms，-31%）。DCache Refill 仍是主瓶颈，进一步优化方向是 refill 时延本身（多 MSHR / load-under-miss，让相互独立的 scratchpad load miss 并行发起）。全配置实测数据与权衡见 [DEVLOG.md](DEVLOG.md)「DCache 行宽/相联度实测」。
+> 行宽三配置上板实测：16B 2446ms / **8B 1883ms** / 4B 1699ms——4B 行对 cryptonight 单独最优，但 stream/matrix 受损严重（合计 8B 最优），故默认 8B。DCache Refill 仍是主瓶颈（load miss 关键字等待），受单口 SRAM + 顺序提交约束，读时延无法并行/乱序隐藏；进一步优化空间有限（容量/状态机开销，各 ~5%）。
 
 ## 5. 开发环境搭建
 

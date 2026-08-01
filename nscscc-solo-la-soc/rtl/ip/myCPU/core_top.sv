@@ -6,7 +6,7 @@ module core_top #(
     parameter int DCACHE_SETS = 256,
     parameter int ICACHE_SETS = 256,
     parameter int DCACHE_WAYS = 2,
-    parameter int DCACHE_WORDS = 1
+    parameter int DCACHE_WORDS = 2
 )(
     input           aclk,
     input           aresetn,

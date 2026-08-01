@@ -866,24 +866,24 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 
 - stream 偏差来源：写回占比最高（787K words / 写回 196.8K 事务），写路径时延在板上同样翻倍但仿真侧被 hit-under-miss 吸收更多，单一常量无法同时拟合（如需可给写路径加权重）。
 
-### cryptonight 校准后指标（difftest，核心优化指标，2026-08-01 4B 行默认）
+### cryptonight 校准后指标（difftest，核心优化指标，2026-08-01 **8B 行默认**）
 
 | 指标 | 数值 |
 |------|------|
-| 指令 / 周期 / IPC | 23.09M / 87.15M / **0.2650** |
-| 估计耗时（50MHz） | **1743ms**（上板 1699ms，+2.6%；16B 行 2446ms，-31%） |
+| 指令 / 周期 / IPC | 23.09M / 102.28M / **0.2258** |
+| 估计耗时（50MHz） | **2046ms**（上板 1883ms，+8.7%；16B 行 2446ms，-23%） |
 | ICache | 24.68M 访问，95.75% 命中，s1_accept/cycle=0.9995 |
-| DCache | 4.72M 访问，44.49% 命中，2.62M miss，写回 2.62M words（hit-under-miss 恒 0：1-beat refill 期间无并发请求） |
+| DCache | 4.72M 访问，50.09% 命中，2.36M miss，写回 4.71M words，hit-under-miss 262,180 |
 | 分支预测 | 1,578,418 分支，仅 821 误预测，**99.95% 准确率** |
-| Stall 构成 | **DCache Refill 占 70.3% 总周期**（95.8% 的 stall 周期），其余 <3.1% |
+| Stall 构成 | **DCache Refill 占 76.0% 总周期**（98.2% 的 stall 周期），其余 <1.4% |
 
-> 2026-08-01 行宽实测后默认改为 4B 行：随机访问 2MiB scratchpad 的 refill 只取需要的 1 word，上板 1699ms（16B 行 2446ms，-31%）。DCache Refill 仍是主瓶颈，进一步优化方向是 refill 时延本身（多 MSHR / load-under-miss，让相互独立的 scratchpad load miss 并行发起）。全配置实测数据见文末「DCache 行宽/相联度实测」章节。
+> **默认配置定为 8B 行（2026-08-01 上板三配置实测后）**：cryptonight 16B 2446 / **8B 1883** / 4B 1699ms；stream 395 / **473** / 756ms；matrix 374 / **444** / 578ms；mixed 25 / **25** / 33ms——**四测试合计 8B 2825ms < 4B 3066ms < 16B 3240ms**。4B 行对 cryptonight 单独最优但 stream/matrix 空间局部性全失；8B 行折中最优。16B 行时期 cryptonight 真实 IPC 0.1889（2446ms）；8B 行真实 IPC 0.2453（1883ms）。
 >
-> **4B 行上板实测（2026-08-01）**：cryptonight **1699ms**（16B 行 2446ms，**-31%**）、matrix 578ms、stream 756ms、mixed 33ms。
+> **校准修复与重标定（2026-08-01 晚）**：发现 `EXTRA_LATENCY` 的时延计数器只在写路径（WRITE_NOP）清零、读路径不清零——连续读事务只有第一笔被限速，校准在读事务占主导的 4B 行配置下基本失效（EXTRA_LATENCY=0/16/19 估时相同）。修复：READ 状态数据送达时 `lat_d <= 0`。重标定 `EXTRA_LATENCY=7`。**16B 行时期的 EXTRA_LATENCY=16 校准表（2438ms 等）基于未清零计数器的部分限速行为，已作废**。
 >
-> **校准修复与重标定（2026-08-01 晚）**：发现 `EXTRA_LATENCY` 的时延计数器只在写路径（WRITE_NOP）清零、读路径不清零——连续读事务只有第一笔被限速，校准在读事务占主导的 4B 行配置下基本失效（EXTRA_LATENCY=0/16/19 估时相同）。修复：READ 状态数据送达时 `lat_d <= 0`。重标定 `EXTRA_LATENCY=7` 后 difftest 估时 vs 上板：cryptonight 1743ms（+2.6%）、matrix 585ms（+1.2%）、stream 774ms（+2.4%）、mixed 35.1ms（+6.4%）。**16B 行时期的 EXTRA_LATENCY=16 校准表（2438ms 等）基于未清零计数器的部分限速行为，已作废**；16B 行如复用需重新标定。
+> **真实 IPC（指令数 ÷ 上板耗时 × 50MHz，2026-08-01，8B 行）**：cryptonight 0.2453（difftest IPC 0.2258）、matrix 0.2544（0.2414）、stream 0.1673（0.1587）、mixed 0.2653（0.2336）。difftest 估时与上板偏差 +5~14%（8B 行事务数减半，7 拍常量略偏大，未重新标定），可直接对照优化。
 >
-> **真实 IPC（指令数 ÷ 上板耗时 × 50MHz，2026-08-01）**：cryptonight 0.2718（校准后 difftest IPC 0.2650，-2.5%）、matrix 0.1954（0.1932）、stream 0.1047（0.1022）、mixed 0.2010（0.1890）。16B 行时期 cryptonight 真实 IPC 0.1889（2446ms）。校准后 difftest IPC 与真实 IPC 偏差 ≤6%，可直接对照优化。
+> **优化方向分析（2026-08-01 晚）**：load miss 的 SRAM 首拍时延（~19 拍）是主瓶颈。单口异步 SRAM 读事务串行（B 的读只能在 A 的读响应返回后发出），顺序提交约束 WB 单槽（load A 在 WB 等数据时后续指令全阻塞）——**多 MSHR / load-under-miss 无法隐藏读时延（收益 <5%）**；write buffer 也无收益（store 已解耦 + 写回已 fire-and-forget）。可行方向仅容量（miss 数，~5%）与状态机/仲裁开销（~5%）。
 
 ## 2026-08-01: DCache 行宽/相联度实测 —— cryptonight 最优 cacheline = 4B
 
