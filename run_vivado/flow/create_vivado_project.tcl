@@ -30,10 +30,6 @@ add_files -fileset constrs_1 -quiet ./constraints
 # Upgrade IPs
 set ips [get_ips -quiet]
 if {[llength $ips] > 0} {
-    set_property -dict [list \
-        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {50.000} \
-        CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {25.000} \
-    ] [get_ips clk_pll]
     upgrade_ip -quiet $ips
 }
 
