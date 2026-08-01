@@ -150,7 +150,7 @@
 
 > 8B 行 refill 为 2-beat burst，关键字（首 beat）返回后剩余 beat 与流水线执行重叠（hit-under-miss 重新出现：cryptonight 262,180、stream 786,462），DCache Refill 仍是主瓶颈（load miss 关键字等待 + 单口 SRAM 串行读）。Simple/Fibonacci 的 Hit Pipe 占比高来自非缓存 UART 轮询与 uncache 内核。优化空间受单口 SRAM + 顺序提交约束（读时延无法并行/乱序隐藏），见 [DEVLOG.md](DEVLOG.md)「优化方向分析」。
 
-### 分支预测准确率（BTFNT, Verilator 仿真, 2026-08-01，4B 行默认）
+### 分支预测准确率（BTFNT, Verilator 仿真, 2026-08-01，8B 行默认）
 
 | 测试 | 条件分支数 | 误预测数 | 准确率 |
 |------|-----------|----------|--------|
@@ -411,7 +411,7 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 | 7 个单元测试（含新增 icache_redirect_stale） | ✅ 全部通过 |
 | `make test-simple` | ✅ 24431 条，IPC 0.1669 |
 | `make test-fibonacci` | ✅ 96857 条，数据比对 PASS，IPC 0.1360 |
-| `make test-stream/matrix/mixed/cryptonight` | ✅ 全通过，数据比对 PASS，IPC 0.1430/0.2399/0.2483/0.3357（4B 行默认，2026-08-01） |
+| `make test-stream/matrix/mixed/cryptonight` | ✅ 全通过，数据比对 PASS，IPC 0.1587/0.2414/0.2336/0.2258（8B 行默认，2026-08-01） |
 
 > **2026-07-31 追加：DCache load 命中快速路径（0-cycle，镜像 icache）**——数据 RAM 组合读取端口 + fast-path cpu_resp 的 load 分支，load 命中同拍返回数据（store 快速路径 2026-07-29 已就位）。matrix IPC 0.3024→0.3730（+23.3%，load 密集），stream +6.7%，mixed +2.4%，simple +0.4%；cryptonight 不变（其 load 几乎全为 scratchpad 强制 miss，无命中可提速）。详见 DEVLOG。
 
