@@ -302,9 +302,17 @@ module dcache import la32_common::*; (
     wire hum_refilling   = (req_idx == m_idx) && (req_hit_way == m_eway);
     // No hit-under-miss while the keyword of an outstanding load miss is
     // forwarded (the pipeline is stalled on that load, so no second request
-    // can exist — defensive guard).
-    wire hum_keyword     = (state == S_REFILL_WAIT) && mem_resp.data_ok
+    // can exist — defensive guard).  The keyword may fire during the
+    // overlapped writeback drain (S_WB_WRITE) as well as S_REFILL_WAIT;
+    // qualified on rdata_ok (read-channel only) so the writeback
+    // completion cannot masquerade as a keyword.
+    wire hum_keyword     = (state inside {S_WB_WRITE, S_REFILL_WAIT})
+                           && mem_resp.rdata_ok
                            && (rf_cnt == m_wo) && !rf_kw_sent && (m_op == 1'b0);
+    // Refill complete when all beats arrived (mask full, possibly during
+    // the writeback drain) or the current beat completes the mask.
+    wire refill_fmask_done = (&rf_fmask) ||
+                             (mem_resp.rdata_ok && (&(rf_fmask | (1 << rf_cnt))));
     wire hum_req         = in_refill && !hum_keyword && cpu_req.valid
                            && is_cachable(cpu_req.addr, cpu_req.cacheable)
                            && req_hit_any && !hum_refilling;
@@ -398,12 +406,16 @@ module dcache import la32_common::*; (
         end
 
         if (state == S_UNCACHED && mem_resp.data_ok) begin
+            // data_ok (combined): covers both uncached reads (rdata_ok)
+            // and uncached writes (write completion); no other transaction
+            // can be in flight in S_UNCACHED.
             cpu_resp.addr_ok = 1'b1;
             cpu_resp.data_ok = 1'b1;
             cpu_resp.data    = mem_resp.data;
         end
 
-        if (state == S_REFILL_WAIT && mem_resp.data_ok
+        if ((state inside {S_WB_WRITE, S_REFILL_WAIT}) && mem_resp.rdata_ok
+            && !(&rf_fmask)
             && rf_cnt == m_wo && !rf_kw_sent && m_op == 1'b0) begin
             cpu_resp.addr_ok  = 1'b1;
             cpu_resp.data_ok  = 1'b1;
@@ -526,17 +538,27 @@ module dcache import la32_common::*; (
             end
 
             S_WB_READ: begin
-                next_state = S_WB_WRITE;
+                // Capture the victim data only; issue the refill read FIRST.
+                // The AXI read/write channels are independent, so the
+                // writeback drain (S_WB_WRITE) overlaps the refill read in
+                // flight and the load's keyword fires as soon as the read
+                // completes — the writeback leaves the critical path.
+                next_state = S_REFILL_REQ;
             end
 
             S_WB_WRITE: begin
+                // Writeback drain on the AXI write channel, concurrent with
+                // the refill read already in flight; refill beats arriving
+                // here are collected (rf_buf/fmask/keyword forward, gated
+                // on mem_resp.rdata_ok so the write completion cannot
+                // corrupt the refill data path).
                 mem_req_next.valid  = 1'b1;
                 mem_req_next.addr   = {m_etag, m_idx, {WORD_WIDTH{1'b0}}, 2'b00};
                 mem_req_next.strobe = 4'b1111;
                 mem_req_next.data   = wb_buf[wb_cnt];
                 mem_req_next.burst_len = NR_WORDS - 1;
                 if (mem_resp.addr_ok)
-                    next_state = (wb_cnt == NR_WORDS - 1) ? S_REFILL_REQ : S_WB_WRITE;
+                    next_state = (wb_cnt == NR_WORDS - 1) ? S_REFILL_WAIT : S_WB_WRITE;
             end
 
             S_REFILL_REQ: begin
@@ -544,14 +566,14 @@ module dcache import la32_common::*; (
                 mem_req_next.addr   = {m_tag, m_idx, {WORD_WIDTH{1'b0}}, 2'b00};
                 mem_req_next.burst_len = NR_WORDS - 1;
                 if (mem_resp.addr_ok)
-                    next_state = S_REFILL_WAIT;
+                    next_state = m_edirty ? S_WB_WRITE : S_REFILL_WAIT;
             end
 
             S_REFILL_WAIT: begin
-                if (mem_resp.data_ok) begin
-                    if (mem_resp.data_last)
-                        next_state = S_REFILL_WRITE;
-                end
+                // Exit on the beat mask: the refill may have completed
+                // during the overlapped writeback drain.
+                if (refill_fmask_done)
+                    next_state = S_REFILL_WRITE;
             end
 
             S_REFILL_WRITE: begin
@@ -825,7 +847,12 @@ module dcache import la32_common::*; (
                 end
             end
 
-            if (state == S_MISS && next_state == S_REFILL_REQ) begin
+            // Reset the refill context on ENTERING S_REFILL_REQ from any
+            // state: with the writeback moved after the refill read, a
+            // dirty miss reaches S_REFILL_REQ via S_WB_READ (S_MISS's
+            // next_state is S_WB_READ), and the stale fmask must not gate
+            // the new refill's beat collection.
+            if (next_state == S_REFILL_REQ) begin
                 rf_cnt     <= '0;
                 rf_fmask   <= '0;
                 rf_kw_sent <= 1'b0;
@@ -839,16 +866,15 @@ module dcache import la32_common::*; (
                     wb_buf[n] <= data_rd_out[m_eway][n];
             end
 
-            if (state == S_WB_WRITE && mem_resp.addr_ok) begin
+            if (state == S_WB_WRITE && mem_resp.addr_ok)
                 wb_cnt <= wb_cnt + 1;
-                if (wb_cnt == NR_WORDS - 1) begin
-                    rf_cnt     <= '0;
-                    rf_fmask   <= '0;
-                    rf_kw_sent <= 1'b0;
-                end
-            end
 
-            if (state == S_REFILL_WAIT && mem_resp.data_ok) begin
+            // Collect refill beats (read channel) — gated on rdata_ok and
+            // the beat mask so the write channel's completion (bvalid,
+            // data_ok) cannot corrupt rf_buf while the writeback drain
+            // overlaps the refill read.
+            if ((state inside {S_WB_WRITE, S_REFILL_WAIT}) && mem_resp.rdata_ok
+                && !(&rf_fmask)) begin
                 rf_buf[rf_cnt]       <= mem_resp.data;
                 rf_fmask[rf_cnt]     <= 1'b1;
                 if (rf_cnt == m_wo && !rf_kw_sent && m_op == 1'b0)

@@ -44,6 +44,12 @@ package la32_common;
 
     typedef struct packed {
         logic  addr_ok;
+        // Read-channel data valid: set only when the READ channel returns
+        // a beat.  data_ok is the combined read/write completion and must
+        // not be used to qualify refill/keyword logic while a writeback
+        // can be in flight (the write completion would corrupt the refill
+        // data path).
+        logic  rdata_ok;
         logic  data_ok;
         logic  data_last;
         word_t data;

@@ -263,6 +263,11 @@ module axibus_arbiter import la32_common::*; (
         iresp.data    = r_iresp_data;
 
         dresp.addr_ok   = r_dresp_addr_ok || w_dresp_addr_ok;
+        // Read-channel data valid, kept separate from the combined
+        // data_ok: a writeback completion (bvalid) must not look like
+        // read data to the dcache while the refill collection/keyword
+        // logic is live in S_WB_WRITE (overlapped writeback/refill).
+        dresp.rdata_ok  = r_dresp_data_ok;
         dresp.data_ok   = r_dresp_data_ok || (w_dresp_data_ok && !dreq_read_pending);
         dresp.data_last = r_dresp_data_last;
         dresp.data      = r_dresp_data;
