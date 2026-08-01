@@ -136,16 +136,19 @@
 
 > 2026-08-01 行宽实测后默认改为 **4B 行**（原 16B 行：cryptonight 121.9M 周期 / IPC 0.1894 / 估时 2438ms）。4B 行对 cryptonight 是净优化（随机访问，refill 只取需要的 1 word，周期 -44%）；matrix/stream 因空间局部性以 16B 行为优（matrix 0.3104→0.2399、stream 0.2293→0.1430），这是明确权衡——cryptonight 为核心指标。非阻塞 dcache（store-miss 解耦 + hit-under-miss）与行宽优化叠加的完整路径见 [DEVLOG.md](DEVLOG.md)（2026-07-31「非阻塞 DCache」、2026-08-01「DCache 行宽/相联度实测」）。历史阶段增量（Burst refill → 标签 LUTRAM → 0-cycle icache → load 快速路径）数据均保留在 [DEVLOG.md](DEVLOG.md)。
 
-### 流水线 Stall 拆解（Verilator difftest, 2026-08-01，4B 行默认）
+### 流水线 Stall 拆解（Verilator difftest, 2026-08-01，4B 行默认，占总周期 %）
 
 | 类别 | Simple | Fibonacci | Stream | Matrix | Mixed | Cryptonight |
 |------|:------:|:---------:|:------:|:------:|:-----:|:-----------:|
-| DCache Refill | 0.7% | 0.0% | **79.6%** | **65.9%** | **60.5%** | **62.4%** |
-| ICache Refill | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
-| Load-Use / Branch Flush / Hit Pipe | <3% | <4% | <0.5% | <1% | <2% | <4% |
-| Other | 8.0% | 7.9% | 5.7% | 10.9% | 6.6% | 3.8% |
+| DCache Refill | 0.71% | 0.00% | **79.58%** | **65.93%** | **60.47%** | **62.44%** |
+| ICache Refill | 0.00% | 0.00% | 0.00% | 0.00% | 0.00% | 0.00% |
+| Load-Use | 2.26% | 3.31% | 0.01% | 0.01% | 0.25% | 0.00% |
+| Branch Flush | 1.70% | 0.14% | 0.01% | 0.05% | 0.49% | 0.00% |
+| DCache Hit Pipe | **48.11%** | **75.49%** | 3.10% | 3.16% | 6.50% | 0.10% |
+| ICache Hit Pipe | 22.76% | 0.61% | 0.12% | 0.14% | 2.53% | 0.05% |
+| Other | 7.74% | 6.84% | 2.88% | 6.72% | 4.93% | 3.83% |
 
-> 4B 行下 **hit-under-miss 恒为 0**（refill 缩短到 1 beat，流水线下一条请求到达时 refill 已完成，无需重叠服务）。DCache Refill 仍是唯一主瓶颈：stream 顺序流每访问必 miss（命中率 0.02%），matrix/cryptonight/mixed 的 load miss 在顺序流水线中必须等待关键字返回。进一步优化方向：refill 时延本身（多 MSHR、关键字加速），而非缓存几何。
+> 4B 行下 **hit-under-miss 恒为 0**（refill 缩短到 1 beat，流水线下一条请求到达时 refill 已完成，无需重叠服务）。DCache Refill 是主瓶颈：stream 顺序流每访问必 miss（命中率 0.02%），matrix/cryptonight/mixed 的 load miss 在顺序流水线中必须等待关键字返回。Simple/Fibonacci 的 Hit Pipe 占比高来自非缓存 UART 轮询与 uncache 内核（请求走 S1/S2 管道，无组合快速路径）。进一步优化方向：refill 时延本身（多 MSHR、关键字加速），而非缓存几何。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-08-01，4B 行默认）
 
