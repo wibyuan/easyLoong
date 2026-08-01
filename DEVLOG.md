@@ -866,18 +866,18 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 
 - stream 偏差来源：写回占比最高（787K words / 写回 196.8K 事务），写路径时延在板上同样翻倍但仿真侧被 hit-under-miss 吸收更多，单一常量无法同时拟合（如需可给写路径加权重）。
 
-### cryptonight 校准后指标（difftest，核心优化指标）
+### cryptonight 校准后指标（difftest，核心优化指标，2026-08-01 4B 行默认）
 
 | 指标 | 数值 |
 |------|------|
-| 指令 / 周期 / IPC | 23.09M / 121.9M / **0.1894** |
-| 估计耗时（50MHz） | **2438ms**（上板 2446ms，-0.3%） |
-| ICache | 24.68M 访问，**100.00% 命中**（仅 692 miss），s1_accept/cycle=0.9997 |
-| DCache | 4.72M 访问，52.95% 命中，2.22M miss，写回 8.88M words，hit-under-miss 339,785 |
-| 分支预测 | 1,578,423 分支，仅 821 误预测，**99.95% 准确率** |
-| Stall 构成 | **DCache Refill 占 79.2% 总周期**（97.7% 的 stall 周期），其余均 <1.5% |
+| 指令 / 周期 / IPC | 23.09M / 68.79M / **0.3357** |
+| 估计耗时（50MHz） | **1376ms**（16B 行 2438ms、上板 2446ms，-44%） |
+| ICache | 24.68M 访问，95.75% 命中，s1_accept/cycle=0.9995 |
+| DCache | 4.72M 访问，44.49% 命中，2.62M miss，写回 2.62M words（hit-under-miss 恒 0：1-beat refill 期间无并发请求） |
+| 分支预测 | 1,578,418 分支，仅 821 误预测，**99.95% 准确率** |
+| Stall 构成 | **DCache Refill 占 62.4% 总周期**（94.0% 的 stall 周期），其余 <5.8% |
 
-> 瓶颈定位：DCache Refill 为绝对主瓶颈——2MiB scratchpad 随机 load miss（容量 miss 主导），顺序流水线必须等待关键字返回，无法隐藏（2026-07-31 结论在真实时延下占比更显著：79.2% vs 无校准的 70.6%）。ICache 0-cycle 命中与 BTFNT 在 cryptonight 上近乎完美（100% / 99.95%），无可优化空间。后续优化以 cryptonight 周期数/估时（上板偏差 -0.3%）为对照基准；stream 因校准偏差 -12.6% 不宜作精确对比。
+> 2026-08-01 行宽实测后默认改为 4B 行：随机访问 2MiB scratchpad 的 refill 只取需要的 1 word，周期 121.9M→68.8M（-44%）。DCache Refill 仍是主瓶颈，进一步优化方向是 refill 时延本身（多 MSHR、关键字加速）。16B 行旧指标（IPC 0.1894 / 估时 2438ms，上板偏差 -0.3%）作为校准基准保留；stream 因校准偏差 -12.6% 不宜作精确对比。全配置实测数据见文末「DCache 行宽/相联度实测」章节。
 
 ## 2026-08-01: DCache 行宽/相联度实测 —— cryptonight 最优 cacheline = 4B
 
