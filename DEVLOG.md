@@ -870,18 +870,20 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 
 | 指标 | 数值 |
 |------|------|
-| 指令 / 周期 / IPC | 23.09M / 68.79M / **0.3357** |
-| 估计耗时（50MHz） | **1376ms**（16B 行 2438ms、上板 2446ms，-44%） |
+| 指令 / 周期 / IPC | 23.09M / 87.15M / **0.2650** |
+| 估计耗时（50MHz） | **1743ms**（上板 1699ms，+2.6%；16B 行 2446ms，-31%） |
 | ICache | 24.68M 访问，95.75% 命中，s1_accept/cycle=0.9995 |
 | DCache | 4.72M 访问，44.49% 命中，2.62M miss，写回 2.62M words（hit-under-miss 恒 0：1-beat refill 期间无并发请求） |
 | 分支预测 | 1,578,418 分支，仅 821 误预测，**99.95% 准确率** |
-| Stall 构成 | **DCache Refill 占 62.4% 总周期**（94.0% 的 stall 周期），其余 <5.8% |
+| Stall 构成 | **DCache Refill 占 70.3% 总周期**（95.8% 的 stall 周期），其余 <3.1% |
 
-> 2026-08-01 行宽实测后默认改为 4B 行：随机访问 2MiB scratchpad 的 refill 只取需要的 1 word，周期 121.9M→68.8M（-44%）。DCache Refill 仍是主瓶颈，进一步优化方向是 refill 时延本身（多 MSHR、关键字加速）。16B 行旧指标（IPC 0.1894 / 估时 2438ms，上板偏差 -0.3%）作为校准基准保留；stream 因校准偏差 -12.6% 不宜作精确对比。全配置实测数据见文末「DCache 行宽/相联度实测」章节。
+> 2026-08-01 行宽实测后默认改为 4B 行：随机访问 2MiB scratchpad 的 refill 只取需要的 1 word，上板 1699ms（16B 行 2446ms，-31%）。DCache Refill 仍是主瓶颈，进一步优化方向是 refill 时延本身（多 MSHR / load-under-miss，让相互独立的 scratchpad load miss 并行发起）。全配置实测数据见文末「DCache 行宽/相联度实测」章节。
 >
-> **4B 行上板实测（2026-08-01）**：cryptonight **1699ms**（16B 行 2446ms，**-31%**）、matrix 578ms、stream 756ms、mixed 33ms。EXTRA_LATENCY=16 按 16B 行标定，4B 行下 difftest 估计系统性偏快（cryptonight +23.5%、matrix +22.7%、stream +36.7%、mixed +23.6%）——4B 行 refill 为每 miss 单笔事务（事务数大增），首拍时延常量需按 4B 行重新标定才能精确对照。
+> **4B 行上板实测（2026-08-01）**：cryptonight **1699ms**（16B 行 2446ms，**-31%**）、matrix 578ms、stream 756ms、mixed 33ms。
 >
-> **真实 IPC（指令数 ÷ 上板耗时 × 50MHz，2026-08-01）**：cryptonight 0.2718（difftest IPC 0.3357）、matrix 0.1954（0.2399）、stream 0.1047（0.1430）、mixed 0.2010（0.2483）。16B 行时期 cryptonight 真实 IPC 0.1889（2446ms）。
+> **校准修复与重标定（2026-08-01 晚）**：发现 `EXTRA_LATENCY` 的时延计数器只在写路径（WRITE_NOP）清零、读路径不清零——连续读事务只有第一笔被限速，校准在读事务占主导的 4B 行配置下基本失效（EXTRA_LATENCY=0/16/19 估时相同）。修复：READ 状态数据送达时 `lat_d <= 0`。重标定 `EXTRA_LATENCY=7` 后 difftest 估时 vs 上板：cryptonight 1743ms（+2.6%）、matrix 585ms（+1.2%）、stream 774ms（+2.4%）、mixed 35.1ms（+6.4%）。**16B 行时期的 EXTRA_LATENCY=16 校准表（2438ms 等）基于未清零计数器的部分限速行为，已作废**；16B 行如复用需重新标定。
+>
+> **真实 IPC（指令数 ÷ 上板耗时 × 50MHz，2026-08-01）**：cryptonight 0.2718（校准后 difftest IPC 0.2650，-2.5%）、matrix 0.1954（0.1932）、stream 0.1047（0.1022）、mixed 0.2010（0.1890）。16B 行时期 cryptonight 真实 IPC 0.1889（2446ms）。校准后 difftest IPC 与真实 IPC 偏差 ≤6%，可直接对照优化。
 
 ## 2026-08-01: DCache 行宽/相联度实测 —— cryptonight 最优 cacheline = 4B
 

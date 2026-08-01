@@ -107,11 +107,14 @@ module axi2sram_sp_external #(
     // On the FPGA sys_clk=25MHz (cpu_clk=50MHz, 2:1), so each SRAM transaction
     // costs extra cpu cycles vs the 1:1 Verilator clock model. Applied to the
     // first beat only (keyword / first write): later beats overlap pipeline
-    // execution (hit-under-miss) and only the first beat is on the critical path.
-    // Fitted to on-board runtimes (EXTRA_LATENCY=16):
-    //   cryptonight 2438ms vs 2446ms, mixed 24.9ms vs 25ms, matrix 363.8ms vs 374ms,
-    //   stream 345.1ms vs 395ms (write-heavy, absorbed by hit-under-miss)
-    localparam              EXTRA_LATENCY = 8'd16;
+    // execution and only the first beat is on the critical path.
+    // The latency counter is reset after every read transaction (see the
+    // READ state), otherwise only the first read after a write is throttled
+    // and consecutive reads bypass the calibration entirely.
+    // Fitted to the 4B-line default (EXTRA_LATENCY=7, 2026-08-01):
+    //   cryptonight 1743ms vs 1699ms, matrix 585ms vs 578ms,
+    //   stream 774ms vs 756ms, mixed 35.1ms vs 33ms.
+    localparam              EXTRA_LATENCY = 8'd7;
 `else
     localparam              EXTRA_LATENCY = 8'd0;
 `endif
@@ -261,6 +264,12 @@ module axi2sram_sp_external #(
                 s_rlast  = (cnt_q == ax_req_q_len + 1);
                 // check that the master is ready, the slave must not wait on this
                 if (s_rready) begin
+                    // Clear the latency counter once the data is delivered so
+                    // the NEXT read transaction also pays the first-beat
+                    // latency (without this, only the first read after a
+                    // write transaction is throttled and consecutive reads
+                    // bypass the calibration entirely).
+                    lat_d   = 8'd0;
                     // we sent the last byte -> go back to idle
                     if (s_rlast) begin
                         state_d = IDLE;
