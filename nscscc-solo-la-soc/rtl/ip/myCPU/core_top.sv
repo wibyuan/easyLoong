@@ -77,6 +77,8 @@ module core_top #(
     ibus_req_t  icache_mem_req;
     ibus_resp_t icache_mem_resp;
 
+    logic [31:0] dcache_data_wb [0:DCACHE_WAYS-1][0:DCACHE_WORDS-1];
+
     logic [31:0] core_debug_wb_pc;
     logic [31:0] core_debug_wb_inst;
     logic        core_debug_wb_rf_wen;
@@ -108,6 +110,7 @@ module core_top #(
         .iresp,
         .dreq,
         .dresp,
+        .dcache_data_wb(dcache_data_wb),
         .cacop_req(core_cacop_req),
         .cacop_done(core_cacop_done),
         .dcache_in_refill(dcache_in_refill),
@@ -141,6 +144,7 @@ module core_top #(
         .perf_writeback(dcache_wb),
         .perf_fast_load(dcache_fast_load),
         .perf_fast_hum(dcache_fast_hum),
+        .data_wb(dcache_data_wb),
         .in_refill(dcache_in_refill)
     );
 

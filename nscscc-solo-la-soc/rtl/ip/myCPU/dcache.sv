@@ -20,7 +20,14 @@ module dcache import la32_common::*; (
     output logic [63:0] perf_fast_load,
     output logic [63:0] perf_fast_hum,
 
-    output logic        in_refill
+    output logic        in_refill,
+
+    // Full registered-read data port (rvcpu-style 0-cycle hit): the WB
+    // stage selects the line/word with the registered instruction context
+    // (mem_wb's mem_hit_way + mem_addr word bits), because the response
+    // data mux reflects the *current* request's way/word and is stale one
+    // cycle after the request.
+    output logic [31:0] data_wb [0:NR_WAYS-1][0:NR_WORDS-1]
 );
 
     parameter int NR_SETS = 256;
@@ -42,14 +49,13 @@ module dcache import la32_common::*; (
     typedef logic [WAY_BITS-1:0] way_t;
 
     // ==================== Data BRAM ====================
-    logic        data_rd_ena;
     index_t      data_rd_addr;
     logic [31:0] data_rd_out [0:NR_WAYS-1][0:NR_WORDS-1];
-    // Combinational read port (0-cycle hit path, mirrors the icache): the
-    // load-hit fast path delivers data the same cycle the request is seen.
-    // The registered port (data_rd_out) stays for the S2/miss/writeback and
-    // cacop paths. Both read the same array (distributed RAM, 2 read ports).
-    logic [31:0] data_rd_comb [0:NR_WAYS-1][0:NR_WORDS-1];
+    // Registered read port only (rvcpu-style 0-cycle hit): the load hit is
+    // acknowledged in the request cycle through the asynchronous tag read
+    // (data_ok), while the data completes one cycle later on this port and
+    // is re-extracted by the WB stage from dresp.data (dresp.hit).  With no
+    // combinational read port the 256x32 arrays infer as block RAM again.
     logic        data_wr_ena;
     way_t        data_wr_way;
     index_t      data_wr_addr;
@@ -60,22 +66,23 @@ module dcache import la32_common::*; (
     generate
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_data_way
             for (genvar gb = 0; gb < NR_WORDS; gb++) begin : g_data_word
-                (* ram_style = "block" *) logic [31:0] mem [NR_SETS-1:0];
                 logic wen;
                 assign wen = data_wr_ena && (data_wr_way == way_t'(gw)) && (data_wr_wo == woffset_t'(gb));
 
-                always_ff @(posedge clk) begin
-                    if (wen) begin
-                        if (data_wr_we[0]) mem[data_wr_addr][ 7: 0] <= data_wr_data[ 7: 0];
-                        if (data_wr_we[1]) mem[data_wr_addr][15: 8] <= data_wr_data[15: 8];
-                        if (data_wr_we[2]) mem[data_wr_addr][23:16] <= data_wr_data[23:16];
-                        if (data_wr_we[3]) mem[data_wr_addr][31:24] <= data_wr_data[31:24];
-                    end
-                    if (data_rd_ena)
-                        data_rd_out[gw][gb] <= mem[data_rd_addr];
-                end
-
-                assign data_rd_comb[gw][gb] = mem[req_idx];
+                ram_sdpram #(
+                    .ADDR_WIDTH(INDEX_WIDTH),
+                    .DATA_WIDTH(32),
+                    .BYTE_WIDTH(8),
+                    .READ_LATENCY(1)
+                ) u_data_ram (
+                    .clk,
+                    .raddr(data_rd_addr),
+                    .waddr(data_wr_addr),
+                    .en(wen),
+                    .strobe(data_wr_we),
+                    .wdata(data_wr_data),
+                    .rdata(data_rd_out[gw][gb])
+                );
             end
         end
     endgenerate
@@ -89,10 +96,20 @@ module dcache import la32_common::*; (
     index_t      tag_wr_addr;
     logic [TAG_WIDTH:0] tag_wr_data;
 
-    always_ff @(posedge clk) begin
-        if (tag_wr_ena)
-            tag_mem[tag_wr_way][tag_wr_addr] <= tag_wr_data;
-    end
+    // Per-way write enables with a constant first index: a single write
+    // with a variable way index (tag_mem[tag_wr_way][...]) defeats Vivado's
+    // RAM inference and degrades to a register array ("3D RAM not
+    // supported"); the per-way form infers as distributed RAM.
+    generate
+        for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_tag_way
+            logic tag_wen;
+            assign tag_wen = tag_wr_ena && (tag_wr_way == way_t'(gw));
+            always_ff @(posedge clk) begin
+                if (tag_wen)
+                    tag_mem[gw][tag_wr_addr] <= tag_wr_data;
+            end
+        end
+    endgenerate
 
     always_ff @(posedge clk) begin
         for (int w = 0; w < NR_WAYS; w++)
@@ -313,7 +330,14 @@ module dcache import la32_common::*; (
     // the writeback drain) or the current beat completes the mask.
     wire refill_fmask_done = (&rf_fmask) ||
                              (mem_resp.rdata_ok && (&(rf_fmask | (1 << rf_cnt))));
-    wire hum_req         = in_refill && !hum_keyword && cpu_req.valid
+    // S_MISS is excluded: the data RAM read port is busy that cycle issuing
+    // the victim's line read for the writeback capture (S_WB_READ samples
+    // data_rd_out one cycle later), so a hum load accepted in-cycle would
+    // have its registered read overwritten and the writeback would drain
+    // the wrong line.  The LSU simply holds the request and re-presents it
+    // at S_WB_READ / S_REFILL_WAIT, where the port is free.
+    wire hum_req         = in_refill && (state != S_MISS) && !hum_keyword
+                           && cpu_req.valid
                            && is_cachable(cpu_req.addr, cpu_req.cacheable)
                            && req_hit_any && !hum_refilling;
     // Store hits need the data write port, which the refill owns during
@@ -350,25 +374,38 @@ module dcache import la32_common::*; (
     end
 
     // ==================== BRAM read control ====================
+    // The data RAM read port (registered output, one-cycle latency) is
+    // issued in the cycle before the output is consumed.  The 0-cycle load
+    // hit paths (fast path, hit-under-miss) issue the read in the request
+    // cycle with the request index, so the line data is ready when the WB
+    // stage re-extracts dresp.data one cycle later (dresp.hit).
     always_comb begin
-        data_rd_ena = 1'b0;
         data_rd_addr = '0;
         tag_rd_addr  = '0;
 
+        // Priority: the 0-cycle request reads (fast path, hum) are listed
+        // LAST so they win over the stale s1 read — with s2 cleared by a
+        // hit the previous cycle, s1 can still hold the re-captured ghost
+        // of the just-completed request, whose read must not displace the
+        // current request's (the WB stage samples dresp.data one cycle
+        // after the request; the read issued here is exactly that data).
         if (state == S_IDLE && s1_valid && is_cachable(s1_addr, s1_cacheable)) begin
-            data_rd_ena = 1'b1;
             data_rd_addr = s1_idx;
             tag_rd_addr  = s1_idx;
         end
         if (state == S_MISS) begin
-            data_rd_ena = 1'b1;
             data_rd_addr = m_idx;
             tag_rd_addr  = m_idx;
         end
         if (state == S_IDLE && cacop_req.valid && cacop_req.code[2:0] == 3'd1 && cacop_req.code[4:3] == 2'b01) begin
-            data_rd_ena = 1'b1;
             data_rd_addr = cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
             tag_rd_addr  = cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
+        end
+        if (fast_path_req) begin
+            data_rd_addr = req_idx;
+        end
+        if (hum_ok && !(|cpu_req.strobe)) begin
+            data_rd_addr = req_idx;
         end
     end
 
@@ -378,6 +415,8 @@ module dcache import la32_common::*; (
         cpu_resp.data_ok  = 1'b0;
         cpu_resp.data     = 32'd0;
         cpu_resp.data_last = 1'b0;
+        cpu_resp.hit      = 1'b0;
+        cpu_resp.hit_way  = 1'b0;
 
         // Store AND load hits are served in the request cycle (0-cycle, the
         // store fast path + the load-hit fast path bypass the S1/S2 pipe).
@@ -389,8 +428,15 @@ module dcache import la32_common::*; (
             if (req_hit) begin
                 cpu_resp.addr_ok = 1'b1;
                 cpu_resp.data_ok = 1'b1;
-                if (!(|cpu_req.strobe))
-                    cpu_resp.data = data_rd_comb[req_hit_way][req_wo];
+                if (!(|cpu_req.strobe)) begin
+                    // Load hit: data_ok fires in the request cycle but the
+                    // data (registered BRAM read) completes one cycle
+                    // later; the WB stage re-extracts it from the full
+                    // data port (dresp.hit + hit_way).
+                    cpu_resp.hit     = 1'b1;
+                    cpu_resp.hit_way = req_hit_way;
+                    cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
+                end
             end else if (!cacop_d_pending) begin
                 cpu_resp.addr_ok = 1'b1;
                 if (|cpu_req.strobe)
@@ -401,8 +447,13 @@ module dcache import la32_common::*; (
         if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
             cpu_resp.addr_ok = 1'b1;
             cpu_resp.data_ok = 1'b1;
-            if (!s2_op)
+            if (!s2_op) begin
+                // S2 hit: the data read was issued at S1 and completes
+                // exactly now — data_ok and data are same-cycle (0-delay
+                // semantics), so the MEM stage captures it as usual
+                // (hit=0, no WB re-extraction).
                 cpu_resp.data = data_rd_out[s2_hit_way][s2_wo];
+            end
         end
 
         if (state == S_UNCACHED && mem_resp.data_ok) begin
@@ -428,8 +479,13 @@ module dcache import la32_common::*; (
         if (hum_ok) begin
             cpu_resp.addr_ok = 1'b1;
             cpu_resp.data_ok = 1'b1;
-            if (!(|cpu_req.strobe))
-                cpu_resp.data = data_rd_comb[req_hit_way][req_wo];
+            if (!(|cpu_req.strobe)) begin
+                // Registered-read load hit: data completes one cycle later
+                // (read issued this cycle), consumed by the WB stage.
+                cpu_resp.hit     = 1'b1;
+                cpu_resp.hit_way = req_hit_way;
+                cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
+            end
         end
 
         // Read-back store to the line being refilled: accept in-cycle and
@@ -934,6 +990,7 @@ module dcache import la32_common::*; (
     end
 
     assign mem_req = mem_req_r;
+    assign data_wb = data_rd_out;
 
     logic [63:0] access_cnt, hit_cnt, miss_cnt, wb_cnt64;
     logic [63:0] fast_load_cnt;

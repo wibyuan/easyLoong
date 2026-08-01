@@ -932,3 +932,30 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 - 相对 16B 无并发：cryptonight **-35%**、stream +12%（16B 行对 stream 更优但并发缩小差距）、matrix +4.5%、mixed -8%。
 - **difftest 估时与上板偏差 ≤5%**（并发前 +5~14%）：写回移出 load 关键路径后，EXTRA_LATENCY=7 校准模型的"关键字等待"假设更贴近实际。
 - 与 2026-07-31 的 `4c7f524` 失败（上板 50 分）对比：根因是并发写回期间写回完成（bvalid）被误认作 refill 读数据（`data_ok` 读写合并的竞态窗口），1:1 Verilator 踩不到、2:1 上板触发。`rdata_ok`（读通道专属数据有效）分离后根治。
+
+## 2026-08-01: DCache 数据回归 BRAM（rvcpu 格式 0-cycle hit）
+
+**背景**：2026-07-29~31 的 0-cycle 命中路径为数据 RAM 增加了组合读端口（`data_rd_comb`），`ram_style="block"` 无法满足异步读 → Vivado 整体降级：
+- dcache 数据 8×256×32 → LUTRAM（RAM128X1D×128/数组，~1024 LUT）
+- dcache tag（变量 way 索引写）→ "3D RAM not supported" **完全寄存器化**（~10.5Kb FF）
+- icache 数据（256 深 LUTRAM 级联）→ RAM64X1D×8 + RAM64M×40/数组
+
+**借鉴 rvcpu 的 0-cycle hit 格式**（`RAM_SinglePort/SimpleDualPort` + `READ_LATENCY` 参数）：
+- **只有 tag 需要异步读**（0-cycle hit 判定、data_ok 请求拍发出 → 流水线不暂停）
+- **数据保持注册读（READ_LATENCY=1，BRAM）**：读延迟被 M→W 流水寄存器吸收，WB 级在请求后一拍直接采样 cache 数据输出（`writeback(.rd(dresp.data))`），load-use hazard 兜底 RAW
+- 存储统一封装参数化模块 `ram_sdpram`（1 写 1 读 + BYTE_WIDTH 字节使能，READ_LATENCY=0 → `ram_style="distributed"` 组合读，=1 → `"block"` 注册读）
+
+**落地改动**：
+1. `ram_sdpram.sv`（新）：参数化 SDP RAM，generate 分支按 READ_LATENCY 选 ram_style
+2. `icache.sv`：data/tag 改 `ram_sdpram`（latency 0，保持 0-cycle 取指 —— fetch_unit 需 data_ok 同拍指令）
+3. `dcache.sv`：data 改 `ram_sdpram`（latency 1，BRAM），删除 `data_rd_comb` 组合读；读控制在请求拍发 fast-path/hum 读；S_MISS 拍 HUM 推迟（读端口被 victim 读占用）；tag 写改 per-way 使能（`g_tag_way` generate，修复寄存器化）
+4. `core.sv`：`dbus_resp_t` 增 `hit`/`hit_way`；mem_wb 增 `mem_hit/mem_hit_way/mem_size/mem_unsigned`；WB 级 `wb_final_res` 用**全量数据端口** `dcache_data_wb`（= `data_rd_out`）按寄存器化 way/word 提取 —— dresp.data 的 way/word 选择反映**当前**请求，WB 拍（下一拍）已错位，不能用于覆盖
+
+**调试中排掉的两个坑**（difftest 定位，instruction #7438 循环末次迭代 load 得 0）：
+1. **S2 hit 误标 `hit=1`**：S2 hit 数据同拍就绪（S1 拍发的读），是 0 延迟语义，应 MEM 捕获（hit=0）；混用 1 延迟 WB 覆盖依赖脆弱的"WB 拍 data_rd_out 不变"假设
+2. **WB 覆盖数据错位**：`wb_final_res = extract(dresp.data, ...)` 在 WB 拍用**新请求**的 `req_hit_way/req_wo` 索引上一请求的读结果 → 取到别的 way/word（未初始化 0）。修复：dcache 直出 `data_rd_out` 全量（`data_wb` 端口），WB 用 mem_wb 寄存器化的 `mem_hit_way` + `mem_addr` word 位选择 —— 与 rvcpu 的"数据全量输出 + W 级寄存化地址选择"同构
+
+**验证**：
+- 全量 6 测试 difftest 通过：simple 24K / fibonacci 95K / mixed 331K / stream 3.96M / matrix 5.65M / cryptonight 23.09M 条指令
+- Vivado 2019.2 综合（step_synth）：0 error；**dcache 数据 4×256×32 → RAMB18 ×4（Block RAM）**，tag → LUTRAM（RAM64X1D+RAM64M），icache data/tag → LUTRAM；BRAM 报告 READ_FIRST/WRITE_FIRST 双口成立
+- 遗留：impl 时序未跑（CI 流程覆盖）；`data_wb` 128 位总线走线需关注

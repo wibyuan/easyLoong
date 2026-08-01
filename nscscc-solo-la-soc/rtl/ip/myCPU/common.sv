@@ -52,6 +52,17 @@ package la32_common;
         logic  rdata_ok;
         logic  data_ok;
         logic  data_last;
+        // Load hit answered through the data RAM's registered read port
+        // (rvcpu-style 0-cycle hit): data_ok fires in the request cycle
+        // (combinational tag hit) while the data completes one cycle
+        // later on the registered read output.  The WB stage re-extracts
+        // the full data port (dcache.data_wb) with the registered
+        // instruction context instead of capturing it in the MEM stage.
+        // hit_way carries the hit way so the WB selection is stable one
+        // cycle after the request.  Misses/uncached/keyword completions
+        // keep hit=0 and deliver data in-cycle as before.
+        logic  hit;
+        logic  hit_way;
         word_t data;
     } dbus_resp_t;
 

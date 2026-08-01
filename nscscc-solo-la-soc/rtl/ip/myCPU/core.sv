@@ -12,6 +12,10 @@ module core import la32_common::*; #(
     input  ibus_resp_t iresp,
     output dbus_req_t  dreq,
     input  dbus_resp_t dresp,
+    // Full dcache data port: the WB stage selects the line/word for a
+    // 0-cycle load hit with the registered context (mem_hit_way +
+    // mem_addr word bits), since dresp.data reflects the current request.
+    input  logic [31:0] dcache_data_wb [0:DCACHE_WAYS-1][0:DCACHE_WORDS-1],
     output cacop_req_t cacop_req,
     input  logic       cacop_done,
     input  logic       dcache_in_refill,
@@ -113,6 +117,16 @@ module core import la32_common::*; #(
         logic      is_cond_branch;
         logic      is_csrwr;
         logic      is_csrxchg;
+        // rvcpu-style 0-cycle load hit: data_ok fires in the request cycle
+        // while the data completes on the cache's registered read port one
+        // cycle later.  mem_hit marks such loads — the WB stage re-extracts
+        // the full data port (dcache_data_wb) with the registered
+        // size/unsigned/address/way instead of using the value captured at
+        // MEM (which is stale for these hits).
+        logic      mem_hit;
+        logic      mem_hit_way;
+        msize_t    mem_size;
+        logic      mem_unsigned;
     } mem_wb_ctrl_t;
     typedef struct packed {
         logic [31:0] pc;
@@ -241,7 +255,7 @@ module core import la32_common::*; #(
         .clk,
         .ra1(id_ex_out.data.rs1), .ra2(id_ex_out.data.rs2),
         .rd1(rf_rd1), .rd2(rf_rd2),
-        .wa(mem_wb_out.data.rd), .wd(mem_wb_out.data.final_res),
+        .wa(mem_wb_out.data.rd), .wd(wb_final_res),
         .wen(mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid),
         .gpr_dbg(gpr_state)
     );
@@ -319,11 +333,11 @@ module core import la32_common::*; #(
 
     always_comb begin
         if (fw_a_em)      forward_a = ex_mem_out.data.alu_res;
-        else if (fw_a_mw) forward_a = mem_wb_out.data.final_res;
+        else if (fw_a_mw) forward_a = wb_final_res;
         else              forward_a = rf_rd1;
 
         if (fw_b_em)      forward_b = ex_mem_out.data.alu_res;
-        else if (fw_b_mw) forward_b = mem_wb_out.data.final_res;
+        else if (fw_b_mw) forward_b = wb_final_res;
         else              forward_b = rf_rd2;
     end
 
@@ -616,6 +630,10 @@ module core import la32_common::*; #(
     assign mem_wb_in.ctrl.is_cond_branch = ex_mem_out.ctrl.is_cond_branch & mem_valid;
     assign mem_wb_in.ctrl.is_csrwr  = ex_mem_out.ctrl.is_csrwr & mem_valid;
     assign mem_wb_in.ctrl.is_csrxchg = ex_mem_out.ctrl.is_csrxchg & mem_valid;
+    assign mem_wb_in.ctrl.mem_hit   = mem_valid && ex_mem_out.ctrl.mem_re && dresp.hit;
+    assign mem_wb_in.ctrl.mem_hit_way = dresp.hit_way;
+    assign mem_wb_in.ctrl.mem_size  = ex_mem_out.data.mem_size;
+    assign mem_wb_in.ctrl.mem_unsigned = ex_mem_out.data.mem_unsigned;
 
     assign mem_wb_in.data.pc        = ex_mem_out.data.pc;
     assign mem_wb_in.data.instr     = ex_mem_out.data.instr;
@@ -632,6 +650,59 @@ module core import la32_common::*; #(
         .clk, .reset, .stall(1'b0), .flush(1'b0),
         .data_in(mem_wb_in.data), .data_out(mem_wb_out.data)
     );
+
+    // ==================== WB load data (rvcpu-style sampling) ====================
+    // For a 0-cycle hit (mem_hit) the data is not captured at MEM: the
+    // registered BRAM read issued in the request cycle completes on the
+    // cache's full data port exactly when the load is in WB, so the WB
+    // stage re-extracts dcache_data_wb with the load's registered context
+    // (way from mem_hit_way, word from mem_addr) — the extra read latency
+    // is absorbed by the MEM->WB pipeline register.  The dresp.data mux
+    // reflects the *current* request's way/word and cannot be used here.
+    localparam int WB_WORD_WIDTH = $clog2(DCACHE_WORDS);
+    function automatic logic [31:0] wb_readdata(
+        input word_t   d,
+        input msize_t  size,
+        input logic [1:0] off,
+        input logic    unsign
+    );
+        case (size)
+            MSIZE1: begin
+                case (off)
+                    2'b00: wb_readdata = unsign ? {24'd0, d[7:0]}  : {{24{d[7]}}, d[7:0]};
+                    2'b01: wb_readdata = unsign ? {24'd0, d[15:8]} : {{24{d[15]}}, d[15:8]};
+                    2'b10: wb_readdata = unsign ? {24'd0, d[23:16]} : {{24{d[23]}}, d[23:16]};
+                    default: wb_readdata = unsign ? {24'd0, d[31:24]} : {{24{d[31]}}, d[31:24]};
+                endcase
+            end
+            MSIZE2: begin
+                if (!off[1])
+                    wb_readdata = unsign ? {16'd0, d[15:0]} : {{16{d[15]}}, d[15:0]};
+                else
+                    wb_readdata = unsign ? {16'd0, d[31:16]} : {{16{d[31]}}, d[31:16]};
+            end
+            default:
+                wb_readdata = d;
+        endcase
+    endfunction
+
+    wire [31:0] wb_final_res;
+    generate
+        if (DCACHE_WORDS > 1) begin : g_wb_word_sel
+            assign wb_final_res = mem_wb_out.ctrl.mem_hit
+                ? wb_readdata(dcache_data_wb[mem_wb_out.ctrl.mem_hit_way]
+                                           [mem_wb_out.data.mem_addr[WB_WORD_WIDTH+1:2]],
+                              mem_wb_out.ctrl.mem_size,
+                              mem_wb_out.data.mem_addr[1:0], mem_wb_out.ctrl.mem_unsigned)
+                : mem_wb_out.data.final_res;
+        end else begin : g_wb_word_sel_1w
+            assign wb_final_res = mem_wb_out.ctrl.mem_hit
+                ? wb_readdata(dcache_data_wb[mem_wb_out.ctrl.mem_hit_way][0],
+                              mem_wb_out.ctrl.mem_size,
+                              mem_wb_out.data.mem_addr[1:0], mem_wb_out.ctrl.mem_unsigned)
+                : mem_wb_out.data.final_res;
+        end
+    endgenerate
 
     // ==================== HAZARD ====================
     logic load_use_hazard;
@@ -666,7 +737,7 @@ module core import la32_common::*; #(
     assign debug_wb_inst    = mem_wb_out.data.instr;
     assign debug_wb_rf_wen  = mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid;
     assign debug_wb_rf_wnum = mem_wb_out.data.rd;
-    assign debug_wb_rf_wdata = mem_wb_out.data.final_res;
+    assign debug_wb_rf_wdata = wb_final_res;
 
     // ==================== STALL COUNTERS ====================
     logic lsu_not_ready;
@@ -721,7 +792,7 @@ module core import la32_common::*; #(
         .instr(mem_wb_out.data.instr),
         .wen(mem_wb_out.ctrl.rf_we),
         .wdest(mem_wb_out.data.rd),
-        .wdata(mem_wb_out.data.final_res),
+        .wdata(wb_final_res),
         .mem_addr(mem_wb_out.data.mem_addr),
         .mem_re(mem_wb_out.ctrl.mem_re)
     );

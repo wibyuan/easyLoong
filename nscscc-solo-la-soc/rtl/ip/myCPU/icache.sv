@@ -41,7 +41,7 @@ module icache import la32_common::*; (
     assign req_tag = cpu_req.addr[31:INDEX_WIDTH+4];
     assign req_wo  = cpu_req.addr[3:2];
 
-    // ==================== Data BRAM (combinational read) ====================
+    // ==================== Data LUTRAM (combinational read) ====================
     logic        data_wr_ena;
     logic        data_wr_way;
     index_t      data_wr_addr;
@@ -53,38 +53,61 @@ module icache import la32_common::*; (
     generate
         for (genvar gw = 0; gw < 2; gw++) begin : g_data_way
             for (genvar gb = 0; gb < 4; gb++) begin : g_data_word
-                (* ram_style = "block" *) logic [31:0] mem [NR_SETS-1:0];
                 logic wen;
                 assign wen = data_wr_ena && (data_wr_way == 1'(gw)) && (data_wr_wo == 2'(gb));
 
-                always_ff @(posedge clk) begin
-                    if (wen)
-                        mem[data_wr_addr] <= data_wr_data;
-                end
-
-                assign data_rd_out[gw][gb] = mem[req_idx];
+                // 0-cycle hit: the instruction must be valid in the same
+                // cycle as data_ok (the fetch unit captures it at the
+                // IF/ID edge), so the data read is combinational
+                // (READ_LATENCY = 0 -> distributed RAM).
+                ram_sdpram #(
+                    .ADDR_WIDTH(INDEX_WIDTH),
+                    .DATA_WIDTH(32),
+                    .BYTE_WIDTH(8),
+                    .READ_LATENCY(0)
+                ) u_data_ram (
+                    .clk,
+                    .raddr(req_idx),
+                    .waddr(data_wr_addr),
+                    .en(wen),
+                    .strobe(4'hf),
+                    .wdata(data_wr_data),
+                    .rdata(data_rd_out[gw][gb])
+                );
             end
         end
     endgenerate
 
     // ==================== Tag LUTRAM (combinational read) ====================
-    (* ram_style = "distributed" *) logic [TAG_WIDTH:0] tag_mem [0:1][NR_SETS-1:0];
-
     logic [1:0]         tag_wr_ena;
     index_t             tag_wr_addr;
     logic [TAG_WIDTH:0] tag_wr_data [0:1];
 
-    always_ff @(posedge clk) begin
-        if (tag_wr_ena[0])
-            tag_mem[0][tag_wr_addr] <= tag_wr_data[0];
-        if (tag_wr_ena[1])
-            tag_mem[1][tag_wr_addr] <= tag_wr_data[1];
-    end
+    logic [TAG_WIDTH:0] tag_rd_data [0:1];
+
+    generate
+        for (genvar gw = 0; gw < 2; gw++) begin : g_tag_way
+            ram_sdpram #(
+                .ADDR_WIDTH(INDEX_WIDTH),
+                .DATA_WIDTH(TAG_WIDTH + 1),
+                .BYTE_WIDTH(TAG_WIDTH + 1),
+                .READ_LATENCY(0)
+            ) u_tag_ram (
+                .clk,
+                .raddr(req_idx),
+                .waddr(tag_wr_addr),
+                .en(tag_wr_ena[gw]),
+                .strobe(1'b1),
+                .wdata(tag_wr_data[gw]),
+                .rdata(tag_rd_data[gw])
+            );
+        end
+    endgenerate
 
     logic [TAG_WIDTH:0] req_tag_data [0:1];
     always_comb begin
-        req_tag_data[0] = tag_mem[0][req_idx];
-        req_tag_data[1] = tag_mem[1][req_idx];
+        req_tag_data[0] = tag_rd_data[0];
+        req_tag_data[1] = tag_rd_data[1];
     end
 
     // ==================== PLRU (distributed RAM) ====================
