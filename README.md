@@ -140,6 +140,8 @@
 
 > 真实 IPC = 指令数 ÷ (上板耗时 × 50MHz)。**1MB 单级 dcache（16384 组 × 4 路 × 16B，全部 BRAM，2026-08-02）**：matrix 工作集（110KB）全命中（99.74%）-47%、cryptonight 命中率 74.93%（+容量项）-15%，stream/mixed 顺序流/短重用被 1 拍命中惩罚 + 16B 行抵消。EXTRA_LATENCY=7 校准按 8B 行标定，16B 行事务数减半后 mixed 类写回密集场景失真（+28%），stream/cryptonight 仍可用（±8%）。上板基线对比见 [DEVLOG.md](DEVLOG.md)「1MB 单级 DCache」章节。
 
+> **两级 cache 上板实测（gitlab CI 远程平台，50MHz，wip/2level-cache）**：matrix **190ms**（单级 209ms）、stream **419ms**（单级 566ms）、cryptonight **1399ms**（单级 1367ms）、mixed **37ms**（单级 35ms）——四测试合计 **2045ms vs 单级 2177ms（-6.1%）**，stream/matrix 显著提升（L1 0-cycle 命中消除 1 拍命中惩罚），cryptonight/mixed 微降（L1 容量 miss 逐字往返）。
+
 ### 流水线 Stall 拆解（Verilator difftest, 2026-08-02，**1MB 单级 dcache**，占总周期 %）
 
 | 类别 | Simple | Fibonacci | Stream | Matrix | Mixed | Cryptonight |

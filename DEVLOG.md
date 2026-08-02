@@ -1174,5 +1174,6 @@ raddr mux 最初把 `f_valid`（fill 进行中）切到 `f_idx`（fill 写判定
 - 单元测试 **13/13 全绿**（含 60000 次 storm + 全量 flush 内存比对）
 - difftest 6/6 通过，**IPC 无回退**（与提交版逐项一致）：simple 0.5202 / stream 0.2469 / matrix 0.6324 / mixed 0.4553 / cryptonight 0.3833 / fibonacci 0.1264
 - 本地 synth（Vivado 2019.2 docker）：Block RAM **293.5 tiles（284 RAMB36 + 19 RAMB18）**、Slice LUTs 11284（8.38%）、LUT as Memory 2792——存储全部宏化，impl 前资源健康
-- gitlab CI 已提交 `submit-20260802-2levelci3`（b838abb），待 impl 收敛确认
+- gitlab CI 已提交 `submit-20260802-2levelci3`（b838abb），**impl 恢复收敛（对比 25922 Unisim 卡死）**
+- **上板实测（gitlab CI 远程平台，50MHz）**：matrix **190ms**（单级 209ms，**-9.1%**）、stream **419ms**（单级 566ms，**-26.0%**）、cryptonight 1399ms（单级 1367ms，+2.3%）、mixed 37ms（单级 35ms，+5.7%）——**四测试合计 2045ms，较单级 2177ms 总成绩提升 6.1%**；stream/matrix 的大幅提升来自 L1 0-cycle 命中消除 1 拍命中惩罚 + 顺序流局部性；cryptonight/mixed 微降（L1 容量 miss 的逐字往返惩罚）
 - AGENTS.md 增补硬规则：cache 存储必须 `ram_sdpram` 实例，禁止模块内多维数组 + ram_style；提交前查 `report_utilization`（d0f720b）
