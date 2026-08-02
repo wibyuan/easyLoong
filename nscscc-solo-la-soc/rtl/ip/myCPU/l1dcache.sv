@@ -241,7 +241,14 @@ module l1dcache import la32_common::*; #(
     // design.  The L1's own fills/drains are never presented while the
     // LSU's request is presented or outstanding (o_valid), so the L2
     // processes one initiator transaction at a time.
-    wire lsu_forward_req = cpu_req.valid && !req_hit;
+    // Gated while a drain store is waiting for its accept: the drain's
+    // store is presented continuously until the L2 captures it, and the
+    // LSU's request (re-presented by the LSU until answered) waits.  If
+    // the LSU's forward preempted an unaccepted drain store, the L2
+    // would capture the LSU's request instead, and its response would
+    // be mistaken for the drain's accept — the drain's store dropped
+    // and the dirty word lost.
+    wire lsu_forward_req = cpu_req.valid && !req_hit && !(dr_valid && dr_waiting);
     // The drain store is re-presented every cycle until the L2 accepts
     // it (captured requests are ignored by the L2's pipeline, so a
     // dropped presentation is harmless).
@@ -404,13 +411,20 @@ module l1dcache import la32_common::*; #(
                 cpu_resp.hit_way = req_hit_way;
                 cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
             end
-        end else if (o_valid || (cpu_req.valid && !req_hit)) begin
+        end else if (!(dr_valid && dr_waiting)
+                     && (o_valid || (cpu_req.valid && !req_hit))) begin
             // Pass-through: the L2's response to the forwarded request
             // (o_valid covers the load-miss keyword, delivered while the
             // LSU is in WAIT and no longer presenting the request).
             // Gated on the outstanding/presented request so a stray L2
             // response can never be mistaken for a response to an idle
             // LSU (the next request would complete with wrong data).
+            // Also excluded while a drain store is in flight: its accept
+            // belongs to the eviction, not to any request the LSU may
+            // present that cycle (the L2 is still processing the drain,
+            // so the presented request was NOT captured — letting it
+            // complete on the drain's response would drop the request
+            // and leave o_valid stuck, deadlocking the cacop walk).
             // hit is never asserted here — the WB stage only re-extracts
             // for L1 hits.
             cpu_resp.addr_ok   = mem_resp.addr_ok;
@@ -525,8 +539,16 @@ module l1dcache import la32_common::*; #(
     wire [NR_WORDS-1:0] fill_new_v = f_partial
         ? (tag_mem[f_way][f_idx][NR_WORDS-1:0] | (1 << f_wo))
         : (1 << f_wo);
-    wire [NR_WORDS-1:0] fill_new_dirty = (dirty_mem[f_way][f_idx] & ~(1 << f_wo))
-        | (f_store ? (1 << f_wo) : 1'b0);
+    // Dirty bits of the line AFTER the fill: a partial fill (same tag
+    // already resident) keeps the line's other dirty words; a fresh fill
+    // REPLACES the victim's line, whose words (and their dirty bits)
+    // belong to the victim — merging them in would mark the stale data
+    // words (never written by this fill) dirty and a later eviction
+    // would drain garbage into the L2 at this line's address.
+    wire [NR_WORDS-1:0] fill_new_dirty = f_partial
+        ? ((dirty_mem[f_way][f_idx] & ~(1 << f_wo))
+           | (f_store ? (1 << f_wo) : 1'b0))
+        : (f_store ? (1 << f_wo) : 1'b0);
 
     always_comb begin
         tag_wr_ena   = 1'b0;
@@ -750,8 +772,17 @@ module l1dcache import la32_common::*; #(
                             dr_word <= dr_word + 1;
                     end
                     // else: keep re-presenting the store until accepted.
-                end else if (dr_mask[dr_word] && !o_valid && !lsu_forward_req) begin
-                    dr_waiting <= 1'b1;
+                end else if (dr_mask[dr_word]) begin
+                    // Dirty word: present it once the cpu port is free
+                    // (the L1 is the only master of the L2, and the L2
+                    // processes one initiator transaction at a time) and
+                    // HOLD until the L2 accepts.  Advancing past a dirty
+                    // word while the bus is busy would silently drop the
+                    // store's data (observed in the test-12 storm: only
+                    // drains whose dirty word sat at word 0 AND met a
+                    // quiet LSU completed; all others lost the word).
+                    if (!o_valid && !lsu_forward_req)
+                        dr_waiting <= 1'b1;
                 end else if (dr_word == NR_WORDS - 1) begin
                     dr_valid <= 1'b0;
                     dr_mask  <= '0;
