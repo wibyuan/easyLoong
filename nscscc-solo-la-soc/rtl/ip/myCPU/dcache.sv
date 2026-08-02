@@ -828,4 +828,54 @@ module dcache import la32_common::*; (
         end
     end
 
+    // ==================== Performance counters ====================
+    logic [63:0] access_cnt, hit_cnt, miss_cnt, wb_cnt64;
+    logic [63:0] fast_load_cnt, fast_hum_cnt;
+    assign perf_access    = access_cnt;
+    assign perf_hit       = hit_cnt;
+    assign perf_miss      = miss_cnt;
+    assign perf_writeback = wb_cnt64;
+    assign perf_fast_load = fast_load_cnt;
+    assign perf_fast_hum  = fast_hum_cnt;
+
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            access_cnt    <= 64'd0;
+            hit_cnt       <= 64'd0;
+            miss_cnt      <= 64'd0;
+            wb_cnt64      <= 64'd0;
+            fast_load_cnt <= 64'd0;
+            fast_hum_cnt  <= 64'd0;
+        end else begin
+            // Fast-path RESP stage (S_IDLE): hit or miss.
+            if (p_valid && !in_refill && (state == S_IDLE)
+                && is_cachable(p_addr, p_cacheable)) begin
+                access_cnt <= access_cnt + 64'd1;
+                if (p_hit) begin
+                    hit_cnt <= hit_cnt + 64'd1;
+                    if (!p_op)
+                        fast_load_cnt <= fast_load_cnt + 64'd1;
+                end else
+                    miss_cnt <= miss_cnt + 64'd1;
+            end
+            // Hit-under-miss / refill-line store merge (counted with the
+            // same gating as the response, so a store refused in
+            // S_REFILL_WRITE is counted once when it re-hits in S_IDLE).
+            if (p_valid && in_refill
+                && (p_st_merge
+                    || (p_hum_hit
+                        && (p_op ? (state != S_REFILL_WRITE) : 1'b1)))) begin
+                access_cnt    <= access_cnt + 64'd1;
+                hit_cnt       <= hit_cnt + 64'd1;
+                fast_hum_cnt  <= fast_hum_cnt + 64'd1;
+                if (!p_op)
+                    fast_load_cnt <= fast_load_cnt + 64'd1;
+            end
+            if (state == S_WB_WRITE && mem_resp.addr_ok)
+                wb_cnt64 <= wb_cnt64 + 64'd1;
+            if (state == S_CACOP_WB_WRITE && mem_resp.addr_ok)
+                wb_cnt64 <= wb_cnt64 + 64'd1;
+        end
+    end
+
 endmodule
