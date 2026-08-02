@@ -2,6 +2,7 @@
 
 ## 已验证
 
+- [x] 两级 dcache（直通式）上板通过（2026-08-02）：8KB 0-cycle L1 + 1MB 全 BRAM L2（全部 `ram_sdpram` 实例化），单元测试 15/15、difftest 6/6；上板四测试合计 **2045ms**（单级 2177ms，-6.1%）：matrix 190ms / stream 419ms / cryptonight 1399ms / mixed 37ms。详见「2026-08-02（续三）」
 - [x] 1MB 单级 DCache 上板通过（2026-08-02）：WaitStart 超时根因定位为 **HUM 一致性回归**（S_REFILL_WRITE 写口覆盖 + HUM store 缺 dirty/PLRU + 响应/清除/写口门控不一致，`2c803d8`+`0365302` 修复）。上板全过：matrix 209ms / stream 566ms / cryptonight 1367ms / mixed 35ms（合计 -11% vs master）；**REQP-1839/1840 复位窗口嫌疑排除**。详见文末「1MB 单级 DCache」章节
 - [x] 上板实测通过（2026-08-01）：`30e9c97`（非阻塞 dcache，当前 master）FPGA 实机全部测试通过；`2c4f3298`（写回/refill 重叠）上板全部 50 分已回退，排查记录见「写回/refill 重叠上板失败排查」
 - [x] SRAM 固定时延校准（2026-08-01）：`axi2sram_sp_external.v` `ifdef VERILATOR` 每笔事务首拍 +16 周期，4 基准 difftest 估计 vs 上板偏差 -0.4%/-2.7%/-12.6%/-0.3%；**cryptonight 定为后续核心优化指标**（详见文末「SRAM 固定时延校准」章节）
@@ -56,99 +57,7 @@
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
 - [x] dcache 写缓冲/非阻塞化（2026-07-31）：store miss 当拍接受 + refill 合并、读回写合并进 refill 写、hit-under-miss 同拍服务其他行命中——refill 期间 store 不再阻塞（原占 stall 70-89% 的主瓶颈，见「非阻塞 DCache」章节）。残余阻塞：refill 期间到达的二次 miss（单 MSHR 上限）、顺序 load miss 延迟、写回→refill 串行（写回/refill 重叠已实现但上板失败回退，见「写回/refill 重叠上板失败排查」）
 
-## difftest 状态（2026-07-26，icache workaround + dcache workaround 修复后）
-
-| 测试 | DIFF=1 difftest | 数据比对 | 指令数 |
-|------|-----------------|----------|--------|
-| simple | ✅ 通过 | N/A | ~21K |
-| stream | ✅ 通过 | ✅ 通过 | ~395 万 |
-| matrix | ✅ 通过 | ✅ 通过 | ~564 万 |
-| mixed | ✅ 通过 | ✅ 通过 | ~33 万 |
-| cryptonight | ✅ 通过 | ✅ 通过 | ~2309 万 |
-| fibonacci | ✅ 通过 | ✅ 通过 | ~7.6 万 |
-
-### 分支预测 BTFNT 准确率（2026-07-26）
-
-| 测试 | 条件分支数 | 误预测数 | 准确率 |
-|------|-----------|----------|--------|
-| Simple | 4,879 | 819 | 83.21% |
-| Stream | 791,311 | 820 | 99.90% |
-| Matrix | 244,688 | 10,132 | 95.86% |
-| Mixed | 41,743 | 4,950 | 88.14% |
-| Cryptonight | 1,577,743 | 821 | 99.95% |
-| Fibonacci | 17,966 | 330 | 98.16% |
-
-> BTFNT (Backward Taken, Forward Not Taken) 静态预测器，独立模块 `branch_predictor.sv`，含 ID 级 `bp_do_jump` 重定向。`DifftestBranchState` 通过 DPI-C 逐周期上报 `total_branches`（仅条件分支 BEQ/BNE/BLT/BGE/BLTU/BGEU）和 `mispredictions`（预测方向 ≠ 实际方向）。npc 在 EX 阶段抑制正确预测的冗余 flush 并恢复误预测（→ pc+4）。
-
-### 流水线 Stall 七类拆解（2026-07-27 Burst Refill + Writeback）
-
-| 测试 | DCache Refill | ICache Refill | Load-Use | Branch Flush | DCache Hit Pipe | ICache Hit Pipe | Other |
-|------|:------------:|:------------:|:--------:|:------------:|:---------------:|:---------------:|:-----:|
-| Simple | 0.5% | 4.4% | 2.3% | 12.7% | 46.5% | 22.4% | 11.3% |
-| Mixed | 37.5% | 0.4% | 0.7% | 18.6% | 13.3% | 21.5% | 8.0% |
-| Matrix | 27.0% | 0.0% | 0.0% | 19.9% | 20.7% | 21.8% | 10.6% |
-| Stream | 45.7% | 0.0% | 3.3% | 11.5% | 14.9% | 14.8% | 9.7% |
-| Cryptonight | 57.1% | 0.0% | 0.0% | 15.6% | 9.9% | 13.8% | 3.6% |
-
-> 数值为占全部 stall 周期的百分比。DCache Refill 占 stall 比从 burst 改造前的 51-84% 降至 27-57%。Cache 命中流水线延迟（Hit Pipe）合计占 24-43%，已超过 Refill 成为部分 benchmark 的主瓶颈。下一步优先考虑写缓冲（消除 store hit 延迟）或非阻塞 cache（hit-under-miss）。
-
-### 2026-07-27 性能对比（Burst Refill + Writeback Burst vs 基线）
-
-| 测试 | 基线 IPC | 新 IPC | Δ IPC | 基线周期 | 新周期 | Δ 周期 |
-|------|---------|--------|-------|---------|--------|--------|
-| simple | 0.1505 | 0.152 | +1.1% | 144K | 143K | -0.9% |
-| mixed | 0.121 | 0.176 | +45.5% | 2.73M | 1.87M | -31.6% |
-| stream | 0.085 | 0.141 | +65.9% | 46.35M | 28.07M | -39.4% |
-| cryptonight | 0.091 | 0.163 | +78.8% | 253.95M | 141.85M | -44.1% |
-| matrix | 0.122 | 0.172 | +41.0% | 46.35M | 32.80M | -29.2% |
-
-> 基线 = BTFNT+ID重定向（2026-07-26），即 burst 改造前的值。Cryptonight 单次 miss penalty 87 → 30.5 周期（-65%）。refill 数据传递和 writeback 数据传递均由逐字 AXI 事务改为单次 INCR burst。
-
 ### 修复记录
-
-#### dcache workaround 修复：load hit ghost + store hit stall（2026-07-26, 750227e + 1f62308）
-
-dcache 存在三个注释标记为 WORKAROUND 的代码段，均是为修复功能 bug 而牺牲时序的错误行为。
-
-**Workaround 1（store hit stall）**：每次 store 命中时 `s1_stall=1`，声称防止 BRAM read-after-write 冲突。
-
-**Workaround 2（load hit ghost）**：每次 load 命中时同时清零 `s2_valid` 和 `s1_valid`，防止 stale S1 值推进到 S2 形成幽灵命中。每次命中浪费 1 周期。
-
-**Workaround 3（s2 linger）**：s1_stall 阻塞 s1→s2 推进时，手动清零遗留的 s2_valid/s1_valid。
-
-根本原因：LSU 在 dcache 返回 data_ok 后 dreq.valid 仍保持 1（因 valid_in 仍为同一指令高电平，state 仍为 IDLE），导致 stale 请求被 s1 重新捕获。Fetch_unit 没有此问题（data_ok 时 ireq.valid 拉低为 0）。
-
-修复分为两部分：
-
-##### 修复 1：LSU dreq.valid 拉低（750227e）
-
-在 LSU IDLE 状态下，当 `dresp.data_ok` 到达时拉低 `dreq.valid`，镜像 fetch_unit 的 `ireq.valid` 处理方式。防止 stale 请求被 dcache s1 重新捕获。
-
-##### 修复 2：dcache just_hit 机制替代 Workaround 2（750227e）
-
-参照 icache 修复，加入 `just_hit` + `last_hit_addr` 寄存器。当 s2_hit 时仅清零 s2_valid（不清零 s1_valid）。下一周期若 s1_addr 与 last_hit_addr 相同（stale），则抑制 s1→s2 推进。需要 LSU 修复配合，否则背靠背同地址 load 会被误抑制。
-
-##### 修复 3：移除 Workaround 1（1f62308）
-
-论证：store hit 时 BRAM 写入与 legitimate 新请求的 BRAM 读取无冲突。新请求进入 s1 的时机晚于 store hit 至少 1 周期（受限于 ex_mem_out 流水线寄存器延迟），此时 BRAM 写入已完成。s1 中 stale 的 store 请求由 just_hit 机制正确处理。
-
-##### IPC 分析
-
-两个 workaround 消除后，dcache 吞吐量达到 1 req/cycle（与 openLA500 持平），但 IPC 无变化。瓶颈不在 dcache，而在 in-order 五级流水线的 ex_mem_out 寄存器延迟：Load A 在 cycle N 命中，Load B 必须等 cycle N+1 的 posedge 才从 id_ex_out 进入 ex_mem_out，最早在 cycle N+1 被 dcache s1 捕获。这 1 周期间隙是流水线物理寄存器固有的，不是 workaround 引入的。
-
-未来提升方向：引入 dcache 写缓冲（write buffer），store 命中后异步写 BRAM 并立即回 data_ok，消除 ex_mem_out 延迟。参照 openLA500 的设计。
-
-##### 效果
-
-全部 6 个测试 DIFF=1 difftest 通过，IPC 不变（如下表）。
-
-| 测试 | 修复前 IPC | 修复后 IPC | 周期变化 |
-|------|-----------|-----------|---------|
-| simple | 0.1505 | 0.1505 | 0 |
-| mixed | 0.1169 | 0.1169 | 0 |
-| stream | 0.0812 | 0.0812 | 0 |
-| matrix | 0.1218 | 0.1218 | 0 |
-| fibonacci | 0.1063 | 0.1063 | 0 |
 
 #### Bug 9: dcache 写回泄漏 addr_ok/data_ok 到后续 refill 导致 load 返回 0（2026-07-25, 95ba59d + 7e70198）
 
@@ -225,39 +134,6 @@ Tag BRAM 在 Verilator 中初始值为 `'x`，导致 `s2_hit` 解析为 `'x`，`
 - 在 `state != S_IDLE` 期间同时清零 `s1_valid <= 1'b0`，防止旧值传播
 
 ⚠ **已知：此修复是 workaround**。清空 `s2_valid`/`s1_valid` 导致每次 hit 后强制 1 周期空泡。正确修法见待完成列表。
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| 行大小 | 16 字节 (4 words) | offset = addr[3:0] |
-| 路数 | 2 路组相联 | |
-| 组数 | 256 组 | index = addr[11:4] |
-| 总容量 | 8KB (2 × 256 × 16) | 满足比赛 ≥ 8KB 要求 |
-| tag | 20 位 | addr[31:12] |
-| 写策略 | 写回 + 写分配 | dirty 位 per line |
-| 替换策略 | PLRU | 2 路时等价真 LRU |
-| 关键字优先 | 是 | refill 时关键字词最先取回并转发 |
-| 写回缓冲区 | 无 | 先写回再 refill，共用 AXI 接口 |
-| 流水级 | 2 级 (TAG + DATA) | S1 发 BRAM 读地址，S2 比较 tag 并响应 |
-| 插入位置 | lsu ↔ axibus_arbiter | core_top.sv 中 dreq/dresp 路径 |
-| 缓存范围 | 0x1c000000 – 0x1cffffff | BaseRAM + ExtRAM |
-| BRAM 资源 | data: 8 × 256×32, tag: 2 × 256×21 | 约 4.5 BRAM36K |
-
-## icache 参数（2026-07-24）
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| 行大小 | 16 字节 (4 words) | offset = addr[3:0] |
-| 路数 | 2 路组相联 | |
-| 组数 | 256 组 | index = addr[11:4] |
-| 总容量 | 8KB (2 × 256 × 16) | 满足比赛 ≥ 8KB 要求 |
-| tag | 20 位 | addr[31:12] |
-| 写策略 | 无关（只读） | 无 dirty / 写回机制 |
-| 替换策略 | PLRU | 2 路时等价真 LRU |
-| 关键字优先 | 是 | refill 时关键字词最先取回并转发 |
-| 流水级 | 2 级 (TAG + DATA) | S1 发 BRAM 读地址，S2 比较 tag 并响应 |
-| 插入位置 | fetch_unit ↔ axibus_arbiter | core_top.sv 中 ireq/iresp 路径 |
-| 缓存范围 | 0x1c000000 – 0x1cffffff | 全覆盖，无 uncached 路径 |
-| inv_all | 256 周期全失效 | 同时写两路 tag = 0（valid=0） |
 
 ## Vivado FPGA 构建状态（2026-07-23）
 
@@ -880,7 +756,7 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 
 > **默认配置定为 8B 行（2026-08-01 上板三配置实测后）**：cryptonight 16B 2446 / **8B 1883** / 4B 1699ms；stream 395 / **473** / 756ms；matrix 374 / **444** / 578ms；mixed 25 / **25** / 33ms——**四测试合计 8B 2825ms < 4B 3066ms < 16B 3240ms**。4B 行对 cryptonight 单独最优但 stream/matrix 空间局部性全失；8B 行折中最优。16B 行时期 cryptonight 真实 IPC 0.1889（2446ms）；8B 行真实 IPC 0.2453（1883ms）。
 >
-> **校准修复与重标定（2026-08-01 晚）**：发现 `EXTRA_LATENCY` 的时延计数器只在写路径（WRITE_NOP）清零、读路径不清零——连续读事务只有第一笔被限速，校准在读事务占主导的 4B 行配置下基本失效（EXTRA_LATENCY=0/16/19 估时相同）。修复：READ 状态数据送达时 `lat_d <= 0`。重标定 `EXTRA_LATENCY=7`。**16B 行时期的 EXTRA_LATENCY=16 校准表（2438ms 等）基于未清零计数器的部分限速行为，已作废**。
+> **校准修复与重标定（2026-08-01 晚）**：时延计数器原先只在写路径清零，连续读事务只有首笔被限速（4B 行下校准失效）；修复为读送达时清零，重标定 `EXTRA_LATENCY=7`（EXTRA_LATENCY=16 时代的校准数据作废）。
 >
 > **真实 IPC（指令数 ÷ 上板耗时 × 50MHz，2026-08-01，8B 行）**：cryptonight 0.2453（difftest IPC 0.2258）、matrix 0.2544（0.2414）、stream 0.1673（0.1587）、mixed 0.2653（0.2336）。difftest 估时与上板偏差 +5~14%（8B 行事务数减半，7 拍常量略偏大，未重新标定），可直接对照优化。
 >
@@ -1022,60 +898,12 @@ matrix/cryptonight 吃满 1MB 容量收益（matrix 110KB 工作集全命中、c
 
 **待办**（遗留项，均非本次卡死根因）：
 1. REQP-1839/1840 警告仍在（42 个）——BRAM 控制引脚由 CDC 异步复位寄存器驱动，复位窗口风险未消除，建议后续 CDC 相关寄存器改同步复位或复位期门控 BRAM 写使能
-2. 两级 cache 展望不变：1 拍命中惩罚（matrix 0.757→0.5815、stream 0.254→0.182）可由 L1（0-cycle，32KB/1024 深 LUTRAM tag）消除——L1 命中 0 拍 + L2（=现 1MB 单级）1 拍兜底，预期 matrix ~0.66-0.70、cryptonight ~0.5、stream ~0.24，全测试优于 1MB 单级。
-
-## 2026-08-02: 两级 cache 尝试（wip/2level-cache）——全面负优化，已搁置（过失记录）
-
-### 背景
-
-前文「两级 cache 展望」认为 0-cycle L1 能消除单级 1MB 的 1 拍命中惩罚（预期 matrix ~0.66-0.70 等）。本次在 `wip/2level-cache` 分支实现了该展望，**结果是全面负优化，且 cryptonight 未修好**。本文档诚实记录过程、数据与教训。
-
-### 做了什么
-
-- **L1**（`l1dcache.sv`）：8KB、2 路、16B 行、**0-cycle 命中**（tag LUTRAM 异步读 + data BRAM 注册读，WB 级按 `mem_hit_way`+字偏移重取数据）；非阻塞（单 MSHR），store miss 当拍接受并合并进 refill 写，读回写合并槽等沿用旧设计
-- **L2**（`l2dcache.sv`）：原 1MB 单级 dcache 改名；cpu 口 load 响应补 `rdata_ok`（供 L1 的 beat 收集/keyword 判定）；新增 `S_REFILL_DONE` 状态修复「refill 最后一拍写入与 S_IDLE 响应读竞争」（L1 逐字请求恰好命中该窗口，word 3 返回旧值）
-- **接口**：L1 的 mem 口直连 L2 的 cpu 口；L1 miss **逐字**向 L2 refill/写回（L2 cpu 口每次只应答一个 32 位字，L1 按旋转顺序逐字请求，keyword 优先）
-- **一致性**：两级均 write-back/allocate；L1 脏写回 L2、L2 淘汰写回内存；cacop 串行化（L2 的 cacop 请求门控在 L1 完成之后，保证 flush walk 时 L1 脏数据先合并进 L2 再落内存）；CPUCFG 仍报 L2 几何，内核 flush walk 一次覆盖两级（软件/NEMU 零改动）
-
-### 正确性状态
-
-- 单元测试（`unittest/cache_hierarchy`，9 个：store 流、keyword、0-cycle 命中、淘汰、cacop 顺序、2MB 伪随机风暴等）**全绿**
-- difftest：simple/stream/matrix/mixed/fibonacci **通过**；**cryptonight 未通过**——keccak 循环 `ld.w` 返回 0x5e4e6（应为 0x2829e）
-- cryptonight 根因排查未完成：追到 L2 某行「数据与 tag 错位」（0x1c489a70 的行数据被写进 tag 为 0x1c409a70 的 way），怀疑 L1 的 s1/s2 流水注册读被 fast-path 读覆盖导致写回地址/数据错位；尝试修复（`fast_path_req` 加 `!s1_valid`、s2 路径 tag 判定与 `m_etag` 捕获改 LUTRAM 组合读）**未解决问题**，排查中止
-
-### 性能结果（Verilator difftest IPC，全部下降）
-
-| 测试 | 单级 1MB（master） | 两级 L1+L2 | 变化 |
-|------|:---:|:---:|:---:|
-| simple | 0.5961 | 0.5194 | **-12.9%** |
-| stream | 0.1820 | 0.1438 | **-21.0%** |
-| matrix | 0.5815 | 0.2634 | **-54.7%** |
-| mixed | 0.4962 | 0.3390 | **-31.7%** |
-| fibonacci | 0.1264 | 0.1137 | **-10.0%** |
-| cryptonight | 0.3686 | 未通过 | — |
-
-### 负优化根因
-
-1. **L1 容量对目标工作集无意义**：matrix（110KB）/stream/cryptonight（2MB）工作集远大于 8KB，L1 命中率≈0，所有访问仍落到 L2——L1 只贡献 miss 路径的额外延迟
-2. **L1 miss 逐字 refill 是灾难**：L2 的 cpu 口单字应答，L1 取一行要 4 次独立往返（L2 命中每字 2 拍 + 状态机间隙，整行 ≈ 8+ 拍；L2 miss 还要先等 L2 自身内存 refill 完成）。单级时 L2 命中只需 1 拍。两级把 L2 命中 1 拍变成「L2 命中 + L1 逐字 4 往返」
-3. 结论：**两级结构纯加惩罚，8KB L1 配 1MB L2 对评测工作集没有任何正面贡献**
-
-### 教训（重要）
-
-1. **L1 与 L2 之间的传输通道必须支持整行突发**：L2 的 cpu 口应支持 burst 响应（一次返回整行 4 字），L1 refill 从「逐字 4 次往返」改成「单次整行传输」，L1 miss 命中 L2 时整行延迟才能压到 ~6-8 拍。逐字往返方案从一开始就是错的
-2. **小容量 L1 只对工作集 < L1 容量的程序有意义**：对容量主导的评测（matrix/cryptonight），L1 命中贡献≈0，任何 miss 路径开销都是净亏损
-3. 若继续两级路线：L1 容量应至少覆盖短重用集（且不牺牲时序），L2 cpu 口加 burst 整行响应，再重测——否则维持单级 1MB（master 现状，全测试通过、上板全过）
-
-### 当前状态
-
-- 全部改动在 `wip/2level-cache` 分支（commit `b88c40f`），**master 未动**（master = 单级 1MB，全测试通过、上板实测 2177ms 合计）
-- 未提交 CI（cryptonight 失败，不值得上板）
 
 ## 2026-08-02（续）：两级 dcache 第二轮 —— 直通式设计（wip/2level-cache，未提交）
 
 ### 背景
 
-上一轮两级尝试（8KB L1 + 1MB L2，B 式逐字 refill）全面负优化且 cryptonight 未修好，已搁置（见上）。本轮按「教训」重新设计：**L1 miss 直通 L2**，消除逐字 refill 的往返开销；L1 只做 0-cycle 命中叠层 + 按字填充。
+第一轮两级尝试（8KB L1 + 1MB L2，B 式逐字 refill）IPC 全面下降且 cryptonight 未修好（该轮记录已移除——其结论在第三轮修复正确性 bug 后不成立，两级最终为正收益，见 README「两级 cache 落地」注记与续三）。本轮重新设计：**L1 miss 直通 L2**，消除逐字 refill 的往返开销；L1 只做 0-cycle 命中叠层 + 按字填充。
 
 ### 新设计（l1dcache.sv 重写，约 570 行）
 
@@ -1172,7 +1000,7 @@ raddr mux 最初把 `f_valid`（fill 进行中）切到 `f_idx`（fill 写判定
 ### 验证
 
 - 单元测试 **13/13 全绿**（含 60000 次 storm + 全量 flush 内存比对）
-- difftest 6/6 通过，**IPC 无回退**（与提交版逐项一致）：simple 0.5202 / stream 0.2469 / matrix 0.6324 / mixed 0.4553 / cryptonight 0.3833 / fibonacci 0.1264
+- difftest 6/6 通过，**IPC 无回退**（与提交版逐项一致）：simple 0.5202 / stream 0.2469 / matrix 0.6324 / mixed 0.4553 / cryptonight 0.3594 / fibonacci 0.1264
 - 本地 synth（Vivado 2019.2 docker）：Block RAM **293.5 tiles（284 RAMB36 + 19 RAMB18）**、Slice LUTs 11284（8.38%）、LUT as Memory 2792——存储全部宏化，impl 前资源健康
 - gitlab CI 已提交 `submit-20260802-2levelci3`（b838abb），**impl 恢复收敛（对比 25922 Unisim 卡死）**
 - **上板实测（gitlab CI 远程平台，50MHz）**：matrix **190ms**（单级 209ms，**-9.1%**）、stream **419ms**（单级 566ms，**-26.0%**）、cryptonight 1399ms（单级 1367ms，+2.3%）、mixed 37ms（单级 35ms，+5.7%）——**四测试合计 2045ms，较单级 2177ms 总成绩提升 6.1%**；stream/matrix 的大幅提升来自 L1 0-cycle 命中消除 1 拍命中惩罚 + 顺序流局部性；cryptonight/mixed 微降（L1 容量 miss 的逐字往返惩罚）
