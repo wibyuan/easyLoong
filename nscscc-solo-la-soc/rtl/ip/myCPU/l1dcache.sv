@@ -98,23 +98,30 @@ module l1dcache import la32_common::*; #(
     logic [3:0]  data_wr_we;
     logic [31:0] data_wr_data;
 
-    // Declared in-module (not via ram_sdpram) so the registered read
-    // samples data_rd_addr at the same edge as the tag/dirty arrays.
-    (* ram_style = "block" *) logic [31:0] data_mem [0:NR_WAYS-1][0:NR_SETS-1][0:NR_WORDS-1];
-
-    always_ff @(posedge clk) begin
-        if (data_wr_ena)
-            for (int b = 0; b < 4; b++)
-                if (data_wr_we[b])
-                    data_mem[data_wr_way][data_wr_addr][data_wr_wo][b*8 +: 8] <=
-                        data_wr_data[b*8 +: 8];
-    end
-
+    // Data as per-way x per-word ram_sdpram instances (one read port each),
+    // like the single-level dcache: BRAM-inferrable.  A single in-module
+    // array with 8 registered read ports cannot map to BRAM (one read port
+    // per primitive) and would be expanded into logic.
     generate
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_data_way
             for (genvar gb = 0; gb < NR_WORDS; gb++) begin : g_data_word
-                always_ff @(posedge clk)
-                    data_rd_out[gw][gb] <= data_mem[gw][data_rd_addr][gb];
+                logic dwen;
+                assign dwen = data_wr_ena && (data_wr_way == way_t'(gw))
+                              && (data_wr_wo == woffset_t'(gb));
+                ram_sdpram #(
+                    .ADDR_WIDTH(INDEX_WIDTH),
+                    .DATA_WIDTH(32),
+                    .BYTE_WIDTH(8),
+                    .READ_LATENCY(1)
+                ) u_data_ram (
+                    .clk,
+                    .raddr(data_rd_addr),
+                    .waddr(data_wr_addr),
+                    .en(dwen),
+                    .strobe(data_wr_we),
+                    .wdata(data_wr_data),
+                    .rdata(data_rd_out[gw][gb])
+                );
             end
         end
     endgenerate
@@ -122,7 +129,8 @@ module l1dcache import la32_common::*; #(
     // ==================== Tag LUTRAM {tag, v[NR_WORDS-1:0]} ============
     // Per-word valid bits in the low NR_WORDS bits, tag above.  A line is
     // valid for a word iff the word's v bit is set.
-    (* ram_style = "distributed" *) logic [TAG_WIDTH+NR_WORDS-1:0] tag_mem [0:NR_WAYS-1][NR_SETS-1:0];
+    index_t tag_rd_addr;
+    logic [TAG_WIDTH+NR_WORDS-1:0] tag_rd_data [0:NR_WAYS-1];
     logic        tag_wr_ena;
     way_t        tag_wr_way;
     index_t      tag_wr_addr;
@@ -130,17 +138,28 @@ module l1dcache import la32_common::*; #(
 
     generate
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_tag_way
-            logic tag_wen;
-            assign tag_wen = tag_wr_ena && (tag_wr_way == way_t'(gw));
-            always_ff @(posedge clk) begin
-                if (tag_wen)
-                    tag_mem[gw][tag_wr_addr] <= tag_wr_data;
-            end
+            logic twen;
+            assign twen = tag_wr_ena && (tag_wr_way == way_t'(gw));
+            ram_sdpram #(
+                .ADDR_WIDTH(INDEX_WIDTH),
+                .DATA_WIDTH(TAG_WIDTH + NR_WORDS),
+                .BYTE_WIDTH(TAG_WIDTH + NR_WORDS),
+                .READ_LATENCY(0)
+            ) u_tag_ram (
+                .clk,
+                .raddr(tag_rd_addr),
+                .waddr(tag_wr_addr),
+                .en(twen),
+                .strobe(1'b1),
+                .wdata(tag_wr_data),
+                .rdata(tag_rd_data[gw])
+            );
         end
     endgenerate
 
     // ==================== Dirty LUTRAM (per-word) ====================
-    (* ram_style = "distributed" *) logic [NR_WORDS-1:0] dirty_mem [0:NR_WAYS-1][NR_SETS-1:0];
+    index_t dirty_rd_addr;
+    logic [NR_WORDS-1:0] dirty_rd_data [0:NR_WAYS-1];
     logic        dirty_wr_ena;
     way_t        dirty_wr_way;
     index_t      dirty_wr_addr;
@@ -150,27 +169,75 @@ module l1dcache import la32_common::*; #(
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_dirty_way
             logic dwen;
             assign dwen = dirty_wr_ena && (dirty_wr_way == way_t'(gw));
-            always_ff @(posedge clk) begin
-                if (dwen)
-                    dirty_mem[gw][dirty_wr_addr] <= dirty_wr_data;
-            end
+            ram_sdpram #(
+                .ADDR_WIDTH(INDEX_WIDTH),
+                .DATA_WIDTH(NR_WORDS),
+                .BYTE_WIDTH(NR_WORDS),
+                .READ_LATENCY(0)
+            ) u_dirty_ram (
+                .clk,
+                .raddr(dirty_rd_addr),
+                .waddr(dirty_wr_addr),
+                .en(dwen),
+                .strobe(1'b1),
+                .wdata(dirty_wr_data),
+                .rdata(dirty_rd_data[gw])
+            );
         end
     endgenerate
 
     // ==================== PLRU (NR_WAYS-1 tree nodes per set) ============
-    (* ram_style = "distributed" *) logic [NR_SETS-1:0] plru [0:NR_WAYS-1];
-    logic        plru_wr_ena  [0:NR_WAYS-2];
-    index_t      plru_wr_addr;
-    logic        plru_wr_data [0:NR_WAYS-2];
+    index_t plru_rd_addr;
+    logic   plru_rd_data [0:NR_WAYS-2];
+    logic   plru_wr_ena  [0:NR_WAYS-2];
+    index_t plru_wr_addr;
+    logic   plru_wr_data [0:NR_WAYS-2];
 
     generate
         for (genvar gn = 0; gn < NR_WAYS-1; gn++) begin : g_plru_node
-            always_ff @(posedge clk) begin
-                if (plru_wr_ena[gn])
-                    plru[gn][plru_wr_addr] <= plru_wr_data[gn];
-            end
+            ram_sdpram #(
+                .ADDR_WIDTH(INDEX_WIDTH),
+                .DATA_WIDTH(1),
+                .BYTE_WIDTH(1),
+                .READ_LATENCY(0)
+            ) u_plru_ram (
+                .clk,
+                .raddr(plru_rd_addr),
+                .waddr(plru_wr_addr),
+                .en(plru_wr_ena[gn]),
+                .strobe(1'b1),
+                .wdata(plru_wr_data[gn]),
+                .rdata(plru_rd_data[gn])
+            );
         end
     endgenerate
+
+    // ==================== Combinational read address (single port) ======
+    // Each ram_sdpram has ONE read port; all combinational reads converge
+    // on it, switched per phase: request/hit and the fill-initiation
+    // captures use req_idx (the initiations sample the same request cycle),
+    // the fill's write-side reads use f_idx, cacop uses cacop_idx.
+    always_comb begin
+        tag_rd_addr   = req_idx;
+        dirty_rd_addr = req_idx;
+        plru_rd_addr  = req_idx;
+        if (state inside {S_CACOP_WB_READ, S_CACOP_WB_WRITE, S_CACOP_INV}) begin
+            tag_rd_addr   = cacop_idx;
+            dirty_rd_addr = cacop_idx;
+        end else if (o_valid) begin
+            // An outstanding forwarded request: the LSU is in WAIT for a
+            // load miss (it no longer presents cpu_req), so req_idx is
+            // stale — the fill/victim captures must read the outstanding
+            // request's index.
+            tag_rd_addr   = o_idx;
+            dirty_rd_addr = o_idx;
+            plru_rd_addr  = o_idx;
+        end
+        // NOTE: the read port NEVER switches to f_idx while f_valid: the
+        // 0-cycle hit check (req_tag_data) runs every request cycle and
+        // must see the REQUEST's index.  The fill's write-side reads are
+        // captured once at fill initiation (f_old_v/f_old_dirty).
+    end
 
     // ==================== State ====================
     enum logic [2:0] {
@@ -190,8 +257,8 @@ module l1dcache import la32_common::*; #(
     function automatic way_t victim_way(input index_t i);
         automatic int node = 0;
         for (int b = WAY_BITS-1; b >= 0; b--) begin
-            victim_way[b] = plru[node][i];
-            node = 2*node + 1 + int'(plru[node][i]);
+            victim_way[b] = plru_rd_data[node];
+            node = 2*node + 1 + int'(plru_rd_data[node]);
         end
     endfunction
 
@@ -212,7 +279,7 @@ module l1dcache import la32_common::*; #(
     logic [TAG_WIDTH+NR_WORDS-1:0] req_tag_data [0:NR_WAYS-1];
     always_comb begin
         for (int w = 0; w < NR_WAYS; w++)
-            req_tag_data[w] = tag_mem[w][req_idx];
+            req_tag_data[w] = tag_rd_data[w];
     end
 
     logic req_hit_any;
@@ -288,8 +355,8 @@ module l1dcache import la32_common::*; #(
     wire [NR_WAYS-1:0] o_line_valid;
     generate
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_o_match
-            assign o_tag_match[gw]  = (tag_mem[gw][o_idx][TAG_WIDTH+NR_WORDS-1:NR_WORDS] == o_tag);
-            assign o_line_valid[gw] = |tag_mem[gw][o_idx][NR_WORDS-1:0];
+            assign o_tag_match[gw]  = (tag_rd_data[gw][TAG_WIDTH+NR_WORDS-1:NR_WORDS] == o_tag);
+            assign o_line_valid[gw] = |tag_rd_data[gw][NR_WORDS-1:0];
         end
     endgenerate
     wire logic fill_is_partial = |o_tag_match;
@@ -330,6 +397,12 @@ module l1dcache import la32_common::*; #(
     tag_t        f_tag;
     woffset_t    f_wo;
     word_t       f_data;
+    // Pre-fill v/dirty bits of the target line, captured at fill
+    // initiation through the shared combinational read port (its address
+    // is the request's index at that point).  The fill write cycle must
+    // not touch the port — the 0-cycle hit check owns it every cycle.
+    logic [NR_WORDS-1:0] f_old_v;
+    logic [NR_WORDS-1:0] f_old_dirty;
 
     logic        vc_valid;
     logic        vc_reading;
@@ -376,7 +449,7 @@ module l1dcache import la32_common::*; #(
             S_CACOP_WB_READ: begin
                 // Nothing valid to write back: straight to invalidate.
                 // (Avoid `!|` — Vivado 2019.2's parser rejects it.)
-                if (tag_mem[cacop_way][cacop_idx][NR_WORDS-1:0] == {NR_WORDS{1'b0}})
+                if (tag_rd_data[cacop_way][NR_WORDS-1:0] == {NR_WORDS{1'b0}})
                     next_state = S_CACOP_INV;
                 else
                     next_state = S_CACOP_WB_WRITE;
@@ -461,11 +534,11 @@ module l1dcache import la32_common::*; #(
     wire [31:0] drain_store_addr;
     generate
         if (WORD_WIDTH > 0) begin : g_store_addr
-            assign cacop_store_addr = {tag_mem[cacop_way][cacop_idx][TAG_WIDTH+NR_WORDS-1:NR_WORDS],
+            assign cacop_store_addr = {tag_rd_data[cacop_way][TAG_WIDTH+NR_WORDS-1:NR_WORDS],
                                        cacop_idx, cacop_wb_cnt[WORD_WIDTH-1:0], 2'b00};
             assign drain_store_addr = {vc_tag, vc_idx, dr_word[WORD_WIDTH-1:0], 2'b00};
         end else begin : g_store_addr_1w
-            assign cacop_store_addr = {tag_mem[cacop_way][cacop_idx][TAG_WIDTH+NR_WORDS-1:NR_WORDS],
+            assign cacop_store_addr = {tag_rd_data[cacop_way][TAG_WIDTH+NR_WORDS-1:NR_WORDS],
                                        cacop_idx, 2'b00};
             assign drain_store_addr = {vc_tag, vc_idx, 2'b00};
         end
@@ -551,8 +624,12 @@ module l1dcache import la32_common::*; #(
     // whose tag already matches), otherwise a fresh single-word line.
     // The new dirty word keeps the line's other dirty words and marks the
     // filled word only for store fills.
+    // The line's pre-fill v/dirty bits are captured at fill initiation
+    // (f_old_v/f_old_dirty, read via the shared combinational port while
+    // its address is the request's index): the fill write cycle must NOT
+    // re-read the port (the 0-cycle hit check owns it every cycle).
     wire [NR_WORDS-1:0] fill_new_v = f_partial
-        ? (tag_mem[f_way][f_idx][NR_WORDS-1:0] | (1 << f_wo))
+        ? (f_old_v | (1 << f_wo))
         : (1 << f_wo);
     // Dirty bits of the line AFTER the fill: a partial fill (same tag
     // already resident) keeps the line's other dirty words; a fresh fill
@@ -561,7 +638,7 @@ module l1dcache import la32_common::*; #(
     // words (never written by this fill) dirty and a later eviction
     // would drain garbage into the L2 at this line's address.
     wire [NR_WORDS-1:0] fill_new_dirty = f_partial
-        ? ((dirty_mem[f_way][f_idx] & ~(1 << f_wo))
+        ? ((f_old_dirty & ~(1 << f_wo))
            | (f_store ? (1 << f_wo) : 1'b0))
         : (f_store ? (1 << f_wo) : 1'b0);
 
@@ -613,7 +690,7 @@ module l1dcache import la32_common::*; #(
             dirty_wr_ena  = 1'b1;
             dirty_wr_way  = req_hit_way;
             dirty_wr_addr = req_idx;
-            dirty_wr_data = dirty_mem[req_hit_way][req_idx] | (1 << req_wo);
+            dirty_wr_data = dirty_rd_data[req_hit_way] | (1 << req_wo);
         end
 
         if (fill_wr) begin
@@ -675,6 +752,8 @@ module l1dcache import la32_common::*; #(
             f_tag          <= '0;
             f_wo           <= '0;
             f_data         <= 32'd0;
+            f_old_v        <= '0;
+            f_old_dirty    <= '0;
             vc_valid       <= 1'b0;
             vc_reading     <= 1'b0;
             vc_way         <= '0;
@@ -734,18 +813,22 @@ module l1dcache import la32_common::*; #(
                     f_partial<= fill_is_partial;
                     f_store  <= o_op;
                     f_data   <= o_op ? o_data : mem_resp.data;
+                    // Pre-fill line state (captured here, while the shared
+                    // read port's address is the request's index).
+                    f_old_v      <= tag_rd_data[fill_is_partial ? fill_match_way : victim_way(o_idx)][NR_WORDS-1:0];
+                    f_old_dirty  <= dirty_rd_data[fill_is_partial ? fill_match_way : victim_way(o_idx)];
                     // The victim's dirty words must be captured before the
                     // fill overwrites its way (only when the victim is a
                     // live line with dirty words; clean or empty victims
                     // are dropped silently — their data equals memory).
                     if (!fill_is_partial
                         && o_line_valid[victim_way(o_idx)]
-                        && |dirty_mem[victim_way(o_idx)][o_idx]) begin
+                        && |dirty_rd_data[victim_way(o_idx)]) begin
                         vc_valid <= 1'b1;
                         vc_way   <= victim_way(o_idx);
                         vc_idx   <= o_idx;
-                        vc_tag   <= tag_mem[victim_way(o_idx)][o_idx][TAG_WIDTH+NR_WORDS-1:NR_WORDS];
-                        vc_mask  <= dirty_mem[victim_way(o_idx)][o_idx];
+                        vc_tag   <= tag_rd_data[victim_way(o_idx)][TAG_WIDTH+NR_WORDS-1:NR_WORDS];
+                        vc_mask  <= dirty_rd_data[victim_way(o_idx)];
                     end
                 end
             end
@@ -815,7 +898,7 @@ module l1dcache import la32_common::*; #(
             if (state == S_CACOP_WB_READ) begin
                 // The line read (issued this cycle) completes one cycle
                 // later; the mask comes from the async dirty read.
-                cacop_mask    <= dirty_mem[cacop_way][cacop_idx];
+                cacop_mask    <= dirty_rd_data[cacop_way];
                 cacop_wb_cnt  <= '0;
                 cacop_waiting <= 1'b0;
                 cacop_finish  <= 1'b0;
