@@ -792,7 +792,22 @@ module l2dcache import la32_common::*; (
         end
     end
 
-    assign mem_req = mem_req_r;
+    // The registered request (mem_req_r) lags the FSM's combinational
+    // mem_req_next by one cycle, so it would stay asserted for one extra
+    // cycle after the FSM leaves the presenting state.  An idle bus (the
+    // memory model / AXI arbiter) samples that phantom request as a NEW
+    // transaction: after a writeback burst it re-writes the line with the
+    // last word's data at word 0 and zero-fills the remaining words
+    // (observed: word 0 of the evicted line corrupted with the keyword).
+    // Gate the registered valid with the states that actually present.
+    assign mem_req.valid = mem_req_r.valid
+        && (state inside {S_UNCACHED, S_WB_WRITE, S_REFILL_REQ, S_CACOP_WB_WRITE});
+    assign mem_req.addr      = mem_req_r.addr;
+    assign mem_req.size      = mem_req_r.size;
+    assign mem_req.strobe    = mem_req_r.strobe;
+    assign mem_req.data      = mem_req_r.data;
+    assign mem_req.cacheable = mem_req_r.cacheable;
+    assign mem_req.burst_len = mem_req_r.burst_len;
 
     // ==================== Dirty/PLRU write control ====================
     // Single combinational driver for both write ports: S_INIT clear,
