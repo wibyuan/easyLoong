@@ -1,30 +1,51 @@
 `include "common.sv"
 
-// 8KB-class L1 dcache in front of the 1MB L2 (l2dcache): 256 sets x 2 ways
-// x 16B lines.  Tags live in LUTRAM (asynchronous read) so cacheable load
-// hits are acknowledged in the request cycle (0-cycle): data_ok fires from
-// the combinational tag compare while the data completes one cycle later
-// on the registered read port (data_wb), re-extracted by the WB stage.
-// Data/dirty/PLRU arrays stay BRAM-compatible (rvcpu-style 0-cycle hit).
+// 8KB-class L1 dcache as a 0-cycle fast-path overlay on the 1MB L2
+// (l2dcache): 256 sets x 2 ways x 16B lines, filled word-by-word
+// (per-word valid/dirty bits, a sector cache).
 //
-// The mem port drives the L2's cpu port.  Both levels are write-back with
-// write-allocate, so single-core coherence holds without snooping:
-//   - L1 line refills come from the L2 (the L2 refills from memory on its
-//     own miss and answers the request via its keyword forward);
-//   - L1 dirty evictions write back to the L2 (the L2 hits or allocates);
-//   - the L2 drains to memory only when IT evicts or on a cacop flush.
-// A line is never modified at a level while a stale copy with newer data
-// can exist above it: the L1 is the only writer to the L2 and its lines
-// are removed (invalidated) before the L2's copy can be reused, so the
-// invariant "L1 valid => L2 copy identical, L1 dirty => L2 stale, L2
-// dirty => L1 invalid" is maintained by construction.
+// Architecture (pass-through, "never worse than the single-level L2"):
+//   - cacheable load/store HITS are answered in the request cycle
+//     (0-cycle, rvcpu-style: combinational LUTRAM tag read + registered
+//     data read re-extracted by the WB stage via data_wb).
+//   - every request that does NOT hit (cacheable miss, or uncacheable)
+//     is forwarded UNCHANGED to the L2's cpu port in the request cycle;
+//     the L2's response is passed back to the LSU as-is, so the miss
+//     path costs exactly the same as the single-level 1MB dcache
+//     (1-cycle L2 hit, refill from memory otherwise).
+//   - when the L2's response completes a cacheable request, the L1
+//     opportunistically FILLS the request's word (word-sector fill):
+//     the response data (load) or the store's own data (full-word
+//     stores only; partial-byte stores are not filled) is written into
+//     the L1's line and its per-word valid bit is set.  No burst
+//     protocol between the levels is needed.
+//   - a fill that must displace a line (the victim way, per PLRU)
+//     captures the victim's words and writes the dirty ones back to
+//     the L2 as single-word stores (write-back, write-allocate at both
+//     levels).  A drain is never presented while the LSU's forwarded
+//     request is outstanding, and its accept is never confused with
+//     the outstanding request's response (the o_* completion/fill is
+//     gated on !(dr_valid && dr_waiting)).
 //
-// Refills and writebacks are single-word transactions on the L2's cpu
-// port (which is single-request and answers each load with one beat).
-// A miss refills its words in rotated order starting at the load's word
-// offset, so the L1's keyword (first beat) is the load's word and the
-// load completes as soon as the L2 answers the first request.
-module l1dcache import la32_common::*; (
+// Coherence: a line is either present in the L1 (its words are served
+// there; the L2's copy of dirty words is stale but never read, since
+// requests for present words hit) or absent (the L2's copy is
+// authoritative and the request passes through).  The L1 is the only
+// master of the L2's cpu port.
+//
+// CACOP (0x01 index invalidate / 0x09 index writeback-invalidate):
+// the kernel's flush walk uses the L2 geometry (reported by CPUCFG);
+// the walk covers every L1 line (L1 set = addr[11:4], L1 way = addr[0]
+// are both fully enumerated by the walk), so the L1 invalidates its
+// matching line per walk address, draining its dirty words to the L2
+// first.  core_top gates the L2's cacop on the L1's completion
+// (l1_cacop_done), so a dirty L1 line is merged into the L2 before the
+// L2 flushes its own line to memory.
+module l1dcache import la32_common::*; #(
+    parameter int NR_SETS = 256,
+    parameter int NR_WAYS = 2,
+    parameter int NR_WORDS = 4
+)(
     input  logic       clk,
     input  logic       reset,
 
@@ -54,13 +75,8 @@ module l1dcache import la32_common::*; (
     output logic [31:0] data_wb [0:NR_WAYS-1][0:NR_WORDS-1]
 );
 
-    parameter int NR_SETS = 256;
-    parameter int NR_WAYS = 2;
-    parameter int NR_WORDS = 4;
     localparam WORD_WIDTH  = $clog2(NR_WORDS);
     localparam LINE_OFFSET = WORD_WIDTH + 2;
-    // (1 << (LINE_OFFSET-2)) - 1: word-offset mask.  Zero for a 1-word
-    // line so the offset expression never slices a backward range.
     localparam WOFF_MASK   = (LINE_OFFSET > 2) ? ((1 << (LINE_OFFSET - 2)) - 1) : 0;
     localparam INDEX_WIDTH = $clog2(NR_SETS);
     localparam TAG_WIDTH   = 32 - LINE_OFFSET - INDEX_WIDTH;
@@ -72,14 +88,9 @@ module l1dcache import la32_common::*; (
     typedef logic [TAG_WIDTH-1:0] tag_t;
     typedef logic [WAY_BITS-1:0] way_t;
 
-    // ==================== Data BRAM ====================
+    // ==================== Data BRAM (registered read) ====================
     index_t      data_rd_addr;
     logic [31:0] data_rd_out [0:NR_WAYS-1][0:NR_WORDS-1];
-    // Registered read port only (rvcpu-style 0-cycle hit): the load hit is
-    // acknowledged in the request cycle through the asynchronous tag read
-    // (data_ok), while the data completes one cycle later on this port and
-    // is re-extracted by the WB stage from dresp.data (dresp.hit).  With no
-    // combinational read port the 256x32 arrays infer as block RAM again.
     logic        data_wr_ena;
     way_t        data_wr_way;
     index_t      data_wr_addr;
@@ -87,43 +98,36 @@ module l1dcache import la32_common::*; (
     logic [3:0]  data_wr_we;
     logic [31:0] data_wr_data;
 
+    // Declared in-module (not via ram_sdpram) so the registered read
+    // samples data_rd_addr at the same edge as the tag/dirty arrays.
+    (* ram_style = "block" *) logic [31:0] data_mem [0:NR_WAYS-1][0:NR_SETS-1][0:NR_WORDS-1];
+
+    always_ff @(posedge clk) begin
+        if (data_wr_ena)
+            for (int b = 0; b < 4; b++)
+                if (data_wr_we[b])
+                    data_mem[data_wr_way][data_wr_addr][data_wr_wo][b*8 +: 8] <=
+                        data_wr_data[b*8 +: 8];
+    end
+
     generate
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_data_way
             for (genvar gb = 0; gb < NR_WORDS; gb++) begin : g_data_word
-                logic wen;
-                assign wen = data_wr_ena && (data_wr_way == way_t'(gw)) && (data_wr_wo == woffset_t'(gb));
-
-                ram_sdpram #(
-                    .ADDR_WIDTH(INDEX_WIDTH),
-                    .DATA_WIDTH(32),
-                    .BYTE_WIDTH(8),
-                    .READ_LATENCY(1)
-                ) u_data_ram (
-                    .clk,
-                    .raddr(data_rd_addr),
-                    .waddr(data_wr_addr),
-                    .en(wen),
-                    .strobe(data_wr_we),
-                    .wdata(data_wr_data),
-                    .rdata(data_rd_out[gw][gb])
-                );
+                always_ff @(posedge clk)
+                    data_rd_out[gw][gb] <= data_mem[gw][data_rd_addr][gb];
             end
         end
     endgenerate
 
-    // ==================== Tag LUTRAM ====================
-    (* ram_style = "distributed" *) logic [TAG_WIDTH:0] tag_mem [0:NR_WAYS-1][NR_SETS-1:0];
-    index_t      tag_rd_addr;
-    logic [TAG_WIDTH:0] tag_rd_data [0:NR_WAYS-1];
+    // ==================== Tag LUTRAM {tag, v[NR_WORDS-1:0]} ============
+    // Per-word valid bits in the low NR_WORDS bits, tag above.  A line is
+    // valid for a word iff the word's v bit is set.
+    (* ram_style = "distributed" *) logic [TAG_WIDTH+NR_WORDS-1:0] tag_mem [0:NR_WAYS-1][NR_SETS-1:0];
     logic        tag_wr_ena;
     way_t        tag_wr_way;
     index_t      tag_wr_addr;
-    logic [TAG_WIDTH:0] tag_wr_data;
+    logic [TAG_WIDTH+NR_WORDS-1:0] tag_wr_data;
 
-    // Per-way write enables with a constant first index: a single write
-    // with a variable way index (tag_mem[tag_wr_way][...]) defeats Vivado's
-    // RAM inference and degrades to a register array ("3D RAM not
-    // supported"); the per-way form infers as distributed RAM.
     generate
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_tag_way
             logic tag_wen;
@@ -135,114 +139,46 @@ module l1dcache import la32_common::*; (
         end
     endgenerate
 
-    always_ff @(posedge clk) begin
-        for (int w = 0; w < NR_WAYS; w++)
-            tag_rd_data[w] <= tag_mem[w][tag_rd_addr];
-    end
+    // ==================== Dirty LUTRAM (per-word) ====================
+    (* ram_style = "distributed" *) logic [NR_WORDS-1:0] dirty_mem [0:NR_WAYS-1][NR_SETS-1:0];
+    logic        dirty_wr_ena;
+    way_t        dirty_wr_way;
+    index_t      dirty_wr_addr;
+    logic [NR_WORDS-1:0] dirty_wr_data;
 
-    // ==================== Dirty + PLRU ====================
-    (* ram_style = "distributed" *) logic [NR_SETS-1:0] dirty [0:NR_WAYS-1];
-    // Sized NR_WAYS-1 so a direct-mapped (NR_WAYS=1) cache keeps a valid
-    // (empty at runtime) array declaration; all PLRU reads/writes are
-    // gated by NR_WAYS>1 conditions and never touch the array in 1-way.
-    (* ram_style = "distributed" *) logic [NR_SETS-1:0] plru [0:NR_WAYS-1];
-
-    // ==================== State ====================
-    enum logic [3:0] {
-        S_INIT,
-        S_IDLE,
-        S_UNCACHED,
-        S_MISS,
-        S_WB_READ, S_WB_WRITE,
-        S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE,
-        S_CACOP_ST,
-        S_CACOP_WB_READ, S_CACOP_WB_WRITE, S_CACOP_INV
-    } state, next_state;
-
-    dbus_req_t mem_req_next;
-    dbus_req_t mem_req_r;
-
-    // ==================== Pipeline ====================
-    logic       s1_valid;
-    word_t      s1_addr;
-    logic       s1_op;
-    msize_t     s1_size;
-    word_t      s1_wdata;
-    logic [3:0] s1_wstrb;
-    woffset_t   s1_wo;
-    index_t     s1_idx;
-    tag_t       s1_tag;
-    logic       s1_cacheable;
-
-    logic       s2_valid;
-    word_t      s2_addr;
-    logic       s2_op;
-    msize_t     s2_size;
-    word_t      s2_wdata;
-    logic [3:0] s2_wstrb;
-    woffset_t   s2_wo;
-    index_t     s2_idx;
-    tag_t       s2_tag;
-    logic       s2_cacheable;
-
-    logic       just_hit;
-    word_t      last_hit_addr;
-
-    // ==================== Miss context ====================
-    logic       m_op;
-    woffset_t   m_wo;
-    index_t     m_idx;
-    tag_t       m_tag;
-    way_t       m_eway;
-    logic       m_edirty;
-    tag_t       m_etag;
-    // Accepted store miss data, merged into the refilled line at
-    // S_REFILL_WRITE (store misses are completed in the request cycle).
-    word_t      m_wdata;
-    logic [3:0] m_wstrb;
-
-    // Second merge slot: a store hitting the line being refilled (the
-    // read-back-store pattern) is accepted in-cycle and merged into the
-    // refill write, instead of stalling until the refill completes.
-    logic        st_merge_pending;
-    woffset_t    st_merge_wo;
-    word_t       st_merge_data;
-    logic [3:0]  st_merge_strb;
-
-    // ==================== Work registers ====================
-    logic [CNT_WIDTH-1:0] wb_cnt;
-    logic [CNT_WIDTH-1:0] rf_cnt;
-    logic [CNT_WIDTH-1:0] rf_wr_cnt;
-    logic [NR_WORDS-1:0]  rf_fmask;
-    logic                 rf_kw_sent;
-    // A refill beat was collected and the next word's read has not been
-    // issued yet (the beat may arrive while in S_REFILL_REQ or S_WB_WRITE,
-    // so S_REFILL_WAIT cannot rely on seeing rdata_ok itself).
-    logic                 rf_need_req;
-    word_t                rf_buf [0:NR_WORDS-1];
-    word_t                wb_buf [0:NR_WORDS-1];
-
-    way_t                 cacop_way;
-    index_t               cacop_idx;
-    tag_t                 cacop_etag;
-    logic                 cacop_edirty;
-    logic [CNT_WIDTH-1:0] cacop_wb_cnt;
-    word_t                cacop_wb_buf [0:NR_WORDS-1];
-
-    // Writeback target address of the cacop 0x09 flow, per-word for
-    // multi-word lines, base address for the 1-word line.  Generated so
-    // the empty-slice form (WORD_WIDTH=0) is never elaborated.
-    wire [31:0] cacop_wb_addr;
     generate
-        if (WORD_WIDTH > 0) begin : g_cacop_wb_addr
-            assign cacop_wb_addr = {cacop_etag, cacop_idx,
-                                    cacop_wb_cnt[WORD_WIDTH-1:0], 2'b00};
-        end else begin : g_cacop_wb_addr_1w
-            assign cacop_wb_addr = {cacop_etag, cacop_idx, 2'b00};
+        for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_dirty_way
+            logic dwen;
+            assign dwen = dirty_wr_ena && (dirty_wr_way == way_t'(gw));
+            always_ff @(posedge clk) begin
+                if (dwen)
+                    dirty_mem[gw][dirty_wr_addr] <= dirty_wr_data;
+            end
         end
     endgenerate
 
-    // ==================== Init registers ====================
+    // ==================== PLRU (NR_WAYS-1 tree nodes per set) ============
+    (* ram_style = "distributed" *) logic [NR_SETS-1:0] plru [0:NR_WAYS-1];
+    logic        plru_wr_ena  [0:NR_WAYS-2];
+    index_t      plru_wr_addr;
+    logic        plru_wr_data [0:NR_WAYS-2];
+
+    generate
+        for (genvar gn = 0; gn < NR_WAYS-1; gn++) begin : g_plru_node
+            always_ff @(posedge clk) begin
+                if (plru_wr_ena[gn])
+                    plru[gn][plru_wr_addr] <= plru_wr_data[gn];
+            end
+        end
+    endgenerate
+
+    // ==================== State ====================
+    enum logic [2:0] {
+        S_INIT,
+        S_IDLE,
+        S_CACOP_WB_READ, S_CACOP_WB_WRITE, S_CACOP_INV
+    } state, next_state;
+
     index_t init_addr;
     way_t   init_wr_way;
 
@@ -265,9 +201,6 @@ module l1dcache import la32_common::*; (
     wire woffset_t req_wo;
     assign req_idx = cpu_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
     assign req_tag = cpu_req.addr[31:INDEX_WIDTH+LINE_OFFSET];
-    // With a 1-word line the word-offset field is empty (addr[1:2] is a
-    // backward range that some verilator versions reject); generate both
-    // forms so only the active one is elaborated.
     generate
         if (NR_WORDS > 1) begin : g_req_wo
             assign req_wo = cpu_req.addr[LINE_OFFSET-1:2];
@@ -276,7 +209,7 @@ module l1dcache import la32_common::*; (
         end
     endgenerate
 
-    logic [TAG_WIDTH:0] req_tag_data [0:NR_WAYS-1];
+    logic [TAG_WIDTH+NR_WORDS-1:0] req_tag_data [0:NR_WAYS-1];
     always_comb begin
         for (int w = 0; w < NR_WAYS; w++)
             req_tag_data[w] = tag_mem[w][req_idx];
@@ -290,8 +223,8 @@ module l1dcache import la32_common::*; (
         automatic logic [NR_WAYS-1:0] hit_vec;
         hit_vec = '0;
         for (int w = 0; w < NR_WAYS; w++)
-            hit_vec[w] = req_tag_data[w][0]
-                && (req_tag_data[w][TAG_WIDTH:1] == req_tag)
+            hit_vec[w] = req_tag_data[w][req_wo]
+                && (req_tag_data[w][TAG_WIDTH+NR_WORDS-1:NR_WORDS] == req_tag)
                 && is_cachable(cpu_req.addr, cpu_req.cacheable);
         req_hit_any = |hit_vec;
         req_hit = req_hit_any && (state == S_IDLE);
@@ -300,263 +233,265 @@ module l1dcache import la32_common::*; (
             if (hit_vec[w]) req_hit_way = way_t'(w);
     end
 
-    // ==================== S2 hit ====================
-    // S2 的命中判定用 LUTRAM 组合读（与 fast path 的 req_hit 相同），
-    // 不依赖注册读 tag_rd_data 的时序：s2 的请求在 s1 阶段发出注册读，
-    // 如果那一拍有新的 fast-path 请求（!s2_valid 但 s1_valid=0 时不覆盖，
-    // 而 s1_valid=1 时 fast_path_req 已被 !s1_valid 条件禁止），注册读会被
-    // 覆盖——组合读永远跟随 s2_idx，不会错位。
-    logic [TAG_WIDTH:0] s2_tag_data [0:NR_WAYS-1];
+    // ==================== Wire helpers ====================
+    wire hit_read_req = cpu_req.valid && req_hit;
+    wire store_hit_wr = cpu_req.valid && req_hit && |cpu_req.strobe;
+    // Forward the LSU's request (cacheable miss or uncacheable access)
+    // unchanged; the L2 answers exactly as it would in the single-level
+    // design.  The L1's own fills/drains are never presented while the
+    // LSU's request is presented or outstanding (o_valid), so the L2
+    // processes one initiator transaction at a time.
+    wire lsu_forward_req = cpu_req.valid && !req_hit;
+    // The drain store is re-presented every cycle until the L2 accepts
+    // it (captured requests are ignored by the L2's pipeline, so a
+    // dropped presentation is harmless).
+    wire drain_store_req = dr_valid && dr_mask[dr_word] && !o_valid && !lsu_forward_req;
+    // CACOP drain store: re-presented until the L2 accepts it.  The first
+    // S_CACOP_WB_WRITE cycle only CAPTURES cacop_wb_buf (the line read
+    // issued in S_CACOP_WB_READ completes then); presenting in that cycle
+    // would let the L2 capture the stale buffer value (the previous word).
+    wire cacop_store_req = (state == S_CACOP_WB_WRITE)
+        && !(cacop_wb_cnt == 0 && !cacop_waiting)
+        && cacop_mask[cacop_wb_cnt];
+    // The L2's response belongs to the outstanding forwarded request
+    // only while no drain store is in flight (the drain's accept must
+    // not complete/fill the o_* context).
+    wire o_complete = o_valid && mem_resp.data_ok && !(dr_valid && dr_waiting);
+
+    // Background op pending (blocks cacop acceptance and new fills).
+    wire l1_busy = o_valid || f_valid || vc_valid || dr_valid;
+
+    // Fill target way decision: a way whose tag already matches (a
+    // partially-filled line) is reused instead of displacing a victim.
+    wire [NR_WAYS-1:0] o_tag_match;
+    wire [NR_WAYS-1:0] o_line_valid;
+    generate
+        for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_o_match
+            assign o_tag_match[gw]  = (tag_mem[gw][o_idx][TAG_WIDTH+NR_WORDS-1:NR_WORDS] == o_tag);
+            assign o_line_valid[gw] = |tag_mem[gw][o_idx][NR_WORDS-1:0];
+        end
+    endgenerate
+    wire logic fill_is_partial = |o_tag_match;
+    way_t fill_match_way;
     always_comb begin
+        fill_match_way = '0;
         for (int w = 0; w < NR_WAYS; w++)
-            s2_tag_data[w] = tag_mem[w][s2_idx];
+            if (o_tag_match[w]) fill_match_way = way_t'(w);
     end
 
-    logic s2_hit;
-    way_t  s2_hit_way;
+    // ==================== Outstanding request (in-flight latch) ==========
+    // At most ONE forwarded request is in flight at a time: the LSU holds
+    // a request until its data_ok (load misses move to WAIT and present
+    // nothing), so a new request is only presented after the previous one
+    // completed.  The latch carries the context needed for the fill.
+    logic o_valid;
+    logic o_wait;
+    logic o_op;
+    logic o_cacheable;
+    index_t   o_idx;
+    tag_t     o_tag;
+    woffset_t o_wo;
+    word_t    o_data;
+    logic [3:0] o_strobe;
 
-    always_comb begin
-        automatic logic [NR_WAYS-1:0] hit_vec;
-        hit_vec = '0;
-        for (int w = 0; w < NR_WAYS; w++)
-            hit_vec[w] = s2_valid && s2_tag_data[w][0]
-                && (s2_tag_data[w][TAG_WIDTH:1] == s2_tag)
-                && is_cachable(s2_addr, s2_cacheable);
-        s2_hit = |hit_vec;
-        s2_hit_way = '0;
-        for (int w = 0; w < NR_WAYS; w++)
-            if (hit_vec[w]) s2_hit_way = way_t'(w);
-    end
+    // ==================== Fill / victim-capture / drain ==================
+    // Fill: write the response word into the L1 when the write port is
+    // free (a store-hit owns it that cycle).  A fill that must displace a
+    // line first captures the victim's words (vc) into wb_buf, then the
+    // dirty ones are drained to the L2 as single-word stores (dr).  Fills
+    // and drains are mutually exclusive (a drain's remaining words live
+    // in wb_buf and must not be overwritten by a new victim capture).
+    logic        f_valid;
+    logic        f_partial;
+    logic        f_store;
+    way_t        f_way;
+    index_t      f_idx;
+    tag_t        f_tag;
+    woffset_t    f_wo;
+    word_t       f_data;
 
-    // ==================== Refill status ====================
-    assign in_refill = state inside {S_MISS, S_WB_READ, S_WB_WRITE,
-                                     S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE};
+    logic        vc_valid;
+    logic        vc_reading;
+    way_t        vc_way;
+    index_t      vc_idx;
+    tag_t        vc_tag;
+    logic [NR_WORDS-1:0] vc_mask;
+    word_t       wb_buf [0:NR_WORDS-1];
 
-    // ==================== Non-blocking (hit-under-miss) ====================
-    // One miss may be in flight while the pipeline keeps running: store
-    // misses are accepted in the request cycle (their data is merged into
-    // the refilled line), so the LSU is free to issue further requests
-    // during the refill.  Hits to lines other than the one being refilled
-    // are served in the request cycle; any request that does not hit must
-    // wait for the in-flight miss to complete (single MSHR).
-    wire cacop_d_pending = cacop_req.valid && (cacop_req.code[2:0] == 3'd1);
-    // Every cacheable request is answered combinationally in S_IDLE: a hit
-    // (load/store) or a miss accept (store: full accept; load: addr_ok only,
-    // data via the keyword forward).  Miss accepts must not fire while a
-    // dcache cacop is pending — the FSM gives the cacop priority and no
-    // refill would start, leaving an accepted request to hang.
-    wire fast_path_req   = (state == S_IDLE) && !s1_valid && !s2_valid
-                           && cpu_req.valid
-                           && is_cachable(cpu_req.addr, cpu_req.cacheable);
-    wire fast_path_miss  = fast_path_req && !req_hit && !cacop_d_pending;
-    // The line being refilled must not be served: its data RAM is only
-    // partially (or not yet) written while its tag can already match.
-    wire hum_refilling   = (req_idx == m_idx) && (req_hit_way == m_eway);
-    // No hit-under-miss while the keyword of an outstanding load miss is
-    // forwarded (the pipeline is stalled on that load, so no second request
-    // can exist — defensive guard).  The keyword is the FIRST refill beat
-    // (words are refilled in rotated order starting at the load's word) and
-    // may fire during the overlapped writeback drain (S_WB_WRITE) as well
-    // as S_REFILL_WAIT/S_REFILL_REQ; qualified on rdata_ok (read-channel
-    // only) so the L2's store completion cannot masquerade as a keyword.
-    wire hum_keyword     = (state inside {S_REFILL_REQ, S_WB_WRITE, S_REFILL_WAIT})
-                           && mem_resp.rdata_ok
-                           && !rf_kw_sent && (m_op == 1'b0);
-    // Refill complete when all beats arrived (mask full, possibly during
-    // the writeback drain) or the current beat completes the mask.  Beats
-    // are collected in rotated word order (rf_word), so the mask and the
-    // beat-count gate use the rotated index, not rf_cnt itself.
-    wire woffset_t rf_word = woffset_t'((m_wo + rf_cnt) & WOFF_MASK);
-    wire refill_fmask_done = (&rf_fmask) ||
-                             (mem_resp.rdata_ok && (&(rf_fmask | (1 << rf_word))));
-    // S_MISS is excluded: the data RAM read port is busy that cycle issuing
-    // the victim's line read for the writeback capture (S_WB_READ samples
-    // data_rd_out one cycle later), so a hum load accepted in-cycle would
-    // have its registered read overwritten and the writeback would drain
-    // the wrong line.  The LSU simply holds the request and re-presents it
-    // at S_WB_READ / S_REFILL_WAIT, where the port is free.
-    wire hum_req         = in_refill && (state != S_MISS) && !hum_keyword
-                           && cpu_req.valid
-                           && is_cachable(cpu_req.addr, cpu_req.cacheable)
-                           && req_hit_any && !hum_refilling;
-    // Store hits need the data write port, which the refill owns during
-    // S_REFILL_WRITE; such hits are deferred (they stall at most a few
-    // cycles and then hit again in S_IDLE).  Loads are always served.
-    wire hum_ok          = hum_req && ((state != S_REFILL_WRITE) || !(|cpu_req.strobe));
-    // A store to the line being refilled (read-back-store) is accepted
-    // in-cycle as long as its word has not been written to the data RAM
-    // yet; it is merged into the refill write (second merge slot, the
-    // later store wins over the store-miss merge at the same word).
-    // There is exactly ONE merge slot: a second store arriving while a
-    // merge is already pending must be refused (the LSU holds it and it
-    // hits normally once the refill completes).  Accepting it would
-    // overwrite the pending merge and silently lose the first store —
-    // with a 1-word line every store maps to the same word offset, so
-    // the old "same word" guard (req_wo != st_merge_wo) never fired.
-    wire store_refill_ok = in_refill && cpu_req.valid && |cpu_req.strobe
-        && is_cachable(cpu_req.addr, cpu_req.cacheable)
-        && (req_idx == m_idx) && (req_tag == m_tag)
-        && ((state != S_REFILL_WRITE) ||
-            (rf_wr_cnt < req_wo))
-        && !st_merge_pending;
+    logic        dr_valid;
+    logic        dr_waiting;
+    logic [CNT_WIDTH-1:0] dr_word;
+    logic [NR_WORDS-1:0] dr_mask;
 
-    // ==================== Stall condition ====================
-    logic s1_stall;
-    always_comb begin
-        s1_stall = 1'b0;
-        if (state == S_INIT)
-            s1_stall = 1'b1;
-        else if (state != S_IDLE)
-            s1_stall = 1'b1;
-        else if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !s2_valid)
-            s1_stall = 1'b1;
-    end
-
-    // ==================== BRAM read control ====================
-    // The data RAM read port (registered output, one-cycle latency) is
-    // issued in the cycle before the output is consumed.  The 0-cycle load
-    // hit paths (fast path, hit-under-miss) issue the read in the request
-    // cycle with the request index, so the line data is ready when the WB
-    // stage re-extracts dresp.data one cycle later (dresp.hit).
-    always_comb begin
-        data_rd_addr = '0;
-        tag_rd_addr  = '0;
-
-        // Priority: the 0-cycle request reads (fast path, hum) are listed
-        // LAST so they win over the stale s1 read — with s2 cleared by a
-        // hit the previous cycle, s1 can still hold the re-captured ghost
-        // of the just-completed request, whose read must not displace the
-        // current request's (the WB stage samples dresp.data one cycle
-        // after the request; the read issued here is exactly that data).
-        if (state == S_IDLE && s1_valid && is_cachable(s1_addr, s1_cacheable)) begin
-            data_rd_addr = s1_idx;
-            tag_rd_addr  = s1_idx;
-        end
-        if (state == S_MISS) begin
-            data_rd_addr = m_idx;
-            tag_rd_addr  = m_idx;
-        end
-        if (state == S_IDLE && cacop_req.valid && cacop_req.code[2:0] == 3'd1 && cacop_req.code[4:3] == 2'b01) begin
-            data_rd_addr = cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
-            tag_rd_addr  = cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
-        end
-        if (fast_path_req) begin
-            data_rd_addr = req_idx;
-        end
-        if (hum_ok && !(|cpu_req.strobe)) begin
-            data_rd_addr = req_idx;
-        end
-    end
-
-    // ==================== Fast-path cpu_resp (data_ok/addr_ok, 独立于 FSM) ====================
-    always_comb begin
-        cpu_resp.addr_ok  = 1'b0;
-        cpu_resp.data_ok  = 1'b0;
-        cpu_resp.data     = 32'd0;
-        cpu_resp.data_last = 1'b0;
-        cpu_resp.hit      = 1'b0;
-        cpu_resp.hit_way  = 1'b0;
-
-        // Store AND load hits are served in the request cycle (0-cycle, the
-        // store fast path + the load-hit fast path bypass the S1/S2 pipe).
-        // Misses are accepted in the request cycle too (non-blocking): a
-        // store miss completes immediately (data merged into the refilled
-        // line), a load miss is acknowledged with addr_ok and receives its
-        // data via the refill keyword forward.
-        if (fast_path_req) begin
-            if (req_hit) begin
-                cpu_resp.addr_ok = 1'b1;
-                cpu_resp.data_ok = 1'b1;
-                if (!(|cpu_req.strobe)) begin
-                    // Load hit: data_ok fires in the request cycle but the
-                    // data (registered BRAM read) completes one cycle
-                    // later; the WB stage re-extracts it from the full
-                    // data port (dresp.hit + hit_way).
-                    cpu_resp.hit     = 1'b1;
-                    cpu_resp.hit_way = req_hit_way;
-                    cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
-                end
-            end else if (!cacop_d_pending) begin
-                cpu_resp.addr_ok = 1'b1;
-                if (|cpu_req.strobe)
-                    cpu_resp.data_ok = 1'b1;
-            end
-        end
-
-        if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
-            cpu_resp.addr_ok = 1'b1;
-            cpu_resp.data_ok = 1'b1;
-            if (!s2_op) begin
-                // S2 hit: the data read was issued at S1 and completes
-                // exactly now — data_ok and data are same-cycle (0-delay
-                // semantics), so the MEM stage captures it as usual
-                // (hit=0, no WB re-extraction).
-                cpu_resp.data = data_rd_out[s2_hit_way][s2_wo];
-            end
-        end
-
-        if (state == S_UNCACHED && mem_resp.data_ok) begin
-            // data_ok (combined): covers both uncached reads (rdata_ok)
-            // and uncached writes (write completion); no other transaction
-            // can be in flight in S_UNCACHED.
-            cpu_resp.addr_ok = 1'b1;
-            cpu_resp.data_ok = 1'b1;
-            cpu_resp.data    = mem_resp.data;
-        end
-
-        if ((state inside {S_REFILL_REQ, S_WB_WRITE, S_REFILL_WAIT}) && mem_resp.rdata_ok
-            && !(&rf_fmask)
-            && !rf_kw_sent && m_op == 1'b0) begin
-            // Keyword forward: the first refill beat is the load's word
-            // (rotated order), so the stalled load completes here.  It may
-            // arrive in the same cycle as the request's addr_ok (an L2
-            // hit) — S_REFILL_REQ is included for that case.
-            cpu_resp.addr_ok  = 1'b1;
-            cpu_resp.data_ok  = 1'b1;
-            cpu_resp.data     = mem_resp.data;
-        end
-
-        // Hit-under-miss: while a miss refills, hits to other lines are
-        // served in the request cycle (loads always, stores when the data
-        // write port is free).
-        if (hum_ok) begin
-            cpu_resp.addr_ok = 1'b1;
-            cpu_resp.data_ok = 1'b1;
-            if (!(|cpu_req.strobe)) begin
-                // Registered-read load hit: data completes one cycle later
-                // (read issued this cycle), consumed by the WB stage.
-                cpu_resp.hit     = 1'b1;
-                cpu_resp.hit_way = req_hit_way;
-                cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
-            end
-        end
-
-        // Read-back store to the line being refilled: accept in-cycle and
-        // merge into the refill write.
-        if (store_refill_ok) begin
-            cpu_resp.addr_ok = 1'b1;
-            cpu_resp.data_ok = 1'b1;
-        end
-    end
+    // ==================== CACOP context ====================
+    way_t   cacop_way;
+    index_t cacop_idx;
+    logic [NR_WORDS-1:0] cacop_mask;
+    logic [CNT_WIDTH-1:0] cacop_wb_cnt;
+    logic        cacop_waiting;
+    logic        cacop_finish;
+    word_t       cacop_wb_buf [0:NR_WORDS-1];
 
     // ==================== FSM combinational ====================
     always_comb begin
         next_state = state;
-
         cacop_done = 1'b0;
 
-        mem_req_next.valid  = 1'b0;
-        mem_req_next.addr   = 32'd0;
-        mem_req_next.size   = MSIZE4;
-        mem_req_next.strobe = 4'd0;
-        mem_req_next.data   = 32'd0;
-        // All L1-internal traffic (refill reads, eviction writebacks,
-        // cacop writebacks) targets the cacheable window, so the L2 must
-        // cache it: cacheable defaults high and is forced low only for
-        // the uncached passthrough (S_UNCACHED).
-        mem_req_next.cacheable = 1'b1;
-        mem_req_next.burst_len = 2'd0;
+        case (state)
+            S_INIT: begin
+                if (init_wr_way == NR_WAYS - 1 && init_addr == NR_SETS - 1)
+                    next_state = S_IDLE;
+            end
 
+            S_IDLE: begin
+                if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !l1_busy) begin
+                    if (cacop_req.code[4:3] == 2'b00)
+                        next_state = S_CACOP_INV;
+                    else
+                        next_state = S_CACOP_WB_READ;
+                end
+            end
+
+            S_CACOP_WB_READ: begin
+                // Nothing valid to write back: straight to invalidate.
+                if (!|tag_mem[cacop_way][cacop_idx][NR_WORDS-1:0])
+                    next_state = S_CACOP_INV;
+                else
+                    next_state = S_CACOP_WB_WRITE;
+            end
+
+            S_CACOP_WB_WRITE: begin
+                if (cacop_finish)
+                    next_state = S_CACOP_INV;
+            end
+
+            S_CACOP_INV: begin
+                // Level done: stay here (cacop_done=1) until the pipeline
+                // retires the cacop and its request drops (the walk's loop
+                // instructions create a gap between two cacops).  The L2's
+                // cacop request is gated (in core_top) on this level, so a
+                // 1-cycle pulse could be MISSED while the L2 is still busy
+                // (e.g. refilling a drained line that it had evicted) and
+                // the flush walk would hang forever.
+                cacop_done = 1'b1;
+                if (!cacop_req.valid)
+                    next_state = S_IDLE;
+            end
+
+            default: next_state = S_IDLE;
+        endcase
+    end
+
+    // ==================== Response to the LSU ====================
+    always_comb begin
+        cpu_resp.addr_ok  = 1'b0;
+        cpu_resp.rdata_ok = 1'b0;
+        cpu_resp.data_ok  = 1'b0;
+        cpu_resp.data_last = 1'b0;
+        cpu_resp.data     = 32'd0;
+        cpu_resp.hit      = 1'b0;
+        cpu_resp.hit_way  = 1'b0;
+
+        if (hit_read_req) begin
+            // 0-cycle hit: answered in the request cycle.  The load's data
+            // completes one cycle later on the registered read port and is
+            // re-extracted by the WB stage (hit=1); the store is written
+            // through the data write port this cycle.
+            cpu_resp.addr_ok = 1'b1;
+            cpu_resp.data_ok = 1'b1;
+            if (!(|cpu_req.strobe)) begin
+                cpu_resp.hit     = 1'b1;
+                cpu_resp.hit_way = req_hit_way;
+                cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
+            end
+        end else if (o_valid || (cpu_req.valid && !req_hit)) begin
+            // Pass-through: the L2's response to the forwarded request
+            // (o_valid covers the load-miss keyword, delivered while the
+            // LSU is in WAIT and no longer presenting the request).
+            // Gated on the outstanding/presented request so a stray L2
+            // response can never be mistaken for a response to an idle
+            // LSU (the next request would complete with wrong data).
+            // hit is never asserted here — the WB stage only re-extracts
+            // for L1 hits.
+            cpu_resp.addr_ok   = mem_resp.addr_ok;
+            cpu_resp.rdata_ok  = mem_resp.rdata_ok;
+            cpu_resp.data_ok   = mem_resp.data_ok;
+            cpu_resp.data_last = mem_resp.data_last;
+            cpu_resp.data      = mem_resp.data;
+        end
+    end
+
+    // ==================== mem_req (to the L2's cpu port) ================
+    // CACOP drain target: the LINE's real address (tag_mem[cacop_way]
+    // [cacop_idx] is the tag of the line at the walked index — NOT the
+    // walk address itself, which only encodes the set/way; writing back
+    // to addr[31:4] would push the dirty line's data into the wrong
+    // memory line whenever the index holds a line of a different tag).
+    // Eviction drain target: the victim line.
+    wire [31:0] cacop_store_addr;
+    wire [31:0] drain_store_addr;
+    generate
+        if (WORD_WIDTH > 0) begin : g_store_addr
+            assign cacop_store_addr = {tag_mem[cacop_way][cacop_idx][TAG_WIDTH+NR_WORDS-1:NR_WORDS],
+                                       cacop_idx, cacop_wb_cnt[WORD_WIDTH-1:0], 2'b00};
+            assign drain_store_addr = {vc_tag, vc_idx, dr_word[WORD_WIDTH-1:0], 2'b00};
+        end else begin : g_store_addr_1w
+            assign cacop_store_addr = {tag_mem[cacop_way][cacop_idx][TAG_WIDTH+NR_WORDS-1:NR_WORDS],
+                                       cacop_idx, 2'b00};
+            assign drain_store_addr = {vc_tag, vc_idx, 2'b00};
+        end
+    endgenerate
+
+    always_comb begin
+        mem_req.valid     = 1'b0;
+        mem_req.addr      = 32'd0;
+        mem_req.size      = MSIZE4;
+        mem_req.strobe    = 4'd0;
+        mem_req.data      = 32'd0;
+        mem_req.cacheable = 1'b1;
+        mem_req.burst_len = 2'd0;
+
+        if (lsu_forward_req) begin
+            mem_req.valid     = 1'b1;
+            mem_req.addr      = cpu_req.addr;
+            mem_req.strobe    = cpu_req.strobe;
+            mem_req.data      = cpu_req.data;
+            mem_req.cacheable = cpu_req.cacheable;
+            mem_req.size      = cpu_req.size;
+        end else if (cacop_store_req) begin
+            mem_req.valid     = 1'b1;
+            mem_req.addr      = cacop_store_addr;
+            mem_req.strobe    = 4'b1111;
+            mem_req.data      = cacop_wb_buf[cacop_wb_cnt];
+        end else if (drain_store_req) begin
+            mem_req.valid     = 1'b1;
+            mem_req.addr      = drain_store_addr;
+            mem_req.strobe    = 4'b1111;
+            mem_req.data      = wb_buf[dr_word];
+        end
+    end
+
+    // ==================== BRAM read control ====================
+    always_comb begin
+        data_rd_addr = '0;
+        if (hit_read_req) begin
+            // 0-cycle hit: issue the line read for the WB re-extraction.
+            data_rd_addr = req_idx;
+        end else if (state == S_CACOP_WB_READ) begin
+            data_rd_addr = cacop_idx;
+        end else if (vc_valid && !vc_reading) begin
+            // Victim capture read (background; yields to hits).
+            data_rd_addr = vc_idx;
+        end
+    end
+
+    // ==================== Data write control ====================
+    // The fill write may happen in any cycle the write port is not owned
+    // by a store hit; it must wait for a pending victim capture (the
+    // victim's words are read before the fill overwrites its way).
+    wire fill_wr = f_valid && !vc_valid && !store_hit_wr;
+
+    always_comb begin
         data_wr_ena  = 1'b0;
         data_wr_way  = '0;
         data_wr_addr = '0;
@@ -564,273 +499,160 @@ module l1dcache import la32_common::*; (
         data_wr_we   = 4'd0;
         data_wr_data = 32'd0;
 
-        tag_wr_ena  = 1'b0;
-        tag_wr_way  = '0;
-        tag_wr_addr = '0;
-        tag_wr_data = '0;
-
-        case (state)
-
-            S_INIT: begin
-                tag_wr_ena  = 1'b1;
-                tag_wr_way  = init_wr_way;
-                tag_wr_addr = init_addr;
-                tag_wr_data = '0;
-                if (init_wr_way == NR_WAYS - 1 && init_addr == NR_SETS - 1)
-                    next_state = S_IDLE;
-            end
-
-            S_IDLE: begin
-                if (cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !s2_valid) begin
-                    if (cacop_req.code[4:3] == 2'b00)
-                        next_state = S_CACOP_ST;
-                    else if (cacop_req.code[4:3] == 2'b01)
-                        next_state = S_CACOP_WB_READ;
-                end else if (fast_path_req) begin
-                    if (req_hit) begin
-                        if (|cpu_req.strobe) begin
-                            data_wr_ena  = 1'b1;
-                            data_wr_way  = req_hit_way;
-                            data_wr_addr = req_idx;
-                            data_wr_wo   = req_wo;
-                            data_wr_we   = cpu_req.strobe;
-                            data_wr_data = cpu_req.data;
-                        end
-                    end else if (!cacop_d_pending) begin
-                        // Combinational miss accept: start the refill while
-                        // the request is completed in the request cycle.
-                        next_state = S_MISS;
-                    end
-                end else if (s2_valid) begin
-                    if (!is_cachable(s2_addr, s2_cacheable)) begin
-                        mem_req_next.valid  = 1'b1;
-                        mem_req_next.addr   = {s2_addr[31:2], 2'b00};
-                        mem_req_next.strobe = s2_op ? s2_wstrb : 4'd0;
-                        mem_req_next.data   = s2_wdata;
-                        mem_req_next.cacheable = 1'b0;
-                        if (mem_resp.addr_ok && mem_resp.data_ok)
-                            ;
-                        else
-                            next_state = S_UNCACHED;
-                    end else if (s2_hit) begin
-                        if (s2_op) begin
-                            data_wr_ena  = 1'b1;
-                            data_wr_way  = s2_hit_way;
-                            data_wr_addr = s2_idx;
-                            data_wr_wo   = s2_wo;
-                            data_wr_we   = s2_wstrb;
-                            data_wr_data = s2_wdata;
-                        end
-                    end else begin
-                        next_state = S_MISS;
-                    end
-                end
-            end
-
-            S_UNCACHED: begin
-                if (mem_resp.data_ok) begin
-                    next_state = S_IDLE;
-                end else if (!mem_resp.addr_ok) begin
-                    mem_req_next.valid  = 1'b1;
-                    mem_req_next.addr   = {s2_addr[31:2], 2'b00};
-                    mem_req_next.strobe = s2_op ? s2_wstrb : 4'd0;
-                    mem_req_next.data   = s2_wdata;
-                    mem_req_next.cacheable = 1'b0;
-                end
-            end
-
-            S_MISS: begin
-                next_state = m_edirty ? S_WB_READ : S_REFILL_REQ;
-            end
-
-            S_WB_READ: begin
-                // Capture the victim data only; issue the refill read FIRST.
-                // The refill request and the writeback drain are separate
-                // single-word transactions on the L2's cpu port (it serves
-                // one request at a time), so the drain always completes
-                // before the remaining refill words are requested; refill
-                // beats arriving during the drain are still collected here
-                // (rf_buf/fmask/keyword forward, gated on mem_resp.rdata_ok
-                // so the L2's store completion cannot corrupt the refill
-                // data path).  The load's keyword (first refill beat) is
-                // thus forwarded while the writeback drains.
-                next_state = S_REFILL_REQ;
-            end
-
-            S_WB_WRITE: begin
-                // Writeback drain, one word per L2 transaction.  The L2's
-                // keyword response (the refill beat for the outstanding
-                // read) also asserts addr_ok, so the word is only retired
-                // on an addr_ok that is NOT accompanied by read data — the
-                // keyword must not be mistaken for the store accept.
-                // One-shot like S_REFILL_REQ: the accepted word's request
-                // must not be re-driven (the L2 would capture a duplicate
-                // transaction).
-                mem_req_next.valid  = 1'b1;
-                mem_req_next.addr   = {m_etag, m_idx,
-                                       woffset_t'((wb_cnt) & WOFF_MASK), 2'b00};
-                mem_req_next.strobe = 4'b1111;
-                mem_req_next.data   = wb_buf[wb_cnt];
-                mem_req_next.burst_len = 2'd0;
-                if (mem_resp.addr_ok && !mem_resp.rdata_ok) begin
-                    mem_req_next.valid = 1'b0;
-                    next_state = (wb_cnt == NR_WORDS - 1) ? S_REFILL_WAIT : S_WB_WRITE;
-                end
-            end
-
-            S_REFILL_REQ: begin
-                // Issue the refill read for one word, in rotated order
-                // starting at the load's word (m_wo): the first beat is
-                // the keyword, so a load miss is answered as soon as the
-                // L2 serves the first request.  Only the FIRST request of
-                // a dirty miss is followed by the writeback drain (wb_cnt
-                // is still 0 before the drain and NR_WORDS after it, so
-                // no extra state is needed to tell them apart).
-                // The request is one-shot: valid drops in the accept cycle
-                // (the L2's cpu port clears its request pipeline on the
-                // response, so a request re-driven one cycle later would be
-                // captured as a NEW request and deliver a duplicate beat
-                // that the collection would mis-place — the beat count has
-                // already been incremented by then).
-                mem_req_next.valid  = 1'b1;
-                mem_req_next.addr   = {m_tag, m_idx,
-                                       woffset_t'((m_wo + rf_cnt) & WOFF_MASK), 2'b00};
-                mem_req_next.burst_len = 2'd0;
-                if (mem_resp.addr_ok) begin
-                    mem_req_next.valid = 1'b0;
-                    next_state = (m_edirty && (wb_cnt == 0))
-                        ? S_WB_WRITE : S_REFILL_WAIT;
-                end
-            end
-
-            S_REFILL_WAIT: begin
-                // Exit on the beat mask: the refill may have completed
-                // during the overlapped writeback drain.  Otherwise, once a
-                // beat has been collected (rf_need_req, set by the
-                // collection block — the beat itself may arrive while in
-                // S_REFILL_REQ or S_WB_WRITE, e.g. an L2 hit answers
-                // addr_ok and the beat in the same cycle), issue the next
-                // word's read.
-                if (refill_fmask_done)
-                    next_state = S_REFILL_WRITE;
-                else if (rf_need_req)
-                    next_state = S_REFILL_REQ;
-            end
-
-            S_REFILL_WRITE: begin
-                data_wr_ena  = 1'b1;
-                data_wr_way  = m_eway;
-                data_wr_addr = m_idx;
-                data_wr_wo   = rf_wr_cnt;
-                if (st_merge_pending && rf_wr_cnt == st_merge_wo) begin
-                    // Read-back store merged over the refill data (a later
-                    // store than the store-miss merge, so it wins).
-                    data_wr_we   = st_merge_strb;
-                    data_wr_data = st_merge_data;
-                end else if (m_op && rf_wr_cnt == m_wo) begin
-                    // Merge the accepted store miss's bytes into the
-                    // refilled line (write-allocate store completion).
-                    data_wr_we   = m_wstrb;
-                    data_wr_data = m_wdata;
-                end else begin
-                    data_wr_we   = 4'b1111;
-                    data_wr_data = rf_buf[rf_wr_cnt];
-                end
-                if (rf_wr_cnt == 0) begin
-                    tag_wr_ena  = 1'b1;
-                    tag_wr_way  = m_eway;
-                    tag_wr_addr = m_idx;
-                    tag_wr_data = {m_tag, 1'b1};
-                end
-                next_state = (rf_wr_cnt == NR_WORDS - 1)
-                    ? S_IDLE
-                    : S_REFILL_WRITE;
-            end
-
-            S_CACOP_ST: begin
-                tag_wr_ena  = 1'b1;
-                tag_wr_way  = cacop_way;
-                tag_wr_addr = cacop_idx;
-                tag_wr_data = '0;
-                cacop_done  = 1'b1;
-                next_state  = S_IDLE;
-            end
-
-            S_CACOP_WB_READ: begin
-                next_state = cacop_edirty ? S_CACOP_WB_WRITE : S_CACOP_INV;
-            end
-
-            S_CACOP_WB_WRITE: begin
-                mem_req_next.valid  = 1'b1;
-                // cacop_wb_addr is built in a generate (below): with a
-                // 1-word line WORD_WIDTH is 0 and the empty slice
-                // cacop_wb_cnt[WORD_WIDTH-1:0] (= [-1:0]) is rejected by
-                // some verilator versions and/or widened to 2 bits (the
-                // concat then drops the top two tag bits of the writeback
-                // address), so the 1-word form must not be elaborated.
-                mem_req_next.addr   = cacop_wb_addr;
-                mem_req_next.strobe = 4'b1111;
-                mem_req_next.data   = cacop_wb_buf[cacop_wb_cnt];
-                if (mem_resp.addr_ok) begin
-                    mem_req_next.valid = 1'b0;
-                    next_state = (cacop_wb_cnt == NR_WORDS - 1) ? S_CACOP_INV : S_CACOP_WB_WRITE;
-                end
-            end
-
-            S_CACOP_INV: begin
-                tag_wr_ena  = 1'b1;
-                tag_wr_way  = cacop_way;
-                tag_wr_addr = cacop_idx;
-                tag_wr_data = '0;
-                cacop_done  = 1'b1;
-                next_state  = S_IDLE;
-            end
-
-            default: next_state = S_IDLE;
-        endcase
-
-        // Hit-under-miss store hit: the data write port is free in every
-        // state except S_REFILL_WRITE (hum_ok already gates that out).
-        if (hum_ok && |cpu_req.strobe) begin
+        if (store_hit_wr) begin
+            // 0-cycle store hit.
             data_wr_ena  = 1'b1;
             data_wr_way  = req_hit_way;
             data_wr_addr = req_idx;
             data_wr_wo   = req_wo;
             data_wr_we   = cpu_req.strobe;
             data_wr_data = cpu_req.data;
+        end else if (fill_wr) begin
+            data_wr_ena  = 1'b1;
+            data_wr_way  = f_way;
+            data_wr_addr = f_idx;
+            data_wr_wo   = f_wo;
+            data_wr_we   = 4'b1111;
+            data_wr_data = f_data;
+        end
+    end
+
+    // ==================== Tag / dirty / PLRU write control ==============
+    // The new v bits merge the existing ones for a partial line (the way
+    // whose tag already matches), otherwise a fresh single-word line.
+    // The new dirty word keeps the line's other dirty words and marks the
+    // filled word only for store fills.
+    wire [NR_WORDS-1:0] fill_new_v = f_partial
+        ? (tag_mem[f_way][f_idx][NR_WORDS-1:0] | (1 << f_wo))
+        : (1 << f_wo);
+    wire [NR_WORDS-1:0] fill_new_dirty = (dirty_mem[f_way][f_idx] & ~(1 << f_wo))
+        | (f_store ? (1 << f_wo) : 1'b0);
+
+    always_comb begin
+        tag_wr_ena   = 1'b0;
+        tag_wr_way   = '0;
+        tag_wr_addr  = '0;
+        tag_wr_data  = '0;
+        dirty_wr_ena  = 1'b0;
+        dirty_wr_way  = '0;
+        dirty_wr_addr = '0;
+        dirty_wr_data = '0;
+        plru_wr_ena[0] = 1'b0;
+        plru_wr_data[0] = 1'b0;
+        for (int gn = 1; gn < NR_WAYS-1; gn++) begin
+            plru_wr_ena[gn] = 1'b0;
+            plru_wr_data[gn] = 1'b0;
+        end
+        plru_wr_addr = '0;
+
+        if (state == S_INIT) begin
+            tag_wr_ena   = 1'b1;
+            tag_wr_way   = init_wr_way;
+            tag_wr_addr  = init_addr;
+            tag_wr_data  = '0;
+            dirty_wr_ena  = 1'b1;
+            dirty_wr_way  = init_wr_way;
+            dirty_wr_addr = init_addr;
+            dirty_wr_data = '0;
+            for (int gn = 0; gn < NR_WAYS-1; gn++)
+                plru_wr_ena[gn] = 1'b1;
+            plru_wr_addr = init_addr;
+            for (int gn = 0; gn < NR_WAYS-1; gn++)
+                plru_wr_data[gn] = 1'b0;
+        end
+
+        if (state == S_CACOP_INV) begin
+            tag_wr_ena   = 1'b1;
+            tag_wr_way   = cacop_way;
+            tag_wr_addr  = cacop_idx;
+            tag_wr_data  = '0;
+            dirty_wr_ena  = 1'b1;
+            dirty_wr_way  = cacop_way;
+            dirty_wr_addr = cacop_idx;
+            dirty_wr_data = '0;
+        end
+
+        if (store_hit_wr) begin
+            dirty_wr_ena  = 1'b1;
+            dirty_wr_way  = req_hit_way;
+            dirty_wr_addr = req_idx;
+            dirty_wr_data = dirty_mem[req_hit_way][req_idx] | (1 << req_wo);
+        end
+
+        if (fill_wr) begin
+            tag_wr_ena   = 1'b1;
+            tag_wr_way   = f_way;
+            tag_wr_addr  = f_idx;
+            tag_wr_data  = {f_tag, fill_new_v};
+            dirty_wr_ena  = 1'b1;
+            dirty_wr_way  = f_way;
+            dirty_wr_addr = f_idx;
+            dirty_wr_data = fill_new_dirty;
+        end
+
+        // PLRU (NR_WAYS-1 tree nodes): the hit update wins over the fill's
+        // (a single write port per node).
+        if (hit_read_req) begin
+            begin : g_plru_hit
+                automatic int node = 0;
+                for (int b = WAY_BITS-1; b >= 0; b--) begin
+                    plru_wr_ena[node]  = 1'b1;
+                    plru_wr_data[node] = ~req_hit_way[b];
+                    node = 2*node + 1 + int'(req_hit_way[b]);
+                end
+            end
+            plru_wr_addr = req_idx;
+        end else if (fill_wr) begin
+            begin : g_plru_fill
+                automatic int node = 0;
+                for (int b = WAY_BITS-1; b >= 0; b--) begin
+                    plru_wr_ena[node]  = 1'b1;
+                    plru_wr_data[node] = ~f_way[b];
+                    node = 2*node + 1 + int'(f_way[b]);
+                end
+            end
+            plru_wr_addr = f_idx;
         end
     end
 
     // ==================== Sequential logic ====================
     always_ff @(posedge clk) begin
         if (reset) begin
-            state       <= S_INIT;
-            s1_valid    <= 1'b0;
-            s2_valid    <= 1'b0;
-            just_hit    <= 1'b0;
-            last_hit_addr <= 32'd0;
-            for (int w = 0; w < NR_WAYS; w++)
-                dirty[w]  <= '0;
-            for (int p = 0; p < NR_WAYS-1; p++)
-                plru[p]  <= '0;
-            rf_fmask   <= '0;
-            wb_cnt     <= '0;
-            rf_cnt     <= '0;
-            rf_wr_cnt  <= '0;
-            rf_kw_sent <= 1'b0;
-            rf_need_req <= 1'b0;
-            m_wdata    <= 32'd0;
-            m_wstrb    <= 4'd0;
-            st_merge_pending <= 1'b0;
-            st_merge_wo      <= '0;
-            st_merge_data    <= 32'd0;
-            st_merge_strb    <= 4'd0;
-            mem_req_r  <= '{valid: 1'b0, addr: 32'd0, size: MSIZE4, strobe: 4'd0, data: 32'd0, cacheable: 1'b0, burst_len: 2'd0};
-            init_addr    <= '0;
-            init_wr_way  <= '0;
+            state          <= S_INIT;
+            init_addr      <= '0;
+            init_wr_way    <= '0;
+            o_valid        <= 1'b0;
+            o_wait         <= 1'b0;
+            o_op           <= 1'b0;
+            o_cacheable    <= 1'b0;
+            o_idx          <= '0;
+            o_tag          <= '0;
+            o_wo           <= '0;
+            o_data         <= 32'd0;
+            o_strobe       <= 4'd0;
+            f_valid        <= 1'b0;
+            f_partial      <= 1'b0;
+            f_store        <= 1'b0;
+            f_way          <= '0;
+            f_idx          <= '0;
+            f_tag          <= '0;
+            f_wo           <= '0;
+            f_data         <= 32'd0;
+            vc_valid       <= 1'b0;
+            vc_reading     <= 1'b0;
+            vc_way         <= '0;
+            vc_idx         <= '0;
+            vc_tag         <= '0;
+            vc_mask        <= '0;
+            dr_valid       <= 1'b0;
+            dr_waiting     <= 1'b0;
+            dr_word        <= '0;
+            dr_mask        <= '0;
+            cacop_wb_cnt   <= '0;
+            cacop_waiting  <= 1'b0;
+            cacop_finish   <= 1'b0;
         end else begin
             state <= next_state;
-            mem_req_r <= mem_req_next;
 
             if (state == S_INIT) begin
                 if (init_wr_way == NR_WAYS - 1)
@@ -838,265 +660,152 @@ module l1dcache import la32_common::*; (
                 init_wr_way <= init_wr_way + 1;
             end
 
-            if (!s1_stall) begin
-                if (fast_path_req) begin
-                    s1_valid <= 1'b0;
-                end else begin
-                s1_valid <= cpu_req.valid;
-                s1_addr  <= cpu_req.addr;
-                s1_op    <= |cpu_req.strobe;
-                s1_size  <= cpu_req.size;
-                s1_wdata <= cpu_req.data;
-                s1_wstrb <= cpu_req.strobe;
-                // Word offset as (addr >> 2) & mask: the slice form
-                // addr[LINE_OFFSET-1:2] is a backward range when the line
-                // is 1 word wide (rejected by some verilator versions);
-                // the mask is 0 in that case, selecting word 0.
-                s1_wo    <= woffset_t'((cpu_req.addr >> 2) & WOFF_MASK);
-                s1_idx   <= cpu_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
-                s1_tag   <= cpu_req.addr[31:INDEX_WIDTH+LINE_OFFSET];
-                s1_cacheable <= cpu_req.cacheable;
-
-                if (s2_hit || (just_hit && s1_addr == last_hit_addr)) begin
-                    s2_valid <= 1'b0;
-                end else begin
-                    s2_valid <= s1_valid;
-                    s2_addr  <= s1_addr;
-                    s2_op    <= s1_op;
-                    s2_size  <= s1_size;
-                    s2_wdata <= s1_wdata;
-                    s2_wstrb <= s1_wstrb;
-                    s2_wo    <= s1_wo;
-                    s2_idx   <= s1_idx;
-                    s2_tag   <= s1_tag;
-                    s2_cacheable <= s1_cacheable;
-                end
-                end
-            end else if (state != S_IDLE) begin
-                s1_valid <= 1'b0;
-                s2_valid <= 1'b0;
-            end else if (s2_valid) begin
-                s2_valid <= 1'b0;
-                s1_valid <= 1'b0;
+            // ==================== Outstanding request ====================
+            if (o_complete) begin
+                o_valid <= 1'b0;
+                o_wait  <= 1'b0;
+            end else if (!o_valid && lsu_forward_req) begin
+                o_valid     <= 1'b1;
+                o_idx       <= req_idx;
+                o_tag       <= req_tag;
+                o_wo        <= req_wo;
+                o_op        <= |cpu_req.strobe;
+                o_cacheable <= is_cachable(cpu_req.addr, cpu_req.cacheable);
+                o_data      <= cpu_req.data;
+                o_strobe    <= cpu_req.strobe;
             end
+            // Load miss accepted with addr_ok only: the LSU waits for the
+            // keyword (in_refill, counted as a DCache Refill stall).
+            if (o_valid && !o_op && !o_wait && mem_resp.addr_ok && !mem_resp.data_ok)
+                o_wait <= 1'b1;
 
-            if (fast_path_req) begin
-                just_hit <= 1'b1;
-                last_hit_addr <= cpu_req.addr;
-            end else begin
-                just_hit <= s2_valid && s2_hit;
-                if (s2_valid && s2_hit)
-                    last_hit_addr <= s2_addr;
-            end
-
-            if (fast_path_req && req_hit) begin
-                if (NR_WAYS == 2) begin
-                    plru[0][req_idx] <= ~req_hit_way;
-                end else begin
-                    int node = 0;
-                    for (int b = WAY_BITS-1; b >= 0; b--) begin
-                        plru[node][req_idx] <= ~req_hit_way[b];
-                        node = 2*node + 1 + int'(req_hit_way[b]);
+            // ==================== Fill initiation (at the response) ======
+            // The fill is background: it waits for any pending fill /
+            // victim capture / drain to finish so wb_buf and the write
+            // port are owned by one op at a time.
+            if (o_complete && o_cacheable && !f_valid && !vc_valid && !dr_valid) begin
+                // Fill only complete words: loads always, stores only with
+                // a full strobe (a partial-byte store would leave garbage
+                // in the unwritten bytes — the word is left invalid and
+                // passes through to the L2 instead).
+                if (!o_op || o_strobe == 4'b1111) begin
+                    f_valid  <= 1'b1;
+                    f_idx    <= o_idx;
+                    f_tag    <= o_tag;
+                    f_wo     <= o_wo;
+                    f_way    <= fill_is_partial ? fill_match_way : victim_way(o_idx);
+                    f_partial<= fill_is_partial;
+                    f_store  <= o_op;
+                    f_data   <= o_op ? o_data : mem_resp.data;
+                    // The victim's dirty words must be captured before the
+                    // fill overwrites its way (only when the victim is a
+                    // live line with dirty words; clean or empty victims
+                    // are dropped silently — their data equals memory).
+                    if (!fill_is_partial
+                        && o_line_valid[victim_way(o_idx)]
+                        && |dirty_mem[victim_way(o_idx)][o_idx]) begin
+                        vc_valid <= 1'b1;
+                        vc_way   <= victim_way(o_idx);
+                        vc_idx   <= o_idx;
+                        vc_tag   <= tag_mem[victim_way(o_idx)][o_idx][TAG_WIDTH+NR_WORDS-1:NR_WORDS];
+                        vc_mask  <= dirty_mem[victim_way(o_idx)][o_idx];
                     end
                 end
-                if (|cpu_req.strobe)
-                    dirty[req_hit_way][req_idx] <= 1'b1;
             end
 
-            // Hit-under-miss hits update PLRU/dirty like the S_IDLE hits.
-            if (hum_ok) begin
-                if (NR_WAYS == 2) begin
-                    plru[0][req_idx] <= ~req_hit_way;
-                end else begin
-                    int node = 0;
-                    for (int b = WAY_BITS-1; b >= 0; b--) begin
-                        plru[node][req_idx] <= ~req_hit_way[b];
-                        node = 2*node + 1 + int'(req_hit_way[b]);
-                    end
-                end
-                if (|cpu_req.strobe)
-                    dirty[req_hit_way][req_idx] <= 1'b1;
+            // ==================== Victim capture ========================
+            if (vc_valid && !vc_reading && !hit_read_req) begin
+                // Issue the victim line read this cycle (the registered
+                // output is valid one cycle later, in vc_reading).
+                vc_reading <= 1'b1;
             end
-
-            if (state == S_IDLE && s2_valid && s2_hit && is_cachable(s2_addr, s2_cacheable)) begin
-                if (NR_WAYS == 2) begin
-                    plru[0][s2_idx] <= ~s2_hit_way;
-                end else begin
-                    int node = 0;
-                    for (int b = WAY_BITS-1; b >= 0; b--) begin
-                        plru[node][s2_idx] <= ~s2_hit_way[b];
-                        node = 2*node + 1 + int'(s2_hit_way[b]);
-                    end
-                end
-                if (s2_op)
-                    dirty[s2_hit_way][s2_idx] <= 1'b1;
-            end
-
-            if (state == S_IDLE && s2_valid && !s2_hit && is_cachable(s2_addr, s2_cacheable)
-                && next_state == S_MISS) begin
-                m_op     <= s2_op;
-                m_wo     <= s2_wo;
-                m_idx    <= s2_idx;
-                m_tag    <= s2_tag;
-                m_eway   <= victim_way(s2_idx);
-                m_edirty <= dirty[victim_way(s2_idx)][s2_idx];
-                // 组合读：与 s2_idx/victim 同拍一致，避免注册读被
-                // 其他请求的读覆盖导致写回地址错位。
-                m_etag   <= s2_tag_data[victim_way(s2_idx)][TAG_WIDTH:1];
-                // The S2 miss path is taken for cacheable requests that
-                // could not use the combinational fast path (a previous
-                // request still in the S2 stage).  A store reaching the
-                // S2 miss path must carry its data/strb to the refill
-                // merge exactly like the fast-path miss accept does;
-                // without this the refill writes stale m_wdata/m_wstrb
-                // and the store's data is silently lost.
-                m_wdata  <= s2_wdata;
-                m_wstrb  <= s2_wstrb;
-            end
-
-            // Combinational miss accept: capture the miss context from the
-            // request itself (the S1/S2 pipe is bypassed for cacheable
-            // requests).  m_wdata/m_wstrb carry the accepted store's bytes
-            // to the S_REFILL_WRITE merge.
-            if (fast_path_miss && next_state == S_MISS) begin
-                m_op     <= |cpu_req.strobe;
-                m_wo     <= req_wo;
-                m_idx    <= req_idx;
-                m_tag    <= req_tag;
-                m_eway   <= victim_way(req_idx);
-                m_edirty <= dirty[victim_way(req_idx)][req_idx];
-                m_etag   <= req_tag_data[victim_way(req_idx)][TAG_WIDTH:1];
-                m_wdata  <= cpu_req.data;
-                m_wstrb  <= cpu_req.strobe;
-            end
-
-            if (state == S_IDLE && cacop_req.valid
-                && cacop_req.code[2:0] == 3'd1 && !s2_valid) begin
-                cacop_way <= cacop_req.addr[WAY_BITS-1:0];
-                // Index-based cacop ops decode the set with the SAME
-                // parameterized line geometry as the data arrays.  The
-                // CPUCFG-reported geometry (which the kernel's flush walk
-                // follows) is parameterized in lockstep with the dcache
-                // line size, so the walk covers every row exactly once.
-                cacop_idx <= cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
-                // The dirty probe must decode from the CURRENT cycle's
-                // address (like cacop_way above): using the registered
-                // cacop_idx mixes this cycle's way with the PREVIOUS
-                // cacop's set, which makes back-to-back flush ops read
-                // the wrong row's dirty bit and drop the writeback.
-                if (cacop_req.code[4:3] == 2'b00) begin
-                    dirty[cacop_req.addr[WAY_BITS-1:0]][cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET]] <= 1'b0;
-                end
-                if (cacop_req.code[4:3] == 2'b01) begin
-                    cacop_edirty <= dirty[cacop_req.addr[WAY_BITS-1:0]][cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET]];
-                    cacop_wb_cnt <= '0;
-                end
-            end
-
-            // Reset the refill context when the refill STARTS (from S_MISS
-            // or S_WB_READ): the per-word loop re-enters S_REFILL_REQ from
-            // S_REFILL_WAIT for words 1..3, and the stale fmask must not
-            // gate the new refill's beat collection — but it also must not
-            // be cleared mid-refill.
-            if ((state == S_MISS || state == S_WB_READ)
-                && next_state == S_REFILL_REQ) begin
-                rf_cnt      <= '0;
-                rf_fmask    <= '0;
-                rf_kw_sent  <= 1'b0;
-                rf_need_req <= 1'b0;
-            end
-
-            if (state == S_MISS && next_state == S_WB_READ)
-                wb_cnt <= '0;
-
-            if (state == S_WB_READ) begin
+            if (vc_reading) begin
                 for (int n = 0; n < NR_WORDS; n++)
-                    wb_buf[n] <= data_rd_out[m_eway][n];
+                    wb_buf[n] <= data_rd_out[vc_way][n];
+                vc_valid   <= 1'b0;
+                vc_reading <= 1'b0;
+                dr_valid   <= 1'b1;
+                dr_word    <= '0;
+                dr_waiting <= 1'b0;
+                dr_mask    <= vc_mask;
             end
 
-            if (state == S_WB_WRITE && mem_resp.addr_ok && !mem_resp.rdata_ok)
-                wb_cnt <= wb_cnt + 1;
-
-            // Collect refill beats (read channel) — gated on rdata_ok so
-            // the L2's store completion cannot corrupt rf_buf while the
-            // writeback drain overlaps the refill read.  Beats arrive one
-            // per single-word request, in rotated order: rf_word is the
-            // word this beat belongs to.  The first beat of a load miss is
-            // the keyword (already forwarded in the response block).  A
-            // collected beat sets rf_need_req so S_REFILL_WAIT issues the
-            // next word's read even when the beat arrived while the state
-            // machine was in S_REFILL_REQ (L2 hit) or S_WB_WRITE.
-            if ((state inside {S_REFILL_REQ, S_WB_WRITE, S_REFILL_WAIT}) && mem_resp.rdata_ok
-                && !(&rf_fmask)) begin
-                rf_buf[rf_word]       <= mem_resp.data;
-                rf_fmask[rf_word]     <= 1'b1;
-                if (rf_cnt == 0 && !rf_kw_sent && m_op == 1'b0)
-                    rf_kw_sent <= 1'b1;
-                rf_cnt      <= rf_cnt + 1;
-                rf_need_req <= 1'b1;
+            // ==================== Fill write =============================
+            if (fill_wr) begin
+                // The data write port is free (no store hit this cycle);
+                // the tag/dirty/plru writes are combinational on the same
+                // condition.
+                f_valid <= 1'b0;
             end
 
-            // The request for the word is in flight (accepted): the next
-            // beat cannot be collected until the response comes back.
-            // A same-cycle beat (L2 hit) still counts as a collected beat,
-            // so rf_need_req is kept in that case.
-            if (state == S_REFILL_REQ && mem_resp.addr_ok && !mem_resp.rdata_ok)
-                rf_need_req <= 1'b0;
-
-            if (state == S_REFILL_WAIT && next_state == S_REFILL_WRITE)
-                rf_wr_cnt <= '0;
-
-            if (state == S_REFILL_WRITE) begin
-                rf_wr_cnt <= rf_wr_cnt + 1;
-                if (rf_wr_cnt == NR_WORDS - 1) begin
-                    // An accepted store miss and/or a merged read-back store
-                    // modified the line, so it must be written back when
-                    // evicted; a plain load refill leaves the line clean.
-                    dirty[m_eway][m_idx] <= m_op || st_merge_pending;
-                    st_merge_pending <= 1'b0;
-                    if (NR_WAYS == 2) begin
-                        plru[0][m_idx] <= ~m_eway;
-                    end else begin
-                        int node = 0;
-                        for (int b = WAY_BITS-1; b >= 0; b--) begin
-                            plru[node][m_idx] <= ~m_eway[b];
-                            node = 2*node + 1 + int'(m_eway[b]);
-                        end
+            // ==================== Eviction drain ========================
+            if (dr_valid) begin
+                if (dr_waiting) begin
+                    if (mem_resp.addr_ok) begin
+                        dr_waiting <= 1'b0;
+                        if (dr_word == NR_WORDS - 1) begin
+                            dr_valid <= 1'b0;
+                            dr_mask  <= '0;
+                        end else
+                            dr_word <= dr_word + 1;
                     end
+                    // else: keep re-presenting the store until accepted.
+                end else if (dr_mask[dr_word] && !o_valid && !lsu_forward_req) begin
+                    dr_waiting <= 1'b1;
+                end else if (dr_word == NR_WORDS - 1) begin
+                    dr_valid <= 1'b0;
+                    dr_mask  <= '0;
+                end else begin
+                    dr_word <= dr_word + 1;
                 end
             end
 
-            // Read-back store to the refilling line: latch the merge slot.
-            // The flag is held until the refill completes (not cleared at
-            // the merge) so the dirty bit at the completion sees it — a
-            // merged store modified the line and it must be written back
-            // when evicted.
-            if (store_refill_ok) begin
-                st_merge_pending <= 1'b1;
-                st_merge_wo      <= req_wo;
-                st_merge_data    <= cpu_req.data;
-                st_merge_strb    <= cpu_req.strobe;
+            // ==================== CACOP ================================
+            if (state == S_IDLE && cacop_req.valid && cacop_req.code[2:0] == 3'd1 && !l1_busy) begin
+                cacop_way <= cacop_req.addr[WAY_BITS-1:0];
+                cacop_idx <= cacop_req.addr[INDEX_WIDTH+LINE_OFFSET-1:LINE_OFFSET];
             end
 
             if (state == S_CACOP_WB_READ) begin
-                cacop_etag      <= tag_mem[cacop_way][cacop_idx][TAG_WIDTH:1];
-                for (int n = 0; n < NR_WORDS; n++)
-                    cacop_wb_buf[n] <= data_rd_out[cacop_way][n];
+                // The line read (issued this cycle) completes one cycle
+                // later; the mask comes from the async dirty read.
+                cacop_mask    <= dirty_mem[cacop_way][cacop_idx];
+                cacop_wb_cnt  <= '0;
+                cacop_waiting <= 1'b0;
+                cacop_finish  <= 1'b0;
             end
 
-            if (state == S_CACOP_WB_WRITE && mem_resp.addr_ok) begin
-                cacop_wb_cnt <= cacop_wb_cnt + 1;
-            end
-
-            if (state == S_CACOP_INV) begin
-                dirty[cacop_way][cacop_idx] <= 1'b0;
+            if (state == S_CACOP_WB_WRITE) begin
+                // The line data (read issued in S_CACOP_WB_READ) is valid
+                // in this state's first cycle only (cacop_wb_cnt==0,
+                // !cacop_waiting): latch it once, then drain the dirty
+                // words as single-word stores (re-presented until
+                // accepted).
+                if (cacop_wb_cnt == 0 && !cacop_waiting) begin
+                    for (int n = 0; n < NR_WORDS; n++)
+                        cacop_wb_buf[n] <= data_rd_out[cacop_way][n];
+                end
+                if (cacop_waiting) begin
+                    if (mem_resp.addr_ok) begin
+                        cacop_waiting <= 1'b0;
+                        if (cacop_wb_cnt == NR_WORDS - 1)
+                            cacop_finish <= 1'b1;
+                        else
+                            cacop_wb_cnt <= cacop_wb_cnt + 1;
+                    end
+                end else if (cacop_mask[cacop_wb_cnt]) begin
+                    cacop_waiting <= 1'b1;
+                end else if (cacop_wb_cnt == NR_WORDS - 1) begin
+                    cacop_finish <= 1'b1;
+                end else begin
+                    cacop_wb_cnt <= cacop_wb_cnt + 1;
+                end
             end
         end
     end
 
-    assign mem_req = mem_req_r;
-
-    assign data_wb = data_rd_out;
+    assign in_refill = o_valid && o_wait;
+    assign data_wb   = data_rd_out;
 
     // ==================== Performance counters ====================
     logic [63:0] access_cnt, hit_cnt, miss_cnt, wb_cnt64;
@@ -1110,44 +819,28 @@ module l1dcache import la32_common::*; (
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            access_cnt <= 64'd0;
-            hit_cnt    <= 64'd0;
-            miss_cnt   <= 64'd0;
-            wb_cnt64   <= 64'd0;
+            access_cnt    <= 64'd0;
+            hit_cnt       <= 64'd0;
+            miss_cnt      <= 64'd0;
+            wb_cnt64      <= 64'd0;
             fast_load_cnt <= 64'd0;
             fast_hum_cnt  <= 64'd0;
         end else begin
-            if (state == S_IDLE && s2_valid && is_cachable(s2_addr, s2_cacheable)) begin
-                access_cnt <= access_cnt + 64'd1;
-                if (s2_hit)
-                    hit_cnt <= hit_cnt + 64'd1;
-                else
-                    miss_cnt <= miss_cnt + 64'd1;
-            end
-            if (fast_path_req) begin
-                access_cnt <= access_cnt + 64'd1;
-                if (req_hit) begin
-                    hit_cnt <= hit_cnt + 64'd1;
-                    if (!(|cpu_req.strobe))
-                        fast_load_cnt <= fast_load_cnt + 64'd1;
-                end else
-                    miss_cnt <= miss_cnt + 64'd1;
-            end
-            if (hum_ok) begin
+            if (hit_read_req && is_cachable(cpu_req.addr, cpu_req.cacheable)) begin
                 access_cnt <= access_cnt + 64'd1;
                 hit_cnt    <= hit_cnt + 64'd1;
-                fast_hum_cnt <= fast_hum_cnt + 64'd1;
                 if (!(|cpu_req.strobe))
                     fast_load_cnt <= fast_load_cnt + 64'd1;
+                if (l1_busy)
+                    fast_hum_cnt <= fast_hum_cnt + 64'd1;
             end
-            if (store_refill_ok) begin
+            if (!o_valid && lsu_forward_req && is_cachable(cpu_req.addr, cpu_req.cacheable)) begin
                 access_cnt <= access_cnt + 64'd1;
-                hit_cnt    <= hit_cnt + 64'd1;
-                fast_hum_cnt <= fast_hum_cnt + 64'd1;
+                miss_cnt   <= miss_cnt + 64'd1;
             end
-            if (state == S_WB_WRITE && mem_resp.addr_ok)
+            if (dr_valid && dr_waiting && mem_resp.addr_ok)
                 wb_cnt64 <= wb_cnt64 + 64'd1;
-            if (state == S_CACOP_WB_WRITE && mem_resp.addr_ok)
+            if (state == S_CACOP_WB_WRITE && cacop_waiting && mem_resp.addr_ok)
                 wb_cnt64 <= wb_cnt64 + 64'd1;
         end
     end

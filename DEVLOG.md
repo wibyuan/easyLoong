@@ -1070,3 +1070,63 @@ matrix/cryptonight 吃满 1MB 容量收益（matrix 110KB 工作集全命中、c
 
 - 全部改动在 `wip/2level-cache` 分支（commit `b88c40f`），**master 未动**（master = 单级 1MB，全测试通过、上板实测 2177ms 合计）
 - 未提交 CI（cryptonight 失败，不值得上板）
+
+## 2026-08-02（续）：两级 dcache 第二轮 —— 直通式设计（wip/2level-cache，未提交）
+
+### 背景
+
+上一轮两级尝试（8KB L1 + 1MB L2，B 式逐字 refill）全面负优化且 cryptonight 未修好，已搁置（见上）。本轮按「教训」重新设计：**L1 miss 直通 L2**，消除逐字 refill 的往返开销；L1 只做 0-cycle 命中叠层 + 按字填充。
+
+### 新设计（l1dcache.sv 重写，约 570 行）
+
+- **L1 命中**：请求拍内 0-cycle 响应（LUTRAM tag 组合读 + 数据注册读，WB 级重取，沿用 wip 的 `dresp.hit/hit_way/data_wb` 机制）；store hit 同拍写 L1 并置 dirty
+- **L1 miss**：请求**原样直通 L2**（`mem_req` 组合直连，`cpu_resp` 在「有 outstanding 或正在转发」时直通 L2 响应）——miss 路径与单级 1MB 完全相同，**永远不会比单级差**
+- **按字填充（word-sector）**：L2 响应到达时，L1 把该 word 写入本行并置 per-word valid；行 = 16B 4 word，per-word valid/dirty；partial-byte store 不填充（字保持无效，后续访问走 L2）
+- **淘汰**：fill 需替换 victim（PLRU）时先捕获 victim 行（vc，读端口空闲时），脏字按字写回 L2（dr，LSU 请求优先）；fill/vc/dr 互斥（wb_buf 独占）
+- **cacop**：L1 的 `S_CACOP_INV` 改为**电平 done**（等 `cacop_req.valid` 掉落），`l2_cacop_req.valid = core.valid && l1_done` 门控不变——修复「L1 done 脉冲被 L2 忙碌错过」的死锁（flush walk 会挂死）
+- **数据数组**：L1/L2 的数据 BRAM 都改为**模块内声明**（`data_mem` + 注册读），不再经 `ram_sdpram` 模块——Verilator 对模块输入端口（raddr）的采样在状态转移拍滞后一拍，导致 cacop/写回读错行（tag/dirty 是模块内数组不受影响，data 受影响）
+
+### 单元测试（unittest/cache_hierarchy/，12 场景）
+
+`cd unittest/cache_hierarchy && ./run_test.sh`（run_test.sh 为本轮新建）。
+
+### 本轮修复的 bug（全部由单元测试暴露）
+
+1. **L2 `S_REFILL_DONE` 拍 `p_st_merge` 污染**：清除 `st_merge_pending` 只在 `S_REFILL_WRITE` 的 `rf_wr_cnt==3` 拍；落在 `S_REFILL_DONE` 拍的 store RESP 会设置合并槽且永不被消费 → 残留的旧合并数据污染下一个 refill 行（test 3b/4b 数据错位）。修复：`p_st_merge` 排除 `S_REFILL_DONE`（该 store 保持 p_valid，refill 后在 S_IDLE 重新命中）
+2. **L2 冷行 partial store 合并丢 rf_buf 字节**：`S_REFILL_WRITE` 的 store-miss/read-back 合并分支只写 store 字节（`we=m_wstrb`），rf_buf 的其他字节从未写入 BRAM（refill 前是旧值）→ 冷行 `st.b` 后读回错误。修复：合并分支整字写入，按 strobe 与 `rf_buf[rf_wr_cnt]` 逐字节合并（master 也有此潜在 bug，上板测试以全字 st.w 为主从未触发）
+3. **L1 `cpu_resp` 无条件泄漏 `mem_resp`**：响应 mux 的 else 分支无条件直通 L2 响应，无请求时残留响应（如 drain store 的 accept）被 driver/下一请求误用 → 下一请求被错误完成且拿到错数据（test 6 line1/2 读回 0）。修复：直通门控在 `o_valid || (cpu_req.valid && !req_hit)`
+4. **L1 cacop drain 呈现旧值**：`cacop_wb_buf` 在 `S_CACOP_WB_WRITE` 第一拍末才捕获，drain store 从第一拍就呈现旧值（0），L2 捕获到 0（test 7 写回 0）。修复：`cacop_store_req` 跳过捕获拍
+5. **L1 cacop drain 地址错**：`cacop_store_addr` 用 `cacop_req.addr[31:4]`，但 cacop 指定的是 **index（set/way）**，该 index 上的实际行可能映射到其他地址（storm 中 L1 set 0 way0 放的是 0x1c014008 行）→ 脏数据写回错误内存行（test 12 的 1278 个 diff 的主因）。修复：用 `tag_mem[cacop_way][cacop_idx]` 的行真实 tag 拼地址
+6. **L2 读控制状态转移拍 data 读错位**：`S_IDLE→S_CACOP_WB_READ` 转移时 raddr 组合跳到新状态的默认 0，而 ram_sdpram 的 raddr 端口采样滞后一拍 → cacop 读错行。修复：数据数组改为模块内声明（与 tag/dirty 读同一采样时机）+ 读控制补 `S_CACOP_WB_READ/WRITE → cacop_idx`、`p_valid && S_IDLE → p_idx` 分支
+7. 测试驱动注册化呈现问题（testbench 侧）：呈现门控在响应缺席时，避免旧请求被重复转发
+
+### 测试状态（12 场景，10 通过，2 失败）
+
+```
+[PASS] test 1-7, 9-11   （store 流、keyword、0-cycle hit、word-sector、partial store、
+                         淘汰写回、cacop 0x09 顺序、hit-under-miss、store 读回、uncached）
+[FAIL] test 8: got 00000000   ← cacop 0x01 语义与测试期望矛盾（见下）
+[FAIL] test 12: 1278 words differ after flush   ← L2 换出写回从未触发（见下）
+```
+
+### 剩余问题 1：test 8（测试期望问题，非 RTL bug）
+
+test 8 期望「store → cacop 0x01 → load 读回 store 数据」，但 cacop 0x01（index invalidate）按语义清 **L1+L2** 的行（不写回），store 数据只在缓存（未落内存）→ load 从内存读 0 是**正确行为**。需修改测试期望（或改用 0x09 验证）。注意：0x01 的 L2 行为（清行）与 0x09（写回+清）都经 `l2_cacop_req` 门控发给 L2。
+
+### 剩余问题 2：test 12 漏写回（活跃调试中）
+
+- 现象：storm（3000 次伪随机，2MB 窗口）后全量 flush walk（0x09），1278/131072 words 与 lastv 不符，全部是 `mem=0 want=非0`（漏写回）
+- 已确认：storm 期间 **`L2WBURST=0`**——L2 的 `S_WB_WRITE`（换出写回内存）从未触发；L1 的 drain（脏字→L2）正常（test 6 验证过）
+- 推论：L2 换出时 `m_edirty` 判定恒为 0 → dirty 行被换出时**静默丢弃**（未写回内存）→ flush walk 时这些行已不在 L2，无法写回
+- `m_edirty <= dirty_rd_data[victim_way()]`（S_MISS 拍），`victim_way()` 遍历 `plru_rd_data`（REQ 拍发的 plru 读）。**下一步查：plru 读/更新的正确性、victim_way() 遍历、以及 S_MISS 拍 dirty_rd_data 的采样时机**（l2dcache.sv 的 plru 数组/读控制/`victim_way()` 在 ~239 行、plru 更新在 ~770 行附近）
+- 调试 trace 已保留在 test_tb.sv（`L2WBURST`/`L2WRITE` 打印、test 7/8 区间打印、test 12 的 pre-flush DEBUG 读）
+- 验证手段：`unittest/cache_hierarchy/run_test.sh`（storm 迭代数已临时改为 3000，定位后可恢复 60000）
+
+### 下一步清单
+
+1. **test 12 漏写回**：查 L2 的 victim 判定/plru/dirty 读（见上）
+2. **test 8**：修改测试期望或场景
+3. 清理/定稿调试 trace（保留 L2WBURST 等关键项）
+4. `make test-*` 六个 difftest 全量回归（cryptonight 是上一轮的失败项，本轮设计应规避其根因，需实测）
+5. IPC 测量 + L1 尺寸调优（`core_top.sv` 的 `L1CACHE_SETS` 参数，预期 matrix 提升最大）
+6. 提交 + CI（CI 需注意 Vivado 2019.2 语法兼容性）

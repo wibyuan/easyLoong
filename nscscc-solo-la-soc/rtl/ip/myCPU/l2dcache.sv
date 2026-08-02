@@ -67,26 +67,25 @@ module l2dcache import la32_common::*; (
     logic [3:0]  data_wr_we;
     logic [31:0] data_wr_data;
 
+    // Data array declared in-module (not via the ram_sdpram module): the
+    // registered read must sample data_rd_addr at the same time as the
+    // tag/dirty arrays, and a module-boundary sample (Verilator) can lag
+    // the internal combination by a cycle on state-transition edges.
+    (* ram_style = "block" *) logic [31:0] data_mem [0:NR_WAYS-1][0:NR_SETS-1][0:NR_WORDS-1];
+
+    always_ff @(posedge clk) begin
+        if (data_wr_ena)
+            for (int b = 0; b < 4; b++)
+                if (data_wr_we[b])
+                    data_mem[data_wr_way][data_wr_addr][data_wr_wo][b*8 +: 8] <=
+                        data_wr_data[b*8 +: 8];
+    end
+
     generate
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_data_way
             for (genvar gb = 0; gb < NR_WORDS; gb++) begin : g_data_word
-                logic wen;
-                assign wen = data_wr_ena && (data_wr_way == way_t'(gw)) && (data_wr_wo == woffset_t'(gb));
-
-                ram_sdpram #(
-                    .ADDR_WIDTH(INDEX_WIDTH),
-                    .DATA_WIDTH(32),
-                    .BYTE_WIDTH(8),
-                    .READ_LATENCY(1)
-                ) u_data_ram (
-                    .clk,
-                    .raddr(data_rd_addr),
-                    .waddr(data_wr_addr),
-                    .en(wen),
-                    .strobe(data_wr_we),
-                    .wdata(data_wr_data),
-                    .rdata(data_rd_out[gw][gb])
-                );
+                always_ff @(posedge clk)
+                    data_rd_out[gw][gb] <= data_mem[gw][data_rd_addr][gb];
             end
         end
     endgenerate
@@ -302,7 +301,13 @@ module l2dcache import la32_common::*; (
     wire p_refilling = (p_idx == m_idx) && (p_hit_way == m_eway) && in_refill;
     wire p_hum_hit    = p_hit && in_refill && !p_refilling;
     // Read-back store to the refilling line: merge into the refill write.
+    // S_REFILL_DONE is excluded: the refill's write window (S_REFILL_WRITE)
+    // has already closed, so a store whose RESP stage lands there would set
+    // st_merge_pending without anyone ever consuming it (the clear only
+    // runs in S_REFILL_WRITE) and the stale merge would corrupt the NEXT
+    // refill's line.  Such a store keeps p_valid and re-hits in S_IDLE.
     wire p_st_merge   = p_valid && in_refill && p_op
+        && (state != S_REFILL_DONE)
         && (p_idx == m_idx) && (p_tag == m_tag)
         && ((state != S_REFILL_WRITE) || (rf_wr_cnt < p_wo))
         && !st_merge_pending;
@@ -507,11 +512,22 @@ module l2dcache import la32_common::*; (
                 data_wr_addr = m_idx;
                 data_wr_wo   = rf_wr_cnt;
                 if (st_merge_pending && rf_wr_cnt == st_merge_wo) begin
-                    data_wr_we   = st_merge_strb;
-                    data_wr_data = st_merge_data;
+                    // Merge the read-back store into the refilled word: the
+                    // whole word is written so rf_buf's other bytes survive
+                    // (writing only the store's bytes would leave the BRAM's
+                    // pre-refill value in the remaining lanes).
+                    data_wr_we = 4'b1111;
+                    for (int b = 0; b < 4; b++)
+                        data_wr_data[b*8 +: 8] = st_merge_strb[b]
+                            ? st_merge_data[b*8 +: 8]
+                            : rf_buf[rf_wr_cnt][b*8 +: 8];
                 end else if (m_op && rf_wr_cnt == m_wo) begin
-                    data_wr_we   = m_wstrb;
-                    data_wr_data = m_wdata;
+                    // Same for the accepted store miss's own word.
+                    data_wr_we = 4'b1111;
+                    for (int b = 0; b < 4; b++)
+                        data_wr_data[b*8 +: 8] = m_wstrb[b]
+                            ? m_wdata[b*8 +: 8]
+                            : rf_buf[rf_wr_cnt][b*8 +: 8];
                 end else begin
                     data_wr_we   = 4'b1111;
                     data_wr_data = rf_buf[rf_wr_cnt];
@@ -619,6 +635,19 @@ module l2dcache import la32_common::*; (
             tag_rd_addr   = p_idx;
             dirty_rd_addr = p_idx;
             plru_rd_addr  = p_idx;
+        end else if (p_valid && (state == S_IDLE)) begin
+            // RESP stage: keep the REQ stage's read addresses live until
+            // the response is consumed.
+            data_rd_addr  = p_idx;
+            tag_rd_addr   = p_idx;
+            dirty_rd_addr = p_idx;
+            plru_rd_addr  = p_idx;
+        end else if (state inside {S_CACOP_WB_READ, S_CACOP_WB_WRITE}) begin
+            // Keep the cacop line's reads live through the writeback drain
+            // (the data capture in S_CACOP_WB_WRITE samples data_rd_out).
+            data_rd_addr  = cacop_idx;
+            tag_rd_addr   = cacop_idx;
+            dirty_rd_addr = cacop_idx;
         end else if (state == S_MISS) begin
             data_rd_addr = m_idx;
         end

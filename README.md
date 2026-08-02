@@ -100,6 +100,8 @@
 | `axibus_arbiter.sv` | ibus/dbus AXI4 仲裁 |
 | `core_top.sv` | AXI Master 接口封装 |
 
+> **⚠ 2026-08-02 分支状态**：上表描述的是 **master（单级 1MB dcache）**。`wip/2level-cache` 分支正在做**两级 dcache（直通式）**：`l1dcache.sv`（0-cycle 命中叠层 + L1 miss 直通 L2 + 按字填充）+ `l2dcache.sv`（原 1MB 改名）。当前单元测试 10/12 通过，剩 test 8（测试期望问题）与 test 12（L2 换出写回未触发）未解决。**详细交接见 [DEVLOG.md](DEVLOG.md)「2026-08-02（续）：两级 dcache 第二轮」**。
+
 ## 3. 硬件平台
 
 | 项目 | 值 |
