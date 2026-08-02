@@ -51,8 +51,22 @@ module test_tb;
     dbus_req_t  l2_mem_req;
     dbus_resp_t l2_mem_resp;
 
+    // addr_ok is COMBINATIONAL (like the real arbiter's r/w_dresp_addr_ok):
+    // asserted in the cycle the transaction is accepted and in each beat
+    // cycle of a write burst.  A registered addr_ok would lag the L2's
+    // wb_cnt by one cycle, and each burst beat would sample the previous
+    // word's data (the last word of a writeback lost).
+    always_comb begin
+        m_addr_ok = 1'b0;
+        if (mm_wr_busy) begin
+            if (!wr_gap && wr_beat != mm_wr_burst)
+                m_addr_ok = 1'b1;
+        end else if (!mm_rd_busy && l2_mem_req.valid) begin
+            m_addr_ok = 1'b1;
+        end
+    end
+
     always_ff @(posedge clk) begin
-        m_addr_ok  <= 1'b0;
         m_rdata_ok <= 1'b0;
         m_data_ok  <= 1'b0;
         m_data     <= 32'd0;
@@ -81,7 +95,6 @@ module test_tb;
                 end else begin
                     wr_beat <= wr_beat + 2'd1;
                     wr_gap  <= (wr_beat + 2'd1 != mm_wr_burst);
-                    m_addr_ok <= 1'b1;
                     // Beat k writes word k (base + k*4); the NBA writes
                     // sample wr_beat's pre-edge value, hence the +1.
                     for (int b = 0; b < 4; b++)
@@ -96,14 +109,12 @@ module test_tb;
                     mm_rd_burst <= l2_mem_req.burst_len;
                     rd_beat     <= 2'd0;
                     rd_lat      <= RD_LATENCY[5:0];
-                    m_addr_ok   <= 1'b1;
                 end else begin
                     mm_wr_busy  <= 1'b1;
                     mm_wr_addr  <= l2_mem_req.addr;
                     mm_wr_burst <= l2_mem_req.burst_len;
                     wr_beat     <= 2'd0;
                     wr_gap      <= l2_mem_req.burst_len != 2'd0;
-                    m_addr_ok   <= 1'b1;
                     for (int b = 0; b < 4; b++)
                         if (l2_mem_req.strobe[b])
                             mem[(l2_mem_req.addr - 32'h1c000000) >> 2][b*8 +: 8] <=
@@ -300,11 +311,7 @@ module test_tb;
         @(posedge clk);
     endtask
 
-    // --- DEBUG TRACE (temporary, keep while debugging test 12) ---
-    // L2 writebacks: burst (S_WB_WRITE eviction) and single-word (cacop).
-    // Observation: during the test-12 storm L2WBURST never fires — the L2
-    // eviction writeback path (m_edirty / victim selection) never runs.
-    logic [31:0] dbg_wb_cnt;
+    // --- DEBUG TRACE (kept: L2 eviction bursts + cacop writebacks) ---
     always_ff @(posedge clk) begin
         if (!reset && test_id == 12) begin
             if (l2_mem_req.valid && |l2_mem_req.strobe && l2_mem_req.burst_len != 2'd0)
@@ -470,14 +477,19 @@ module test_tb;
         end
 
         // --- test 8: cacop 0x01 index invalidate (no writeback) ---
+        // The store's data lives only in the caches (never reached
+        // memory); 0x01 invalidates the line at both levels WITHOUT
+        // writeback, so the read-back must come from memory = 0.  (A
+        // nonzero result would mean the invalidate did not reach one of
+        // the levels.)  The writeback flavor is covered by test 7/12.
         test_id = 8;
         issue_store(32'h1c7f0300, 32'h12345678);
         issue_cacop(5'b00001, 32'h1c7f0300);
-        issue_load(32'h1c7f0300);   // L1 line gone: miss -> L2 hit
-        if (got_data == 32'h12345678)
-            $display("[PASS] test 8: 0x01 invalidate + re-fill ok");
+        issue_load(32'h1c7f0300);   // L1+L2 line gone: read from memory
+        if (got_data == 32'h0)
+            $display("[PASS] test 8: 0x01 invalidate at both levels ok");
         else begin
-            $display("[FAIL] test 8: got %08x", got_data);
+            $display("[FAIL] test 8: got %08x (invalidate missed a level)", got_data);
             fail <= 1'b1;
         end
 
@@ -528,7 +540,11 @@ module test_tb;
         test_id = 12;
         begin
             logic [31:0] lcg;
-            logic [31:0] lastv [0:131071];
+            // Storm window 0x1c000000..0x1c1fffff = 2^19 words: the
+            // reference array must cover all of it (131072 entries would
+            // wrap indices 2^17..2^19-1 onto 0..2^17-1 and alias the
+            // compare — bogus diffs exactly at the wrapped positions).
+            logic [31:0] lastv [0:524287];
             logic [31:0] addr;
             // Flush any residue from tests 1-11 first so the final memory
             // compare only reflects this storm's stores.
@@ -539,12 +555,12 @@ module test_tb;
                 end
             // Cache is now empty and its residue is in memory; reset the
             // reference to a clean slate before the storm.
-            for (int i = 0; i < 131072; i++)
+            for (int i = 0; i < 524288; i++)
                 mem[i] = 32'h0;
             lcg = 32'h12345678;
-            for (int i = 0; i < 131072; i++)
+            for (int i = 0; i < 524288; i++)
                 lastv[i] = 32'h0;
-            for (int i = 0; i < 3000; i++) begin
+            for (int i = 0; i < 60000; i++) begin
                 lcg = lcg * 32'h19660d + 32'h3c6ef35f;
                 addr = 32'h1c000000 + (lcg & 32'h1ffffc);
                 if (lcg[8] == 1'b0) begin
@@ -578,7 +594,7 @@ module test_tb;
             begin
                 logic [31:0] diff_cnt;
                 diff_cnt = 0;
-                for (int i = 0; i < 131072; i++) begin
+                for (int i = 0; i < 524288; i++) begin
                     if (mem[i] !== lastv[i]) begin
                         if (diff_cnt < 8)
                             $display("[FAIL12] word %05x (%08x): mem=%08x want=%08x",
