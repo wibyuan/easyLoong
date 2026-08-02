@@ -1122,11 +1122,32 @@ test 8 期望「store → cacop 0x01 → load 读回 store 数据」，但 cacop
 - 调试 trace 已保留在 test_tb.sv（`L2WBURST`/`L2WRITE` 打印、test 7/8 区间打印、test 12 的 pre-flush DEBUG 读）
 - 验证手段：`unittest/cache_hierarchy/run_test.sh`（storm 迭代数已临时改为 3000，定位后可恢复 60000）
 
+## 2026-08-02（续二）：两级 dcache 第三轮 —— 单元测试 12/12 全绿（wip/2level-cache）
+
+按上文的调试方向继续用单元测试追 test 12。**此前的「L2 换出写回从未触发」推论是错的**：3000 次随机访问摊到 16384 组，每组平均 <1 次 miss，L2 根本不需要换出（`L2WBURST=0` 是正常现象，不是 bug）。真正的根因分三层，全部由 testbench 级 trace 暴露：
+
+### 本轮修复的 bug（l1dcache.sv 3 处 + l2dcache.sv 1 处 + testbench 3 处）
+
+1. **L1 drain 跳字漏写（l1dcache.sv 核心 bug，test 12 的 1278 漏写主因）**：`dr` 状态机在「脏字因 LSU 占用总线无法呈递」时落入 `else dr_word <= dr_word + 1` 分支**跳过该脏字**——drain 从字 1 开始的脏行全部被静默丢弃（1237 次 victim capture 只有 18 次真正送达 L2）。修复：脏字未呈递时 HOLD（不推进）。
+2. **L1 drain accept 被抢（l1dcache.sv）**：drain store 呈递后被 LSU 新请求抢占（mem_req mux 优先），L2 改答 LSU 的请求，drain 误认 accept → 脏字丢失 + `o_valid` 卡死（cacop walk 挂死）。修复：`lsu_forward_req` 门控 `!(dr_valid && dr_waiting)`——drain store 持续呈递直至 L2 捕获，LSU 请求（本来就重呈递）排队等待。
+3. **L1 fresh fill 残留旧 dirty 位（l1dcache.sv）**：`fill_new_dirty` 无条件保留旧行的 dirty 位——非 partial fill 覆盖 victim 后，旧行**从未被写入的字的陈旧数据**被标 dirty，后续 eviction 把 garbage 写进 L2 的错误行（storm 中两条相邻 L2 行数据互串）。修复：仅 partial fill 合并旧 dirty 位。
+4. **L2 mem_req_r 幽灵请求（l2dcache.sv）**：`assign mem_req = mem_req_r`（注册输出）在 FSM 离开呈递态后仍有效一拍——空闲总线把幽灵请求当新事务接受：写回 burst 结束后再写一遍该行（word 0 写进最后一字数据、其余字被零覆盖）。修复：`mem_req.valid` 门控 `state inside {S_UNCACHED, S_WB_WRITE, S_REFILL_REQ, S_CACOP_WB_WRITE}`。
+5. **testbench lastv 数组尺寸（test_tb.sv）**：storm 窗口 2MB = 2^19 words，`lastv` 只有 2^17 项——高位回卷别名，1354 个「漏写」全是假阳性（对比词恰是回卷位置）。
+6. **testbench 内存模型 addr_ok 时序（test_tb.sv）**：模型把 `m_addr_ok` 寄存一拍，而真实 arbiter 的 `w_dresp_addr_ok` 是组合输出——模型每拍采样到的数据比 wb_cnt 滞后一拍，burst 写回的最后一字丢失（eviction 写回 [0,0,0,0x493] 变成 [0,0,0,0]）。修复：`m_addr_ok` 改组合逻辑。
+7. **testbench test 8 期望（test_tb.sv）**：按 cacop 0x01 语义（两级 invalidate 不写回）改为期望读回 0，并校验 invalidation 确实到达两级。
+
+### 测试状态（12/12 通过）
+
+```
+[PASS] test 1-12（含 60000 次迭代 storm：L2 换出 burst 46240 次呈递、cacop 写回 404 次，全部正确）
+[ALL PASS]
+```
+
+storm 迭代数已恢复 60000（`for i < 60000`）。调试 trace 已清理，保留 `L2WBURST`/`L2WRITE` 两项关键打印。
+
 ### 下一步清单
 
-1. **test 12 漏写回**：查 L2 的 victim 判定/plru/dirty 读（见上）
-2. **test 8**：修改测试期望或场景
-3. 清理/定稿调试 trace（保留 L2WBURST 等关键项）
-4. `make test-*` 六个 difftest 全量回归（cryptonight 是上一轮的失败项，本轮设计应规避其根因，需实测）
-5. IPC 测量 + L1 尺寸调优（`core_top.sv` 的 `L1CACHE_SETS` 参数，预期 matrix 提升最大）
+1. `make test-*` 六个 difftest 全量回归（cryptonight 是上一轮的失败项，本轮设计应规避其根因，需实测）
+2. IPC 测量 + L1 尺寸调优（`core_top.sv` 的 `L1CACHE_SETS` 参数，预期 matrix 提升最大）
+3. 提交 + CI（CI 需注意 Vivado 2019.2 语法兼容性）
 6. 提交 + CI（CI 需注意 Vivado 2019.2 语法兼容性）
