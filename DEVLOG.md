@@ -2,6 +2,7 @@
 
 ## 已验证
 
+- [x] 1MB 单级 DCache 上板通过（2026-08-02）：WaitStart 超时根因定位为 **HUM 一致性回归**（S_REFILL_WRITE 写口覆盖 + HUM store 缺 dirty/PLRU + 响应/清除/写口门控不一致，`2c803d8`+`0365302` 修复）。上板全过：matrix 209ms / stream 566ms / cryptonight 1367ms / mixed 35ms（合计 -11% vs master）；**REQP-1839/1840 复位窗口嫌疑排除**。详见文末「1MB 单级 DCache」章节
 - [x] 上板实测通过（2026-08-01）：`30e9c97`（非阻塞 dcache，当前 master）FPGA 实机全部测试通过；`2c4f3298`（写回/refill 重叠）上板全部 50 分已回退，排查记录见「写回/refill 重叠上板失败排查」
 - [x] SRAM 固定时延校准（2026-08-01）：`axi2sram_sp_external.v` `ifdef VERILATOR` 每笔事务首拍 +16 周期，4 基准 difftest 估计 vs 上板偏差 -0.4%/-2.7%/-12.6%/-0.3%；**cryptonight 定为后续核心优化指标**（详见文末「SRAM 固定时延校准」章节）
 - [x] 非阻塞 DCache（hit-under-miss，单 MSHR）（2026-07-31）：store miss 当拍接受 + refill 合并、refill 期间同拍服务其他行命中、读回写合并进 refill 写、load miss 当拍 addr_ok；修复 arbiter R_ARB 突发截断缺陷。stream IPC +25.1%、mixed +11.2%、cryptonight +7.9%、matrix +3.3%，全 6 测试 difftest + 数据比对 + 7 单元测试通过。详见下方「非阻塞 DCache（hit-under-miss，单 MSHR）」章节
@@ -960,7 +961,7 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 - Vivado 2019.2 综合（step_synth）：0 error；**dcache 数据 4×256×32 → RAMB18 ×4（Block RAM）**，tag → LUTRAM（RAM64X1D+RAM64M），icache data/tag → LUTRAM；BRAM 报告 READ_FIRST/WRITE_FIRST 双口成立
 - 遗留：impl 时序未跑（CI 流程覆盖）；`data_wb` 128 位总线走线需关注
 
-## 2026-08-02: 1MB 单级 DCache（全 BRAM，wip/dcache-1mb）——CI 通过但上板 WaitStart 超时
+## 2026-08-02: 1MB 单级 DCache（全 BRAM）——WaitStart 超时根因定位（HUM 一致性回归）并修复
 
 ### 背景
 
@@ -994,17 +995,31 @@ cryptonight 命中率 71.4% = 50% 短期重用（迭代内 ld+st 同地址，与
 - 实现耗时 ~8 分钟（全 BRAM 无 LUTRAM 级联，远快于 2048×4 的 40 分钟）
 - 0 Errors / 0 Critical Warnings
 
-### ⚠ 上板问题：cryptonight WaitStart 超时（15s）
+### ⚠ 上板问题：cryptonight WaitStart 超时（15s）——根因：HUM 一致性回归（已修复）
 
-远程实验平台运行：`MONITOR initialized → Jumping to CRYPTONIGHT → ERROR: timeout during WaitStart`。
+远程实验平台现象：`MONITOR initialized → Jumping to CRYPTONIGHT → ERROR: timeout during WaitStart`。**monitor 轻负载通过、测试程序重负载卡死**——monitor 工作集极小从不触发换出，测试程序一上来就是 2MB scratchpad 填充（海量 store → 换出 → 写回）。
 
-**排除**：时序（WNS 2.794）、S_INIT（65536 拍 ≈ 1.3ms）、FLUSH 遍历（16K 组 cacop）。
+**根因**（`2c803d8` + `0365302` 修复）：1MB 重写（`3c8da53`）相对上板验证版 master（`eb61351`）删除/破坏了 HUM 命中（refill 期间命中其他行）的状态维护：
 
-**主要嫌疑：REQP-1839/1840 警告**（42 个）——295 个 BRAM 的**地址/写使能控制引脚**由 `u_Axi_CDC/rFifo/popCC_addressGen_rValid_reg`（带**异步 set/reset** 的寄存器）驱动。复位窗口内 BRAM 控制信号不确定，可能造成内存内容/读值损坏，且不被默认静态时序分析覆盖。历史 256 sets（4 BRAM）时代同警告上板通过（30e9c97），但 295 个 BRAM 把复位损坏风险放大了 ~70 倍——cryptonight 启动/初始化阶段若撞上复位窗口，BRAM 内容损坏 → 死循环 → WaitStart 超时。
+1. **S_REFILL_WRITE 写口覆盖**：HUM store 的 RESP 拍若落在 S_REFILL_WRITE（数据写口归 refill 所有），FSM 组合块内 HUM store 赋值（后置）覆盖 refill 写 → **refill 行丢一个 word**（tag 已置 valid，之后命中读到垃圾/旧数据）
+2. **HUM store 不置 dirty**（master 的 `if (hum_ok) plru/dirty` 更新被删）：行换出时 `m_edirty=0` → 不写回 → **store 数据静默丢失**（difftest 不比内存，抓不到）
+3. **响应/清除/写口不一致**（首轮修复只门控写口，次轮闭合）：S_REFILL_WRITE 拍 HUM store 仍被应答（data_ok）+ 清 p_valid + 置 dirty 但数据未写——响应块/顺序块清除/dirty 更新须与写口同步门控 `(p_op ? (state != S_REFILL_WRITE) : 1'b1)`，让 store 被拒绝、保持 p_valid、refill 完成后在 S_IDLE 快路径命中重写（与 master `hum_ok` 的 S_REFILL_WRITE 语义一致）
 
-**待办**：
-1. 复现/定位（上板日志、或 2:1 时钟仿真）
-2. RTL 侧消除警告：BRAM 控制引脚驱动寄存器的异步复位改同步，或确认复位窗口语义
-3. 若无法消除，考虑回退到 master（BRAM 回归版）
+**为何 difftest 全绿**：difftest 只做寄存器锁步不比内存；HUM store 在 1:1 短 refill 窗口下少，且丢数据若不被后续 load 读回则寄存器不受影响。上板 2:1 时钟下 refill 窗口翻倍 → HUM store 概率大幅上升 → 数据损坏 → cryptonight 死循环 → WaitStart 超时。
 
-**两级 cache 展望**：1 拍命中惩罚（matrix 0.757→0.5815、stream 0.254→0.182）可由 L1（0-cycle，32KB/1024 深 LUTRAM tag）消除——L1 命中 0 拍 + L2（=现 1MB 单级）1 拍兜底，预期 matrix ~0.66-0.70、cryptonight ~0.5、stream ~0.24，全测试优于 1MB 单级。
+**排除 REQP-1839/1840**：42 个警告（CDC 异步复位寄存器驱动 BRAM 控制脚）曾为主要嫌疑，但 CDC_ASYNC_SIM 2:1 仿真复现被判定不可靠（`71fbe97` 丢弃），且 HUM 回归修复后上板全过——**复位窗口非本次卡死根因**（警告本身仍遗留，见待办）。
+
+### ✅ 修复后上板实测（submit-20260802-humfix-v2，全测试通过）
+
+| 测试 | master 8B+重叠 | 1MB+HUM 修复 | 变化 |
+|------|:---:|:---:|:---:|
+| matrix | 391ms | **209ms** | **-47%** |
+| cryptonight | 1600ms | **1367ms** | **-15%** |
+| stream | 442ms | 566ms | +28% |
+| mixed | 23ms | 35ms | +52% |
+
+matrix/cryptonight 吃满 1MB 容量收益（matrix 110KB 工作集全命中、cryptonight 命中率 71.4%）；stream/mixed 顺序流/短重用被 1 拍命中惩罚 + 16B 行抵消（与 difftest 预估方向一致）。四项合计 2177ms vs master 2456ms（**-11%**）。
+
+**待办**（遗留项，均非本次卡死根因）：
+1. REQP-1839/1840 警告仍在（42 个）——BRAM 控制引脚由 CDC 异步复位寄存器驱动，复位窗口风险未消除，建议后续 CDC 相关寄存器改同步复位或复位期门控 BRAM 写使能
+2. 两级 cache 展望不变：1 拍命中惩罚（matrix 0.757→0.5815、stream 0.254→0.182）可由 L1（0-cycle，32KB/1024 深 LUTRAM tag）消除——L1 命中 0 拍 + L2（=现 1MB 单级）1 拍兜底，预期 matrix ~0.66-0.70、cryptonight ~0.5、stream ~0.24，全测试优于 1MB 单级。

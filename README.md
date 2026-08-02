@@ -365,9 +365,12 @@ CI 流水线：HDL Lint → Vivado 综合+实现 → 时序检查 → 生成比�
 | submit-20260731-2235 | ✅ 通过 → **上板失败**（写回/refill 重叠，全 50 分） | — | 0 | 2026-07-31 |
 | submit-20260801-0734 | ✅ 通过 → 上板失败（XDC 时钟组通配符版，无效修复） | — | 0 | 2026-08-01 |
 | submit-20260801-0824 | ✅ 通过 → 上板失败（XDC 显式引脚版，仍 50 分） | — | 0 | 2026-08-01 |
-| submit-20260801-dcache1mb-v2 | ✅ 通过（1MB 全 BRAM dcache，295 BRAM，WNS 2.794） → **上板 cryptonight WaitStart 超时**（REQP-1839/1840 复位窗口嫌疑，见 DEVLOG） | 2.794 | 0 | 2026-08-02 |
+| submit-20260801-dcache1mb-v2 | ✅ 通过（1MB 全 BRAM dcache，295 BRAM，WNS 2.794） → **上板 cryptonight WaitStart 超时**（根因：HUM 一致性回归，见 DEVLOG 2026-08-02） | 2.794 | 0 | 2026-08-02 |
+| submit-20260802-humfix-v2 | ✅ 通过（HUM 一致性修复：S_REFILL_WRITE 写口/响应/清除/dirty 门控 + HUM dirty/PLRU 恢复） → **上板全部通过**：matrix 209ms / stream 566ms / cryptonight 1367ms / mixed 35ms | — | 0 | 2026-08-02 |
 
 > **submit-20260731-2221**（`30e9c97`）：非阻塞 dcache（hit-under-miss，单 MSHR）。**上板全部测试通过**，为当前 master 版本。
+>
+> **submit-20260802-humfix-v2**（`0365302`）：1MB dcache 上板 WaitStart 超时根因定位为 **HUM 一致性回归**（3c8da53 重写相对 master 删除了 hum_ok 的 dirty/PLRU 更新，且 S_REFILL_WRITE 的 HUM store 写口/响应/清除/dirty 四处门控不一致）：refill 写口被 HUM store 覆盖丢 word、HUM store 不置 dirty 导致换出静默丢数据。修复后上板全过：matrix 209ms（-47% vs master）、cryptonight 1367ms（-15%）、stream 566ms（+28%，1 拍命中惩罚+16B 行）、mixed 35ms（+52%）。**REQP-1839/1840 复位窗口嫌疑排除**（2:1 仿真复现不可靠，且修复后上板通过）。详见 DEVLOG。
 >
 > **submit-20260731-2235**（`2c4f3298`）：写回/refill 重叠（IPC +12~26%）。上板**全部测试稳定 50 分**——程序能完整跑完但自校验失败，cryptonight 首个 mismatch 在 ExtRAM 首字节（actual=0x00, expected=0x51）。已回退（见 DEVLOG「写回/refill 重叠上板失败排查」）。
 >
