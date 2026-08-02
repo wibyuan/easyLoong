@@ -1023,3 +1023,50 @@ matrix/cryptonight 吃满 1MB 容量收益（matrix 110KB 工作集全命中、c
 **待办**（遗留项，均非本次卡死根因）：
 1. REQP-1839/1840 警告仍在（42 个）——BRAM 控制引脚由 CDC 异步复位寄存器驱动，复位窗口风险未消除，建议后续 CDC 相关寄存器改同步复位或复位期门控 BRAM 写使能
 2. 两级 cache 展望不变：1 拍命中惩罚（matrix 0.757→0.5815、stream 0.254→0.182）可由 L1（0-cycle，32KB/1024 深 LUTRAM tag）消除——L1 命中 0 拍 + L2（=现 1MB 单级）1 拍兜底，预期 matrix ~0.66-0.70、cryptonight ~0.5、stream ~0.24，全测试优于 1MB 单级。
+
+## 2026-08-02: 两级 cache 尝试（wip/2level-cache）——全面负优化，已搁置（过失记录）
+
+### 背景
+
+前文「两级 cache 展望」认为 0-cycle L1 能消除单级 1MB 的 1 拍命中惩罚（预期 matrix ~0.66-0.70 等）。本次在 `wip/2level-cache` 分支实现了该展望，**结果是全面负优化，且 cryptonight 未修好**。本文档诚实记录过程、数据与教训。
+
+### 做了什么
+
+- **L1**（`l1dcache.sv`）：8KB、2 路、16B 行、**0-cycle 命中**（tag LUTRAM 异步读 + data BRAM 注册读，WB 级按 `mem_hit_way`+字偏移重取数据）；非阻塞（单 MSHR），store miss 当拍接受并合并进 refill 写，读回写合并槽等沿用旧设计
+- **L2**（`l2dcache.sv`）：原 1MB 单级 dcache 改名；cpu 口 load 响应补 `rdata_ok`（供 L1 的 beat 收集/keyword 判定）；新增 `S_REFILL_DONE` 状态修复「refill 最后一拍写入与 S_IDLE 响应读竞争」（L1 逐字请求恰好命中该窗口，word 3 返回旧值）
+- **接口**：L1 的 mem 口直连 L2 的 cpu 口；L1 miss **逐字**向 L2 refill/写回（L2 cpu 口每次只应答一个 32 位字，L1 按旋转顺序逐字请求，keyword 优先）
+- **一致性**：两级均 write-back/allocate；L1 脏写回 L2、L2 淘汰写回内存；cacop 串行化（L2 的 cacop 请求门控在 L1 完成之后，保证 flush walk 时 L1 脏数据先合并进 L2 再落内存）；CPUCFG 仍报 L2 几何，内核 flush walk 一次覆盖两级（软件/NEMU 零改动）
+
+### 正确性状态
+
+- 单元测试（`unittest/cache_hierarchy`，9 个：store 流、keyword、0-cycle 命中、淘汰、cacop 顺序、2MB 伪随机风暴等）**全绿**
+- difftest：simple/stream/matrix/mixed/fibonacci **通过**；**cryptonight 未通过**——keccak 循环 `ld.w` 返回 0x5e4e6（应为 0x2829e）
+- cryptonight 根因排查未完成：追到 L2 某行「数据与 tag 错位」（0x1c489a70 的行数据被写进 tag 为 0x1c409a70 的 way），怀疑 L1 的 s1/s2 流水注册读被 fast-path 读覆盖导致写回地址/数据错位；尝试修复（`fast_path_req` 加 `!s1_valid`、s2 路径 tag 判定与 `m_etag` 捕获改 LUTRAM 组合读）**未解决问题**，排查中止
+
+### 性能结果（Verilator difftest IPC，全部下降）
+
+| 测试 | 单级 1MB（master） | 两级 L1+L2 | 变化 |
+|------|:---:|:---:|:---:|
+| simple | 0.5961 | 0.5194 | **-12.9%** |
+| stream | 0.1820 | 0.1438 | **-21.0%** |
+| matrix | 0.5815 | 0.2634 | **-54.7%** |
+| mixed | 0.4962 | 0.3390 | **-31.7%** |
+| fibonacci | 0.1264 | 0.1137 | **-10.0%** |
+| cryptonight | 0.3686 | 未通过 | — |
+
+### 负优化根因
+
+1. **L1 容量对目标工作集无意义**：matrix（110KB）/stream/cryptonight（2MB）工作集远大于 8KB，L1 命中率≈0，所有访问仍落到 L2——L1 只贡献 miss 路径的额外延迟
+2. **L1 miss 逐字 refill 是灾难**：L2 的 cpu 口单字应答，L1 取一行要 4 次独立往返（L2 命中每字 2 拍 + 状态机间隙，整行 ≈ 8+ 拍；L2 miss 还要先等 L2 自身内存 refill 完成）。单级时 L2 命中只需 1 拍。两级把 L2 命中 1 拍变成「L2 命中 + L1 逐字 4 往返」
+3. 结论：**两级结构纯加惩罚，8KB L1 配 1MB L2 对评测工作集没有任何正面贡献**
+
+### 教训（重要）
+
+1. **L1 与 L2 之间的传输通道必须支持整行突发**：L2 的 cpu 口应支持 burst 响应（一次返回整行 4 字），L1 refill 从「逐字 4 次往返」改成「单次整行传输」，L1 miss 命中 L2 时整行延迟才能压到 ~6-8 拍。逐字往返方案从一开始就是错的
+2. **小容量 L1 只对工作集 < L1 容量的程序有意义**：对容量主导的评测（matrix/cryptonight），L1 命中贡献≈0，任何 miss 路径开销都是净亏损
+3. 若继续两级路线：L1 容量应至少覆盖短重用集（且不牺牲时序），L2 cpu 口加 burst 整行响应，再重测——否则维持单级 1MB（master 现状，全测试通过、上板全过）
+
+### 当前状态
+
+- 全部改动在 `wip/2level-cache` 分支（commit `b88c40f`），**master 未动**（master = 单级 1MB，全测试通过、上板实测 2177ms 合计）
+- 未提交 CI（cryptonight 失败，不值得上板）

@@ -63,6 +63,8 @@
 
 > 行宽实测结论（2026-08-01，三配置上板实测，**256 组 × 2 路时代**）：**8 字节行是总分最优**——cryptonight 1883ms（16B 2446 / 4B 1699），stream 473ms（16B 395 / 4B 756），matrix 444ms（16B 374 / 4B 578），四测试合计 8B 2825ms < 4B 3066ms < 16B 3240ms。4B 行对 cryptonight 最优但 stream/matrix 严重受损（空间局部性丢失）；8B 行是折中，定为新默认。2 路组相联对 cryptonight 无收益（容量 miss 主导）但保护 stream（1-way 下 0.2293→0.0669）。**该结论在小容量（4KB）下成立；1MB 版（2026-08-02）容量收益主导，16B 行 + 16384 组 + 4 路为当前配置**（见「当前性能指标」）。详见 [DEVLOG.md](DEVLOG.md)「DCache 行宽/相联度实测」。
 
+> ⚠ **两级 cache 尝试（wip/2level-cache，2026-08-02，全面负优化，已搁置）**：在 1MB 单级 L2 前加 8KB 0-cycle L1（LUTRAM tag，命中 0 拍），L1 miss 逐字向 L2 refill/写回（L2 的 cpu 口每次只应答一个 32 位字）。结果：**全部 difftest IPC 下降**（simple 0.5961→0.5194、stream 0.1820→0.1438、matrix 0.5815→0.2634、mixed 0.4962→0.3390、fibonacci 0.1264→0.1137），cryptonight 因正确性 bug（L2 行数据与 tag 错位，根因未定位）未通过。原因：8KB L1 对 >8KB 工作集（matrix 110KB / stream / cryptonight 2MB）无命中贡献，而 miss 路径从单级 1 拍命中变成逐字 4 次 L2 往返（每次 2 拍 + 间隙，L2 miss 还要先等 L2 自身内存 refill）——两级结构纯加惩罚。**教训：L1 与 L2 之间的传输通道应支持整行突发（L2 cpu 口按 burst 一次返回整行，L1 refill 单次传输），逐字往返不可取；小容量 L1 对容量主导的工作集无意义。** 详细数据见 [DEVLOG.md](DEVLOG.md)「两级 cache 尝试」。
+
 ### 指令集覆盖
 
 | 类别 | 已实现指令 |
