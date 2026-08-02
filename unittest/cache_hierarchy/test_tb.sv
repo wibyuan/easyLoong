@@ -536,6 +536,27 @@ module test_tb;
             fail <= 1'b1;
         end
 
+        // --- test 13: store to the victim line during its eviction capture ---
+        // Store A/B (same L1 set, 2 ways) then C, whose fill evicts the
+        // PLRU victim (A); a store to A issued right after C completes
+        // lands in the vc/dr window while A is still in the L1.  Without
+        // the victim-store hold the store would be written into A's line,
+        // which the pending fill is about to overwrite, while the drain
+        // already captured the pre-store value — the store's data would
+        // vanish from both levels.
+        test_id = 13;
+        issue_store(32'h1c7f1000, 32'h11110000);   // line A (L1 set 0)
+        issue_store(32'h1c7f2000, 32'h22220000);   // line B (L1 set 0)
+        issue_store(32'h1c7f3000, 32'h33330000);   // line C: evicts A
+        issue_store(32'h1c7f1000, 32'h1111aaaa);   // store A in A's eviction window
+        issue_load(32'h1c7f1000);
+        if (got_data == 32'h1111aaaa)
+            $display("[PASS] test 13: store during victim eviction ok");
+        else begin
+            $display("[FAIL] test 13: got %08x (store lost in eviction)", got_data);
+            fail <= 1'b1;
+        end
+
         // --- test 12: pseudorandom 2MB storm + flush + memory compare ---
         test_id = 12;
         begin
