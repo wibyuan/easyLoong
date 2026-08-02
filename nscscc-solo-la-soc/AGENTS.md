@@ -13,6 +13,11 @@ The hardware top is `rtl/soc_top.v`; shared buses, UART, RAM wrappers, PLL, and 
 - `cd fpga && vivado -mode batch -source create_project.tcl`: recreate the project.
 - `cd fpga && vivado -mode batch -source build_bitstream.tcl`: synthesize, implement, and generate the bitstream.
 
+## GitLab CI Submission
+
+- **Before any push to the competition GitLab, read `../docs/CI-WORKFLOW.md` and use `../scripts/submit-ci.sh`.** Never `git push gitlab <dev-branch>` directly: the pre-receive hook rejects anything inconsistent with protected `main`.
+- When adding a NEW `.sv/.v` file under `rtl/`, add a matching symlink in `../src/soc/<same-dir>/` and commit it, or the CI branch will miss the file (Verilator simulation reads `rtl/` directly and will NOT catch this).
+
 ## Coding Style & Naming Conventions
 
 Follow existing lowercase underscore-separated Verilog names and preserve local indentation. Makefile recipes require tabs. Use `apply_patch` for manual edits. Keep CPU-specific implementation inside `rtl/ip/myCPU/`; only the `core_top` interface is an SoC contract. Never commit Vivado projects, `.Xil`, generated IP output products, simulator object directories, waveforms, binaries, or MIF files.

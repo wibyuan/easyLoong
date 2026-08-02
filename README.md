@@ -349,6 +349,8 @@ make clean-vivado
 
 通过组委会 GitLab 平台 (`GITLAB_HOST_REDACTED:18002`) 自动综合生成比特流。
 
+> ⚠ 提交 CI 一律使用 `scripts/submit-ci.sh`（自动基于 `gitlab/main` 建分支并展开 `src/soc/` 符号链接）。**禁止直接 `git push gitlab <开发分支>`**（pre-receive 钩子会拒绝）。新增 RTL 文件时需先在 `src/soc/` 补同名 symlink。详见 [docs/CI-WORKFLOW.md](docs/CI-WORKFLOW.md)。
+
 ```bash
 # 一键提交
 ./scripts/submit-ci.sh
