@@ -1,13 +1,24 @@
 `include "common.sv"
 
-// 1MB-class single-level dcache: all storage (data/tag/dirty/PLRU) in
-// BRAM so the tag depth (16384 sets) does not blow up LUTRAM/mux trees.
-// The hit path is a 2-stage pipeline: the request cycle issues the tag +
-// data reads and latches the request (p_*), the response cycle compares
-// the registered tag and answers (data_ok + data same cycle), so every
-// cacheable access costs one extra cycle (the LSU holds the request).
-// The S1/S2 pipeline is gone; all requests go through the p pipeline.
-module dcache import la32_common::*; (
+// 1MB-class L2 dcache: all storage (data/tag/dirty/PLRU) in BRAM so the
+// tag depth (16384 sets) does not blow up LUTRAM/mux trees.  The hit path
+// is a 2-stage pipeline: the request cycle issues the tag + data reads and
+// latches the request (p_*), the response cycle compares the registered
+// tag and answers (data_ok + data same cycle), so every cacheable access
+// costs one extra cycle (the L1 holds the request).
+// The cpu port is now driven by the L1 dcache's mem port: the L1 refills
+// its line word-by-word and writes back word-by-word, so every request is
+// a single-word transaction (burst_len ignored).  Load responses also
+// assert rdata_ok (read-channel data valid) so the L1's beat collection /
+// keyword forwarding works exactly as it did against the AXI arbiter.
+// Coherence with the L1 is write-back / write-allocate at both levels:
+// the L1 refills from here, L1 evictions write back here, and this level
+// drains to memory; a line is never modified while a stale L1 copy of it
+// can hold newer data because L1 evictions always pass through here.
+// The cacop request is gated (in core_top) on the L1's cacop completion
+// so a dirty L1 line is merged into this level before its writeback to
+// memory during a flush walk.
+module l2dcache import la32_common::*; (
     input  logic       clk,
     input  logic       reset,
 
@@ -172,6 +183,14 @@ module dcache import la32_common::*; (
         S_MISS,
         S_WB_READ, S_WB_WRITE,
         S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE,
+        // One settling cycle after the refill's last data write: a request
+        // for the refilled line held during the refill (p_refilling) is
+        // answered at S_IDLE from the registered data read, which was
+        // issued at the last in_refill cycle — the SAME cycle as the last
+        // word's write.  The read-first RAM returns the pre-write value
+        // for that word (observed: word 3 of a line answered as 0).  The
+        // extra cycle lets the read see the completed line.
+        S_REFILL_DONE,
         S_CACOP_ST,
         S_CACOP_WB_READ, S_CACOP_WB_WRITE, S_CACOP_INV
     } state, next_state;
@@ -274,7 +293,8 @@ module dcache import la32_common::*; (
 
     // ==================== Refill status ====================
     assign in_refill = state inside {S_MISS, S_WB_READ, S_WB_WRITE,
-                                     S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE};
+                                     S_REFILL_REQ, S_REFILL_WAIT, S_REFILL_WRITE,
+                                     S_REFILL_DONE};
 
     wire cacop_d_pending = cacop_req.valid && (cacop_req.code[2:0] == 3'd1);
     // The line being refilled must not be served as a normal hit (its data
@@ -310,9 +330,11 @@ module dcache import la32_common::*; (
                              && (p_op ? (state != S_REFILL_WRITE) : 1'b1)));
 
     // ==================== RESP response ====================
+
     always_comb begin
         cpu_resp.addr_ok  = 1'b0;
         cpu_resp.data_ok  = 1'b0;
+        cpu_resp.rdata_ok = 1'b0;
         cpu_resp.data     = 32'd0;
         cpu_resp.data_last = 1'b0;
 
@@ -323,8 +345,10 @@ module dcache import la32_common::*; (
             if (p_hit) begin
                 cpu_resp.addr_ok = 1'b1;
                 cpu_resp.data_ok = 1'b1;
-                if (!p_op)
+                if (!p_op) begin
+                    cpu_resp.rdata_ok = 1'b1;
                     cpu_resp.data = data_rd_out[p_hit_way][p_wo];
+                end
             end else if (is_cachable(p_addr, p_cacheable)) begin
                 cpu_resp.addr_ok = 1'b1;
                 if (p_op)
@@ -345,14 +369,17 @@ module dcache import la32_common::*; (
                          && (p_op ? (state != S_REFILL_WRITE) : 1'b1)) begin
                 cpu_resp.addr_ok = 1'b1;
                 cpu_resp.data_ok = 1'b1;
-                if (!p_op)
+                if (!p_op) begin
+                    cpu_resp.rdata_ok = 1'b1;
                     cpu_resp.data = data_rd_out[p_hit_way][p_wo];
+                end
             end
         end
 
         if (state == S_UNCACHED && mem_resp.data_ok) begin
             cpu_resp.addr_ok = 1'b1;
             cpu_resp.data_ok = 1'b1;
+            cpu_resp.rdata_ok = !p_op;
             cpu_resp.data    = mem_resp.data;
         end
 
@@ -361,6 +388,7 @@ module dcache import la32_common::*; (
             && rf_cnt == m_wo && !rf_kw_sent && m_op == 1'b0) begin
             cpu_resp.addr_ok  = 1'b1;
             cpu_resp.data_ok  = 1'b1;
+            cpu_resp.rdata_ok = 1'b1;
             cpu_resp.data     = mem_resp.data;
         end
     end
@@ -495,8 +523,12 @@ module dcache import la32_common::*; (
                     tag_wr_data = {m_tag, 1'b1};
                 end
                 next_state = (rf_wr_cnt == NR_WORDS - 1)
-                    ? S_IDLE
+                    ? S_REFILL_DONE
                     : S_REFILL_WRITE;
+            end
+
+            S_REFILL_DONE: begin
+                next_state = S_IDLE;
             end
 
             S_CACOP_ST: begin

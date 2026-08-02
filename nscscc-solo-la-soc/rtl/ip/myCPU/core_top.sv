@@ -3,10 +3,17 @@
 
 module core_top #(
     parameter TLBNUM = 32,
+    // L2 (backing) dcache geometry — also reported by CPUCFG.0x12: the
+    // kernel's cacop flush walk uses it and covers both levels (the L1's
+    // ways/sets are a subset of the L2 walk).
     parameter int DCACHE_SETS = 16384,
     parameter int ICACHE_SETS = 256,
     parameter int DCACHE_WAYS = 4,
-    parameter int DCACHE_WORDS = 4
+    parameter int DCACHE_WORDS = 4,
+    // L1 dcache geometry (0-cycle hit, LUTRAM tags).
+    parameter int L1CACHE_SETS = 256,
+    parameter int L1CACHE_WAYS = 2,
+    parameter int L1CACHE_WORDS = 4
 )(
     input           aclk,
     input           aresetn,
@@ -72,8 +79,11 @@ module core_top #(
     ibus_resp_t iresp;
     dbus_req_t  dreq;
     dbus_resp_t dresp;
-    dbus_req_t  dreq_mem;
-    dbus_resp_t dresp_mem;
+    // L1 <-> L2 interface: the L1's mem port drives the L2's cpu port.
+    dbus_req_t  l1_mem_req;
+    dbus_resp_t l1_mem_resp;
+    dbus_req_t  l2_mem_req;
+    dbus_resp_t l2_mem_resp;
     ibus_req_t  icache_mem_req;
     ibus_resp_t icache_mem_resp;
 
@@ -86,8 +96,18 @@ module core_top #(
 
     cacop_req_t core_cacop_req;
     logic       core_cacop_done;
-    logic       dcache_cacop_done;
+    logic       l1_cacop_done;
+    logic       l2_cacop_done;
     logic       icache_cacop_done;
+    // The L2's cacop request is gated on the L1's completion: a dirty L1
+    // line is first merged into the L2 (the L1's cacop writeback drain),
+    // and only then does the L2 write back / invalidate its own line.
+    cacop_req_t l2_cacop_req;
+    assign l2_cacop_req.valid = core_cacop_req.valid && l1_cacop_done;
+    assign l2_cacop_req.code  = core_cacop_req.code;
+    assign l2_cacop_req.addr  = core_cacop_req.addr;
+
+    logic [31:0] dcache_data_wb [0:L1CACHE_WAYS-1][0:L1CACHE_WORDS-1];
 
     logic [63:0] icache_access, icache_hit, icache_miss;
     logic [63:0] icache_wa_clear, icache_s1_accept, icache_cyc;
@@ -102,13 +122,15 @@ module core_top #(
     logic [63:0] stall_other;
 
     core #(.ICACHE_SETS(ICACHE_SETS), .DCACHE_SETS(DCACHE_SETS),
-           .DCACHE_WAYS(DCACHE_WAYS), .DCACHE_WORDS(DCACHE_WORDS)) u_core (
+           .DCACHE_WAYS(DCACHE_WAYS), .DCACHE_WORDS(DCACHE_WORDS),
+           .L1CACHE_WAYS(L1CACHE_WAYS), .L1CACHE_WORDS(L1CACHE_WORDS)) u_core (
         .clk,
         .reset(~aresetn),
         .ireq,
         .iresp,
         .dreq,
         .dresp,
+        .dcache_data_wb(dcache_data_wb),
         .cacop_req(core_cacop_req),
         .cacop_done(core_cacop_done),
         .dcache_in_refill(dcache_in_refill),
@@ -127,22 +149,36 @@ module core_top #(
         .stall_other(stall_other)
     );
 
-    dcache #(.NR_SETS(DCACHE_SETS), .NR_WAYS(DCACHE_WAYS), .NR_WORDS(DCACHE_WORDS)) u_dcache (
+    l1dcache #(.NR_SETS(L1CACHE_SETS), .NR_WAYS(L1CACHE_WAYS),
+               .NR_WORDS(L1CACHE_WORDS)) u_l1dcache (
         .clk,
         .reset(~aresetn),
         .cpu_req(dreq),
         .cpu_resp(dresp),
-        .mem_req(dreq_mem),
-        .mem_resp(dresp_mem),
+        .mem_req(l1_mem_req),
+        .mem_resp(l1_mem_resp),
         .cacop_req(core_cacop_req),
-        .cacop_done(dcache_cacop_done),
+        .cacop_done(l1_cacop_done),
         .perf_access(dcache_access),
         .perf_hit(dcache_hit),
         .perf_miss(dcache_miss),
         .perf_writeback(dcache_wb),
         .perf_fast_load(dcache_fast_load),
         .perf_fast_hum(dcache_fast_hum),
-        .in_refill(dcache_in_refill)
+        .in_refill(dcache_in_refill),
+        .data_wb(dcache_data_wb)
+    );
+
+    l2dcache #(.NR_SETS(DCACHE_SETS), .NR_WAYS(DCACHE_WAYS),
+               .NR_WORDS(DCACHE_WORDS)) u_l2dcache (
+        .clk,
+        .reset(~aresetn),
+        .cpu_req(l1_mem_req),
+        .cpu_resp(l1_mem_resp),
+        .mem_req(l2_mem_req),
+        .mem_resp(l2_mem_resp),
+        .cacop_req(l2_cacop_req),
+        .cacop_done(l2_cacop_done)
     );
 
     icache #(.NR_SETS(ICACHE_SETS)) u_icache (
@@ -164,16 +200,28 @@ module core_top #(
         .in_refill(icache_in_refill)
     );
 
-    assign core_cacop_done = dcache_cacop_done || icache_cacop_done ||
-        (core_cacop_req.valid && core_cacop_req.code[2:0] != 3'd0 && core_cacop_req.code[2:0] != 3'd1);
+    // dcache cacop (0x08/0x09/...): retire on the L2's completion.  The
+    // L2's cacop is gated on the L1's completion, so by the time the L2
+    // finishes, the L1's dirty line has already been merged into the L2
+    // and the L2's writeback to memory is up to date.  The L2's done is a
+    // pulse at its completion while the cacop is still stalled in EX
+    // (done=0 until then), so the instruction retires exactly then and
+    // the walk proceeds strictly level-by-level (the L2 is always idle
+    // at each cacop boundary, no request can be lost).
+    // Other codes retire immediately (icache ibar/cacop handled by the
+    // icache, which pulses done on its own).
+    assign core_cacop_done = (core_cacop_req.valid && core_cacop_req.code[2:0] == 3'd1)
+        ? l2_cacop_done
+        : (icache_cacop_done ||
+           (core_cacop_req.valid && core_cacop_req.code[2:0] != 3'd0));
 
     axibus_arbiter u_arbiter (
         .clk,
         .resetn(aresetn),
         .ireq(icache_mem_req),
         .iresp(icache_mem_resp),
-        .dreq(dreq_mem),
-        .dresp(dresp_mem),
+        .dreq(l2_mem_req),
+        .dresp(l2_mem_resp),
         .arid,     .araddr,   .arlen,   .arsize, .arburst,
         .arlock,   .arcache,  .arprot,  .arvalid, .arready,
         .rid,      .rdata,    .rresp,   .rlast,   .rvalid, .rready,
