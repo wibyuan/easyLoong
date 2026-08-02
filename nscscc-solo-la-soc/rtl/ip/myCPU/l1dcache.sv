@@ -361,7 +361,8 @@ module l1dcache import la32_common::*; #(
 
             S_CACOP_WB_READ: begin
                 // Nothing valid to write back: straight to invalidate.
-                if (!|tag_mem[cacop_way][cacop_idx][NR_WORDS-1:0])
+                // (Avoid `!|` — Vivado 2019.2's parser rejects it.)
+                if (tag_mem[cacop_way][cacop_idx][NR_WORDS-1:0] == {NR_WORDS{1'b0}})
                     next_state = S_CACOP_INV;
                 else
                     next_state = S_CACOP_WB_WRITE;

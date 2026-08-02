@@ -67,25 +67,31 @@ module l2dcache import la32_common::*; (
     logic [3:0]  data_wr_we;
     logic [31:0] data_wr_data;
 
-    // Data array declared in-module (not via the ram_sdpram module): the
-    // registered read must sample data_rd_addr at the same time as the
-    // tag/dirty arrays, and a module-boundary sample (Verilator) can lag
-    // the internal combination by a cycle on state-transition edges.
-    (* ram_style = "block" *) logic [31:0] data_mem [0:NR_WAYS-1][0:NR_SETS-1][0:NR_WORDS-1];
-
-    always_ff @(posedge clk) begin
-        if (data_wr_ena)
-            for (int b = 0; b < 4; b++)
-                if (data_wr_we[b])
-                    data_mem[data_wr_way][data_wr_addr][data_wr_wo][b*8 +: 8] <=
-                        data_wr_data[b*8 +: 8];
-    end
-
+    // Data array as per-way x per-word ram_sdpram instances: a single
+    // in-module array would be 4x16384x4x32 = 8M bits, over Vivado
+    // 2019.2's 1M-bit variable limit (Synth 8-4556); the per-instance
+    // arrays are 512K bits each.  The registered read samples
+    // data_rd_addr at the same edge as the tag/dirty ram_sdpram ports.
     generate
         for (genvar gw = 0; gw < NR_WAYS; gw++) begin : g_data_way
             for (genvar gb = 0; gb < NR_WORDS; gb++) begin : g_data_word
-                always_ff @(posedge clk)
-                    data_rd_out[gw][gb] <= data_mem[gw][data_rd_addr][gb];
+                logic wen;
+                assign wen = data_wr_ena && (data_wr_way == way_t'(gw))
+                             && (data_wr_wo == woffset_t'(gb));
+                ram_sdpram #(
+                    .ADDR_WIDTH(INDEX_WIDTH),
+                    .DATA_WIDTH(32),
+                    .BYTE_WIDTH(8),
+                    .READ_LATENCY(1)
+                ) u_data_ram (
+                    .clk,
+                    .raddr(data_rd_addr),
+                    .waddr(data_wr_addr),
+                    .en(wen),
+                    .strobe(data_wr_we),
+                    .wdata(data_wr_data),
+                    .rdata(data_rd_out[gw][gb])
+                );
             end
         end
     endgenerate
