@@ -959,3 +959,52 @@ cd unittest/ex_mem_stall_dup && ./run_test.sh
 - 全量 6 测试 difftest 通过：simple 24K / fibonacci 95K / mixed 331K / stream 3.96M / matrix 5.65M / cryptonight 23.09M 条指令
 - Vivado 2019.2 综合（step_synth）：0 error；**dcache 数据 4×256×32 → RAMB18 ×4（Block RAM）**，tag → LUTRAM（RAM64X1D+RAM64M），icache data/tag → LUTRAM；BRAM 报告 READ_FIRST/WRITE_FIRST 双口成立
 - 遗留：impl 时序未跑（CI 流程覆盖）；`data_wb` 128 位总线走线需关注
+
+## 2026-08-02: 1MB 单级 DCache（全 BRAM，wip/dcache-1mb）——CI 通过但上板 WaitStart 超时
+
+### 背景
+
+matrix 装下工作集的探索（2026-08-01）最终收敛到 **1MB 单级**：16384 sets × 4 ways × 16B = 1MB，全部存储（数据/tag/dirty/PLRU）进 BRAM。之前 2048 深 LUTRAM 的教训（dcache 分区 370 万实例、Timing Optimization 40+ 分钟、CI LUT 超用/时序失败）证明深度相关 MUX 只能靠 BRAM 消灭。
+
+### 架构（2 拍命中路径）
+
+tag/dirty/PLRU 全部 `ram_sdpram`（READ_LATENCY=1 注册读），命中路径 2 级流水：
+- **REQ 拍**：发 tag+data+dirty+PLRU 读（请求 index）+ 锁存请求（p_valid/p_addr/p_*）
+- **RESP 拍**：注册 tag 比较判定命中/缺失，data_ok + 数据当拍（LSU 停 1 拍，S1/S2 管道删除）
+
+HUM 期间读地址保持（p_valid && in_refill 时 data/tag/dirty/plru 读口持续指向 p_idx，否则中间 refill 状态会用 mem[0] 覆盖注册输出——调试中定位的数据错位 bug）。miss 上下文（m_eway victim/m_edirty/m_etag）在 RESP 拍从注册输出捕获。dirty/PLRU 写口统一在单一 always_comb 驱动（DRC MDRV-1 多驱动修复——曾因 FSM 组合块 + 顺序块双驱动被 CI 拒绝）。
+
+### difftest 结果（全 6 测试通过）
+
+| 测试 | 8B 基线 | 128KB 0-cycle | 1MB（1 拍命中） |
+|------|:---:|:---:|:---:|
+| matrix | 0.2941 | 0.7572 | 0.5815（+98%，hit 99.75%） |
+| cryptonight | 0.2923 | 0.2859 | 0.3686（+26%，hit 71.4%） |
+| mixed | 0.2744 | 0.3754 | 0.4962（+81%） |
+| simple | 0.1488 | 0.4066 | 0.5961 |
+| stream | 0.1815 | 0.2541 | 0.1820（~0，1 拍惩罚抵消容量收益） |
+| fibonacci | 0.1329 | 0.1316 | 0.1264（-5%，S_INIT 65536 拍） |
+
+cryptonight 命中率 71.4% = 50% 短期重用（迭代内 ld+st 同地址，与容量无关）+ ~21% 容量项（实测线性系数 ~0.42×C/W，低于理论 0.85——PLRU 对随机流效率损失）。1 拍命中惩罚是主要代价（matrix 对比 128KB 0-cycle 0.757→0.5815）。
+
+### CI（submit-20260801-dcache1mb-v2）✅
+
+- **BRAM 295 个全部推断成功**（数据 256 RAMB36 + tag 27 + dirty/PLRU RAMB18），占用 295/365 = 81%
+- **WNS = 2.794 ns**（0 违例）；布线垂直 3.9%/水平 4.3%（无拥塞）
+- 实现耗时 ~8 分钟（全 BRAM 无 LUTRAM 级联，远快于 2048×4 的 40 分钟）
+- 0 Errors / 0 Critical Warnings
+
+### ⚠ 上板问题：cryptonight WaitStart 超时（15s）
+
+远程实验平台运行：`MONITOR initialized → Jumping to CRYPTONIGHT → ERROR: timeout during WaitStart`。
+
+**排除**：时序（WNS 2.794）、S_INIT（65536 拍 ≈ 1.3ms）、FLUSH 遍历（16K 组 cacop）。
+
+**主要嫌疑：REQP-1839/1840 警告**（42 个）——295 个 BRAM 的**地址/写使能控制引脚**由 `u_Axi_CDC/rFifo/popCC_addressGen_rValid_reg`（带**异步 set/reset** 的寄存器）驱动。复位窗口内 BRAM 控制信号不确定，可能造成内存内容/读值损坏，且不被默认静态时序分析覆盖。历史 256 sets（4 BRAM）时代同警告上板通过（30e9c97），但 295 个 BRAM 把复位损坏风险放大了 ~70 倍——cryptonight 启动/初始化阶段若撞上复位窗口，BRAM 内容损坏 → 死循环 → WaitStart 超时。
+
+**待办**：
+1. 复现/定位（上板日志、或 2:1 时钟仿真）
+2. RTL 侧消除警告：BRAM 控制引脚驱动寄存器的异步复位改同步，或确认复位窗口语义
+3. 若无法消除，考虑回退到 master（BRAM 回归版）
+
+**两级 cache 展望**：1 拍命中惩罚（matrix 0.757→0.5815、stream 0.254→0.182）可由 L1（0-cycle，32KB/1024 深 LUTRAM tag）消除——L1 命中 0 拍 + L2（=现 1MB 单级）1 拍兜底，预期 matrix ~0.66-0.70、cryptonight ~0.5、stream ~0.24，全测试优于 1MB 单级。
