@@ -334,11 +334,15 @@ module dcache import la32_common::*; (
 
         if (p_valid && in_refill) begin
             // Hit-under-miss: hits to other lines served (loads always,
-            // stores when the write port is free); refill-line stores merge.
+            // stores when the write port is free — a store whose RESP stage
+            // lands in S_REFILL_WRITE is refused and re-hits in S_IDLE once
+            // the refill completes, because the data write port is owned by
+            // the refill that cycle); refill-line stores merge.
             if (p_st_merge) begin
                 cpu_resp.addr_ok = 1'b1;
                 cpu_resp.data_ok = 1'b1;
-            end else if (p_hum_hit) begin
+            end else if (p_hum_hit
+                         && (p_op ? (state != S_REFILL_WRITE) : 1'b1)) begin
                 cpu_resp.addr_ok = 1'b1;
                 cpu_resp.data_ok = 1'b1;
                 if (!p_op)
@@ -640,7 +644,10 @@ module dcache import la32_common::*; (
                 p_valid <= 1'b0;
             end else if (p_valid && in_refill && p_st_merge) begin
                 p_valid <= 1'b0;
-            end else if (p_valid && in_refill && p_hum_hit) begin
+            end else if (p_valid && in_refill && p_hum_hit
+                         && (p_op ? (state != S_REFILL_WRITE) : 1'b1)) begin
+                // A store refused in S_REFILL_WRITE (write port owned by
+                // the refill) keeps p_valid and re-hits in S_IDLE.
                 p_valid <= 1'b0;
             end
 
@@ -782,8 +789,11 @@ module dcache import la32_common::*; (
         // fast-path hit, applied in the RESP stage while a refill is in
         // flight.  Without the dirty update a hum store hit would leave
         // the line marked clean and the eviction writeback would silently
-        // drop the store's data.
-        if (p_valid && in_refill && p_hum_hit) begin
+        // drop the store's data.  A store refused in S_REFILL_WRITE (see
+        // the response block) is not updated here — it re-hits and is
+        // accounted for by the S_IDLE fast path.
+        if (p_valid && in_refill && p_hum_hit
+            && (p_op ? (state != S_REFILL_WRITE) : 1'b1)) begin
             begin : g_plru_hum_upd
                 automatic int node = 0;
                 for (int b = WAY_BITS-1; b >= 0; b--) begin
