@@ -557,6 +557,67 @@ module test_tb;
             fail <= 1'b1;
         end
 
+        // --- test 14: push/pop — stores to the SAME line while its fill
+        // --- is pending must not be lost (monitor stack-frame pattern) ---
+        // Store A (line X, wo 3) cold-misses and starts a refill; store B
+        // (line Y, wo 0) is held in the L2 during A's refill and then
+        // starts Y's own refill.  Stores B.wo1..B.wo3 then complete at the
+        // L2 as hits; each triggers its own word-sector fill.  The pop's
+        // loads must read back every stored word.
+        test_id = 14;
+        issue_store(32'h1c7f4fec, 32'h1c001440);  // line A wo 3 (ra)
+        issue_store(32'h1c7f4ff0, 32'h1c002316);  // line B wo 0 (r23)
+        issue_store(32'h1c7f4ff4, 32'h00000000);  // line B wo 1 (r24)
+        issue_store(32'h1c7f4ff8, 32'h00000004);  // line B wo 2 (r25)
+        issue_store(32'h1c7f4ffc, 32'h0000001c);  // line B wo 3 (r26)
+        issue_load(32'h1c7f4ff8);                 // pop wo 2
+        if (got_data == 32'h00000004)
+            $display("[PASS] test 14: push/pop same-line stores ok");
+        else begin
+            $display("[FAIL] test 14: pop wo2 got %08x want 00000004", got_data);
+            fail <= 1'b1;
+        end
+        issue_load(32'h1c7f4ff0);                 // pop wo 0
+        if (got_data != 32'h1c002316) begin
+            $display("[FAIL] test 14: pop wo0 got %08x want 1c002316", got_data);
+            fail <= 1'b1;
+        end
+        issue_load(32'h1c7f4ffc);                 // pop wo 3
+        if (got_data != 32'h0000001c) begin
+            $display("[FAIL] test 14: pop wo3 got %08x want 0000001c", got_data);
+            fail <= 1'b1;
+        end
+        issue_load(32'h1c7f4fec);                 // pop line A wo 3
+        if (got_data != 32'h1c001440) begin
+            $display("[FAIL] test 14: pop A wo3 got %08x want 1c001440", got_data);
+            fail <= 1'b1;
+        end
+
+        // --- test 15: store to the SAME WORD while its fill is pending ---
+        // A fill whose victim is dirty is held by the victim capture +
+        // drain (fill_wr blocked on vc_valid).  Regression guard: a
+        // same-line same-word store in that window must end up in the L1
+        // line.  In this (pass-through word-sector) design the window is
+        // inherently safe — the drain gate (!(dr_valid && dr_waiting))
+        // holds the store, and once the fill completes the store re-presents
+        // and HITS the L1 (writing the newest data), so no stale word can
+        // materialize.  (The whole-line burst variant needed a store-hold
+        // there; see wip/burst-wholeline.)  Kept as a regression test.
+        test_id = 15;
+        for (int w = 0; w < 4; w++)
+            issue_store(32'h1c7f5300 + w*4, 32'h11110000 + w);  // line A1, 4 dirty words
+        for (int w = 0; w < 4; w++)
+            issue_store(32'h1c7f5310 + w*4, 32'h22220000 + w);  // line A2, 4 dirty words
+        issue_store(32'h1c7f5320, 32'h33330000);  // line A3: evicts a dirty victim
+        issue_store(32'h1c7f5320, 32'h44440000);  // same-word store in the vc/dr window
+        issue_load(32'h1c7f5320);
+        if (got_data == 32'h44440000)
+            $display("[PASS] test 15: same-word store during pending fill ok");
+        else begin
+            $display("[FAIL] test 15: got %08x want 44440000 (fill wrote stale word)", got_data);
+            fail <= 1'b1;
+        end
+
         // --- test 12: pseudorandom 2MB storm + flush + memory compare ---
         test_id = 12;
         begin

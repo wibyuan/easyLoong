@@ -1177,3 +1177,25 @@ raddr mux 最初把 `f_valid`（fill 进行中）切到 `f_idx`（fill 写判定
 - gitlab CI 已提交 `submit-20260802-2levelci3`（b838abb），**impl 恢复收敛（对比 25922 Unisim 卡死）**
 - **上板实测（gitlab CI 远程平台，50MHz）**：matrix **190ms**（单级 209ms，**-9.1%**）、stream **419ms**（单级 566ms，**-26.0%**）、cryptonight 1399ms（单级 1367ms，+2.3%）、mixed 37ms（单级 35ms，+5.7%）——**四测试合计 2045ms，较单级 2177ms 总成绩提升 6.1%**；stream/matrix 的大幅提升来自 L1 0-cycle 命中消除 1 拍命中惩罚 + 顺序流局部性；cryptonight/mixed 微降（L1 容量 miss 的逐字往返惩罚）
 - AGENTS.md 增补硬规则：cache 存储必须 `ram_sdpram` 实例，禁止模块内多维数组 + ram_style；提交前查 `report_utilization`（d0f720b）
+
+## 2026-08-02（续六）：burst 整行分支收尾（wip/burst-wholeline）—— 不并入，存档；单测迁移 + 修复评估
+
+### 背景
+
+在直通式两级（本分支，上板 2045ms）基础上，`wip/burst-wholeline` 分支按「逐字往返惩罚」的教训改造 L1↔L2 传输通道：L2 cpu 口对 `burst_len=3` 请求流式整行返回（keyword 优先），L1 整行收集后原子建行。本记录为最终评估与收尾。
+
+### burst 分支状态（HEAD 8731b31，存档）
+
+- 正确性：**8 个 bug 全部修复**（col 收集丢失、load miss 整行不齐、hum 挂起读错 set、收集 word 错位、误判 hit 打断 refill、**col_cnt 2-bit 回卷误收集、挂起 collection 被同线 store 弄脏后 materialize 过期行、填充期间同线 store 被转发**）——**60000 次 storm 14/14 全绿**（新增 test 14 push/pop 同线连续 store，旧代码稳定复现）
+- difftest：simple 0.5202 / stream 0.2444 / matrix 0.5051 / mixed 0.4452 / fibonacci 0.1264 通过；**cryptonight 未通过**（crn_hext scratchpad load 读到 0，2MB thrash 下根因未定位）
+- 对比直通版（本分支）：burst 版 difftest 无优势（matrix 0.6324→0.5051 反而回退——整行 fill + 脏行 drain 的固定开销在容量主导工作集上更重），且 cryptonight 未过 → **不并入，分支存档**（其 3 个收尾修复 + test 14 的价值已评估，见下）
+
+### 单测迁移到本分支（unittest/cache_hierarchy，13/13 → 15/15 全绿）
+
+- **test 14**（push/pop 同线连续 store，monitor 栈帧模式）：迁移，直接通过——直通式按字填充下该模式无 stale 窗口
+- **test 15**（脏 victim 拖住 fill 期间同 word store，回归保护）：迁移，直接通过——**直通式天然安全**：fill_wr 只被 vc_valid 阻塞、dr 不阻塞；窗口内 store 被 drain 门控（`!(dr_valid && dr_waiting)`）压住，fill 完成后 store 重试**命中 L1 写最新数据**（无"转发后 LSU 不再重试"的丢失路径，与 burst 版 collection 挂起机制不同）
+- **3 个 burst 修复对直通式评估结论：均不适用**——修复 1/2（col_cnt 回卷、挂起 collection 被同线 store 弄脏）针对 burst 版整行 collection 机制（直通式无 collection，fill 在响应拍立即发起并捕获响应数据）；修复 3（fill 挂起期间同线 store 被转发）的窗口被直通式的 dr 门控 + store 重试命中天然覆盖（见 test 15 注释）
+
+### 结论
+
+两级直通式（本分支，上板 **2045ms**）为当前最优配置。burst 整行方向验证完毕：能修对（storm 14/14）但相对直通式无 difftest 收益且 cryptonight 未收敛，**存档于 wip/burst-wholeline**（含全部修复与单测，供未来参考——若重走两级路线，优先在直通式上修 cryptonight 的 load 读到 0（2MB thrash 路径），而非整行填充）。

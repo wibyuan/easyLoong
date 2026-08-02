@@ -100,7 +100,7 @@
 | `axibus_arbiter.sv` | ibus/dbus AXI4 仲裁 |
 | `core_top.sv` | AXI Master 接口封装 |
 
-> **⚠ 2026-08-02 分支状态**：上表描述的是 **master（单级 1MB dcache）**。`wip/2level-cache` 分支做**两级 dcache（直通式）**：`l1dcache.sv`（0-cycle 命中叠层 + L1 miss 直通 L2 + 按字填充）+ `l2dcache.sv`（原 1MB 改名）。当前单元测试 **13/13 通过**（`unittest/cache_hierarchy/`，含 60000 次伪随机 storm + 全量 flush walk 内存比对；修复了 L1 drain 跳字漏写、drain accept 被抢、fresh fill 残留 dirty 位、L2 幽灵 mem_req、命中误判（fill 期间读口被 f_idx 抢占）等 RTL bug 与 3 个 testbench bug）；difftest 6/6 通过（IPC 见上）。**L1 存储全部 `ram_sdpram` 实例化**（data 16× READ_LATENCY=1 BRAM 实例 + tag/dirty/plru READ_LATENCY=0 LUTRAM 实例，单读口收敛），synth 利用率 BRAM 293.5 tiles / LUT 11284。**详细记录见 [DEVLOG.md](DEVLOG.md)「2026-08-02（续二/续三）」**。
+> **⚠ 2026-08-02 分支状态**：上表描述的是 **master（单级 1MB dcache）**。`wip/2level-cache` 分支做**两级 dcache（直通式）**：`l1dcache.sv`（0-cycle 命中叠层 + L1 miss 直通 L2 + 按字填充）+ `l2dcache.sv`（原 1MB 改名）。当前单元测试 **15/15 通过**（`unittest/cache_hierarchy/`，含 60000 次伪随机 storm + 全量 flush walk 内存比对；修复了 L1 drain 跳字漏写、drain accept 被抢、fresh fill 残留 dirty 位、L2 幽灵 mem_req、命中误判（fill 期间读口被 f_idx 抢占）等 RTL bug 与 3 个 testbench bug）；difftest 6/6 通过（IPC 见上）。**L1 存储全部 `ram_sdpram` 实例化**（data 16× READ_LATENCY=1 BRAM 实例 + tag/dirty/plru READ_LATENCY=0 LUTRAM 实例，单读口收敛），synth 利用率 BRAM 293.5 tiles / LUT 11284。**上板实测 2045ms（较单级 2177ms -6.1%），为当前效果最优配置**。`wip/burst-wholeline`（整行 burst 填充分支）已验证后**存档**（storm 14/14 全绿但 difftest 无收益、cryptonight 未过，详见 DEVLOG「2026-08-02（续六）」）。详细记录见 [DEVLOG.md](DEVLOG.md)「2026-08-02（续二/续三/续六）」。
 
 ## 3. 硬件平台
 
