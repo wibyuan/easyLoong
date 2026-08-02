@@ -532,9 +532,14 @@ module dcache import la32_common::*; (
         endcase
 
         // Hit-under-miss store hit: write port free in every state except
-        // S_REFILL_WRITE (p_st_merge gates that out); PLRU/dirty updated in
-        // the sequential block on the same p_hum_hit condition.
-        if (p_valid && in_refill && p_hum_hit && p_op) begin
+        // S_REFILL_WRITE (where the port is owned by the refill — a hum
+        // store whose RESP stage lands there is refused and re-hits in
+        // S_IDLE once the refill completes; without the gate the hum
+        // store would overwrite the refill's write and drop a word of
+        // the refilled line).  PLRU/dirty are updated in the dirty/PLRU
+        // write-control block on the same p_hum_hit condition.
+        if (p_valid && in_refill && p_hum_hit && p_op
+            && (state != S_REFILL_WRITE)) begin
             data_wr_ena  = 1'b1;
             data_wr_way  = p_hit_way;
             data_wr_addr = p_idx;
@@ -757,6 +762,29 @@ module dcache import la32_common::*; (
         // root to the hit way is written with ~way[b] at each node.
         if (p_valid && !in_refill && (state == S_IDLE) && p_hit) begin
             begin : g_plru_hit_upd
+                automatic int node = 0;
+                for (int b = WAY_BITS-1; b >= 0; b--) begin
+                    plru_wr_ena[node] = 1'b1;
+                    plru_wr_data[node] = ~p_hit_way[b];
+                    node = 2*node + 1 + int'(p_hit_way[b]);
+                end
+            end
+            plru_wr_addr = p_idx;
+            if (p_op) begin
+                dirty_wr_ena  = 1'b1;
+                dirty_wr_way  = p_hit_way;
+                dirty_wr_addr = p_idx;
+                dirty_wr_data = 1'b1;
+            end
+        end
+
+        // Hit-under-miss hit update: same PLRU/dirty semantics as the
+        // fast-path hit, applied in the RESP stage while a refill is in
+        // flight.  Without the dirty update a hum store hit would leave
+        // the line marked clean and the eviction writeback would silently
+        // drop the store's data.
+        if (p_valid && in_refill && p_hum_hit) begin
+            begin : g_plru_hum_upd
                 automatic int node = 0;
                 for (int b = WAY_BITS-1; b >= 0; b--) begin
                     plru_wr_ena[node] = 1'b1;
