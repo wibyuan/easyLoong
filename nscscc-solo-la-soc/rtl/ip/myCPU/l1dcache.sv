@@ -234,8 +234,22 @@ module l1dcache import la32_common::*; #(
     end
 
     // ==================== Wire helpers ====================
-    wire hit_read_req = cpu_req.valid && req_hit;
-    wire store_hit_wr = cpu_req.valid && req_hit && |cpu_req.strobe;
+    // A store to the line being evicted (vc/dr in flight) must not be
+    // answered or forwarded: it would be written into the L1 line that the
+    // pending fill is about to overwrite, while the drain already captured
+    // the pre-store value — the store's data would vanish from both
+    // levels.  Hold it (no response, no forward) until the fill displaces
+    // the line; the LSU re-presents it, it re-issues as an L1 miss and
+    // passes through to the L2, which then holds the newest value (the
+    // drain's stale word arrived first, the pass-through store overwrites
+    // it).  Loads are unaffected: they only read the line, whose
+    // pre-eviction value is still authoritative.
+    wire victim_store_held = (vc_valid || vc_reading || dr_valid)
+        && cpu_req.valid && |cpu_req.strobe && req_hit
+        && (req_hit_way == vc_way) && (req_idx == vc_idx);
+
+    wire hit_read_req = cpu_req.valid && req_hit && !victim_store_held;
+    wire store_hit_wr = cpu_req.valid && req_hit && |cpu_req.strobe && !victim_store_held;
     // Forward the LSU's request (cacheable miss or uncacheable access)
     // unchanged; the L2 answers exactly as it would in the single-level
     // design.  The L1's own fills/drains are never presented while the
