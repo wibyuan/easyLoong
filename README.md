@@ -63,7 +63,7 @@
 
 > 行宽实测结论（2026-08-01，三配置上板实测，**256 组 × 2 路时代**）：**8 字节行是总分最优**——cryptonight 1883ms（16B 2446 / 4B 1699），stream 473ms（16B 395 / 4B 756），matrix 444ms（16B 374 / 4B 578），四测试合计 8B 2825ms < 4B 3066ms < 16B 3240ms。4B 行对 cryptonight 最优但 stream/matrix 严重受损（空间局部性丢失）；8B 行是折中，定为新默认。2 路组相联对 cryptonight 无收益（容量 miss 主导）但保护 stream（1-way 下 0.2293→0.0669）。**该结论在小容量（4KB）下成立；1MB 版（2026-08-02）容量收益主导，16B 行 + 16384 组 + 4 路为当前配置**（见「当前性能指标」）。详见 [DEVLOG.md](DEVLOG.md)「DCache 行宽/相联度实测」。
 
-> ⚠ **两级 cache 尝试（wip/2level-cache，2026-08-02，全面负优化，已搁置）**：在 1MB 单级 L2 前加 8KB 0-cycle L1（LUTRAM tag，命中 0 拍），L1 miss 逐字向 L2 refill/写回（L2 的 cpu 口每次只应答一个 32 位字）。结果：**全部 difftest IPC 下降**（simple 0.5961→0.5194、stream 0.1820→0.1438、matrix 0.5815→0.2634、mixed 0.4962→0.3390、fibonacci 0.1264→0.1137），cryptonight 因正确性 bug（L2 行数据与 tag 错位，根因未定位）未通过。原因：8KB L1 对 >8KB 工作集（matrix 110KB / stream / cryptonight 2MB）无命中贡献，而 miss 路径从单级 1 拍命中变成逐字 4 次 L2 往返（每次 2 拍 + 间隙，L2 miss 还要先等 L2 自身内存 refill）——两级结构纯加惩罚。**教训：L1 与 L2 之间的传输通道应支持整行突发（L2 cpu 口按 burst 一次返回整行，L1 refill 单次传输），逐字往返不可取；小容量 L1 对容量主导的工作集无意义。** 详细数据见 [DEVLOG.md](DEVLOG.md)「两级 cache 尝试」。
+> ✅ **两级 cache（wip/2level-cache，2026-08-02 落地）**：8KB 0-cycle L1（LUTRAM tag 组合读，命中 0 拍）+ 1MB L2（直通式，L1 miss 逐字向 L2 refill/写回）。第三轮修复（L1 drain 跳字漏写、drain accept 被抢、fresh fill 残留 dirty 位、L2 幽灵 mem_req、存储改 `ram_sdpram` 实例化等）后**正确性全绿**：单元测试 13/13、difftest 6/6。IPC 对比 1MB 单级：**stream 0.1820→0.2469 (+35.7%)、matrix 0.5815→0.6324 (+8.8%)、cryptonight 0.3686→0.3833 (+4.0%)**、fibonacci 持平（0.1264）、simple 0.5961→0.5202、mixed 0.4962→0.4553（后两者被 L1 miss 逐字往返惩罚主导）。**教训修正：首轮「全面负优化」的结论在修复正确性 bug 后不再成立；直通式逐字通道的惩罚被 L1 命中收益覆盖后仍可正收益。真正的硬教训是 cache 存储必须 `ram_sdpram` 实例化**——模块内多维数组 + ram_style 属性不被 Vivado 2019.2 推断为 BRAM/LUTRAM 宏，展开成 ~24k Unisim 逻辑单元，impl 布线永不收敛（单级 1714 → 两级 25922）。详细数据见 [DEVLOG.md](DEVLOG.md)「2026-08-02（续三）」。
 
 ### 指令集覆盖
 
@@ -100,7 +100,7 @@
 | `axibus_arbiter.sv` | ibus/dbus AXI4 仲裁 |
 | `core_top.sv` | AXI Master 接口封装 |
 
-> **⚠ 2026-08-02 分支状态**：上表描述的是 **master（单级 1MB dcache）**。`wip/2level-cache` 分支正在做**两级 dcache（直通式）**：`l1dcache.sv`（0-cycle 命中叠层 + L1 miss 直通 L2 + 按字填充）+ `l2dcache.sv`（原 1MB 改名）。当前单元测试 **12/12 通过**（`unittest/cache_hierarchy/`，含 60000 次伪随机 storm + 全量 flush walk 内存比对；修复了 L1 drain 跳字漏写、drain accept 被抢、fresh fill 残留 dirty 位、L2 幽灵 mem_req 等 4 个 RTL bug 与 3 个 testbench bug）。**详细记录见 [DEVLOG.md](DEVLOG.md)「2026-08-02（续二）：两级 dcache 第三轮」**。
+> **⚠ 2026-08-02 分支状态**：上表描述的是 **master（单级 1MB dcache）**。`wip/2level-cache` 分支做**两级 dcache（直通式）**：`l1dcache.sv`（0-cycle 命中叠层 + L1 miss 直通 L2 + 按字填充）+ `l2dcache.sv`（原 1MB 改名）。当前单元测试 **13/13 通过**（`unittest/cache_hierarchy/`，含 60000 次伪随机 storm + 全量 flush walk 内存比对；修复了 L1 drain 跳字漏写、drain accept 被抢、fresh fill 残留 dirty 位、L2 幽灵 mem_req、命中误判（fill 期间读口被 f_idx 抢占）等 RTL bug 与 3 个 testbench bug）；difftest 6/6 通过（IPC 见上）。**L1 存储全部 `ram_sdpram` 实例化**（data 16× READ_LATENCY=1 BRAM 实例 + tag/dirty/plru READ_LATENCY=0 LUTRAM 实例，单读口收敛），synth 利用率 BRAM 293.5 tiles / LUT 11284。**详细记录见 [DEVLOG.md](DEVLOG.md)「2026-08-02（续二/续三）」**。
 
 ## 3. 硬件平台
 

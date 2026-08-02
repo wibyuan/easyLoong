@@ -1150,4 +1150,29 @@ storm 迭代数已恢复 60000（`for i < 60000`）。调试 trace 已清理，�
 1. `make test-*` 六个 difftest 全量回归（cryptonight 是上一轮的失败项，本轮设计应规避其根因，需实测）
 2. IPC 测量 + L1 尺寸调优（`core_top.sv` 的 `L1CACHE_SETS` 参数，预期 matrix 提升最大）
 3. 提交 + CI（CI 需注意 Vivado 2019.2 语法兼容性）
-6. 提交 + CI（CI 需注意 Vivado 2019.2 语法兼容性）
+
+## 2026-08-02（续三）：L1 存储 ram_sdpram 实例化 —— CI impl 卡死根因（wip/2level-cache）
+
+上一轮 difftest 全过、IPC 有正有负，但 **gitlab CI 的 impl 永不收敛**（route Phase 4.2 Global Iteration 1，Number of Nodes with overlaps = 123862，Failed Nets = 115277），且 impl 阶段前无任何错误日志。对比单级成功提交（`submit-20260802-perfcnt`，WNS=2.213、1:49 收敛）：两级 link_design 报告 **Analyzing 25922 Unisim elements**（单级 1714，15 倍）——Unisim Transformation 两边相同（RAM128X1D×512 等来自 icache），差异全部来自 L1 dcache 的存储数组。
+
+### 根因：模块内多维数组 + ram_style 属性不被推断为宏
+
+`l1dcache.sv` 原声明四个模块内数组：`data_mem`（2×256×4×32，**8 个注册读口**——单 primitive 只有 1 读口，BRAM 推断必然失败）、`tag_mem`/`dirty_mem`/`plru`（multidim + 多地址组合读）。Vivado 2019.2 不把这类数组综合成 BRAM/LUTRAM 宏，而是**展开成纯逻辑**（LUT 树），约 +24k Unisim 元素，routing 永不收敛。**结论：cache 存储（及任何可推断 RAM）必须用 `ram_sdpram` 实例化，一个读口一个实例；模块内数组 + ram_style 是反模式**（已写入 AGENTS.md 硬规则）。
+
+### 修复（l1dcache.sv，b838abb）
+
+- **data**：16× `ram_sdpram #(.READ_LATENCY(1))` 实例（2 way × 4 word，`en` = 写使能 × way/word 匹配），照单级 `dcache.sv` 的 g_data_way/g_data_word——进 BRAM（synth 实测 **293.5 BRAM tiles**，LUT as Memory 2792 / LUT 11284）
+- **tag/dirty/plru**：每 way 一个 `ram_sdpram #(.READ_LATENCY(0))` 实例（组合读，LUTRAM 宏），照 `icache.sv`——0-cycle 命中路径保持组合
+- **单读口收敛**：每个实例只有 1 个读地址；tag/dirty/plru 的全部组合引用收敛到统一地址 mux：`req_idx`（请求/命中）→ `o_idx`（outstanding 请求：load miss 关键字拍 LSU 在 WAIT 不再呈现 `cpu_req`，`req_idx` 是陈旧的，必须读 outstanding 请求的索引）→ `cacop_idx`（cacop 状态）
+
+### 调试中发现的隐藏 bug：fill 期间命中误判（test 12 的 14 words 丢失）
+
+raddr mux 最初把 `f_valid`（fill 进行中）切到 `f_idx`（fill 写判定需要读目标行 v/dirty）——但 **0-cycle 命中判断（`req_tag_data`，每拍组合运行）也被迫读 `f_idx` 的行**：store 27215（idx 0xc0, tag 1c052）在另一个 idx（3c）的 fill 进行中时，`tag_rd_data[1]` 读到 fill 目标行的 tag 恰好也是 1c052 → **误判命中错误行，store 数据写进错误行静默丢失**（storm 对比 14 words mem=0）。修复：**fill 写侧读提前到 initiation 拍捕获**（`f_old_v`/`f_old_dirty` 寄存器，此刻读口地址恰为请求索引），fill 写拍不再碰读口——读口永远服务命中判断（`req_idx`/`o_idx`）。
+
+### 验证
+
+- 单元测试 **13/13 全绿**（含 60000 次 storm + 全量 flush 内存比对）
+- difftest 6/6 通过，**IPC 无回退**（与提交版逐项一致）：simple 0.5202 / stream 0.2469 / matrix 0.6324 / mixed 0.4553 / cryptonight 0.3833 / fibonacci 0.1264
+- 本地 synth（Vivado 2019.2 docker）：Block RAM **293.5 tiles（284 RAMB36 + 19 RAMB18）**、Slice LUTs 11284（8.38%）、LUT as Memory 2792——存储全部宏化，impl 前资源健康
+- gitlab CI 已提交 `submit-20260802-2levelci3`（b838abb），待 impl 收敛确认
+- AGENTS.md 增补硬规则：cache 存储必须 `ram_sdpram` 实例，禁止模块内多维数组 + ram_style；提交前查 `report_utilization`（d0f720b）
