@@ -1087,8 +1087,17 @@ module core import la32_common::*; #(
 
     // Fetch hold when the queue is full with a fetch output pending (the
     // queue cannot absorb it); hazard_unit's own pc_stall covers the rest.
+    // A queue flush also holds the fetch: the redirect target can be the
+    // fetch's current pc (pc == ex_jump_pc suppresses the redirect), and
+    // the target's output would be discarded by the flush while the fetch
+    // advances past it (next_pc = target+4) — the target is permanently
+    // lost (the 3467452 scenario, reproduced on mixed at 1c002250).  The
+    // single-issue IF/ID capture never had this issue: the flush
+    // overwrote the register, and the fetch re-delivered the target while
+    // stalled on the empty queue ahead; the accumulating queue must not
+    // advance past the target it just discarded.
     logic pc_stall_fetch;
-    assign pc_stall_fetch = pc_stall || (fq_space == 3'd0 && fetch_valid0);
+    assign pc_stall_fetch = pc_stall || (fq_space == 3'd0 && fetch_valid0) || if_id_flush;
 
     hazard_unit hazard_ctrl (
         .if_not_ready(!iresp.data_ok),
@@ -1130,6 +1139,7 @@ module core import la32_common::*; #(
     // ==================== STALL COUNTERS ====================
     logic lsu_not_ready;
     assign lsu_not_ready = !lsu_ready;
+
 
     always_ff @(posedge clk) begin
         if (reset) begin
