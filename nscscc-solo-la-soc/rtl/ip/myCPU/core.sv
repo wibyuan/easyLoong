@@ -396,11 +396,22 @@ module core import la32_common::*; #(
     wire slot0_load = id_valid0 && dec_mem_re_0;
     wire slot1_dep_load0 = slot0_load && (dec_rd_0 != 5'd0) &&
         ((dec_rs1_1 == dec_rd_0) || (dec_rs2_1 == dec_rd_0));
+    // A slot1 instruction whose operand is slot0's same-cycle ALU result
+    // is denied: the in-slot bypass now delivers the REGISTERED ALU0
+    // result (which breaks the serial adder static path), so the pair's
+    // value would be stale — slot1 waits one cycle and uses the em0/mw0
+    // forwards.  The store-data dependency (rs2 of a store) does NOT
+    // serialize (the data path bypasses ALU1) and stays allowed; a load's
+    // decoded rs2 is the imm's top bits and never a real dependency.
+    wire slot0_alu_prod = id_valid0 && dec_rf_we_0 && !dec_mem_re_0 && !dec_mem_we_0;
+    wire slot1_dep_alu0 = slot0_alu_prod && (dec_rd_0 != 5'd0) &&
+        ((dec_rs1_1 == dec_rd_0) ||
+         (dec_rs2_1 == dec_rd_0 && (dec_mem_we_1 || !dec_mem_re_1)));
 
     assign slot1_issue_raw = id_valid1 && !slot0_complex && !slot1_complex
         && !slot0_branch && !slot1_branch
         && !(slot0_mem && slot1_mem)
-        && !slot1_dep_load0;
+        && !slot1_dep_load0 && !slot1_dep_alu0;
     // The slot1 slot issues when the queue head pair accepts.
     assign slot1_issue = slot1_issue_raw && !fq_stall_all && !if_id_flush;
 
@@ -605,10 +616,17 @@ module core import la32_common::*; #(
     // In-slot bypass: slot1 reading the same-cycle slot0 producer's ALU
     // result (the issue gate already excludes slot1 depending on slot0's
     // load/mul/branch, so the EX0 result is available).  The bypass value
-    // is the raw ALU result: the issue gate restricts paired slot0 to
-    // pure-ALU instructions (mul/csr/cpucfg/pcadd/jal are slot0-exclusive
-    // and never pair), so ex0_result == alu_res0 and the two result-select
-    // mux levels (mul / non-ALU) stay off the slot1 address critical path.
+    // is the REGISTERED ALU0 result: the same-cycle dependent pair is
+    // denied at the issue gate (slot1_dep_alu0), so this entry never
+    // selects a live value — the register exists to break the serial
+    // ALU0->ALU1 static netlist path (timing analysis is static; a
+    // combinational mux input keeps the two adders on one path no matter
+    // how the select is gated).
+    logic [31:0] alu_res0_r;
+    always_ff @(posedge clk) begin
+        if (reset) alu_res0_r <= 32'd0;
+        else alu_res0_r <= alu_res0;
+    end
     logic fw_a1_ex0_comb, fw_b1_ex0_comb;
     assign fw_a1_ex0_comb = id_ex1_out.ctrl.valid && id_ex0_out.ctrl.valid &&
         (id_ex1_out.data.rs1 != 5'd0) && (id_ex1_out.data.rs1 == id_ex0_out.data.rd) &&
@@ -641,14 +659,14 @@ module core import la32_common::*; #(
     end
 
     always_comb begin
-        if (fw_a1_ex0_comb) forward_a1 = alu_res0;
+        if (fw_a1_ex0_comb) forward_a1 = alu_res0_r;
         else if (fw_a1_em1) forward_a1 = ex_mem1_out.data.alu_res;
         else if (fw_a1_em0) forward_a1 = ex_mem0_out.data.alu_res;
         else if (fw_a1_mw1) forward_a1 = wb_final_res1;
         else if (fw_a1_mw0) forward_a1 = wb_final_res0;
         else                forward_a1 = rf_rd1_1;
 
-        if (fw_b1_ex0_comb) forward_b1 = alu_res0;
+        if (fw_b1_ex0_comb) forward_b1 = alu_res0_r;
         else if (fw_b1_em1) forward_b1 = ex_mem1_out.data.alu_res;
         else if (fw_b1_em0) forward_b1 = ex_mem0_out.data.alu_res;
         else if (fw_b1_mw1) forward_b1 = wb_final_res1;
