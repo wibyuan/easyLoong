@@ -197,7 +197,18 @@ module DifftestStallState (
     input  logic [63:0] stall_branch_flush,
     input  logic [63:0] stall_dcache_hit_pipe,
     input  logic [63:0] stall_icache_hit_pipe,
-    input  logic [63:0] stall_other
+    input  logic [63:0] stall_other,
+    input  logic [63:0] stall_other_fetch,
+    input  logic [63:0] stall_other_single,
+    input  logic [63:0] stall_other_dual,
+    input  logic [63:0] stall_other_noissue,
+    input  logic [63:0] s1_hold_s0complex,
+    input  logic [63:0] s1_hold_s1complex,
+    input  logic [63:0] s1_hold_s0branch,
+    input  logic [63:0] s1_hold_s1branch,
+    input  logic [63:0] s1_hold_mem,
+    input  logic [63:0] s1_hold_dep0,
+    input  logic [63:0] s1_hold_other
 );
     import "DPI-C" function void v_difftest_StallState(
         input longint stall_dcache_refill,
@@ -206,13 +217,29 @@ module DifftestStallState (
         input longint stall_branch_flush,
         input longint stall_dcache_hit_pipe,
         input longint stall_icache_hit_pipe,
-        input longint stall_other
+        input longint stall_other,
+        input longint stall_other_fetch,
+        input longint stall_other_single,
+        input longint stall_other_dual,
+        input longint stall_other_noissue,
+        input longint s1_hold_s0complex,
+        input longint s1_hold_s1complex,
+        input longint s1_hold_s0branch,
+        input longint s1_hold_s1branch,
+        input longint s1_hold_mem,
+        input longint s1_hold_dep0,
+        input longint s1_hold_other
     );
     always @(posedge clock) begin
         v_difftest_StallState(stall_dcache_refill, stall_icache_refill,
                               stall_load_use, stall_branch_flush,
                               stall_dcache_hit_pipe, stall_icache_hit_pipe,
-                              stall_other);
+                              stall_other,
+                              stall_other_fetch, stall_other_single,
+                              stall_other_dual, stall_other_noissue,
+                              s1_hold_s0complex, s1_hold_s1complex,
+                              s1_hold_s0branch, s1_hold_s1branch,
+                              s1_hold_mem, s1_hold_dep0, s1_hold_other);
     end
 endmodule
 `endif

@@ -169,7 +169,18 @@ void v_difftest_StallState(
     long long stall_branch_flush,
     long long stall_dcache_hit_pipe,
     long long stall_icache_hit_pipe,
-    long long stall_other
+    long long stall_other,
+    long long stall_other_fetch,
+    long long stall_other_single,
+    long long stall_other_dual,
+    long long stall_other_noissue,
+    long long s1_hold_s0complex,
+    long long s1_hold_s1complex,
+    long long s1_hold_s0branch,
+    long long s1_hold_s1branch,
+    long long s1_hold_mem,
+    long long s1_hold_dep0,
+    long long s1_hold_other
 ) {
     dut_stall.stall_dcache_refill   = (uint64_t)stall_dcache_refill;
     dut_stall.stall_icache_refill   = (uint64_t)stall_icache_refill;
@@ -178,6 +189,17 @@ void v_difftest_StallState(
     dut_stall.stall_dcache_hit_pipe = (uint64_t)stall_dcache_hit_pipe;
     dut_stall.stall_icache_hit_pipe = (uint64_t)stall_icache_hit_pipe;
     dut_stall.stall_other           = (uint64_t)stall_other;
+    dut_stall.stall_other_fetch     = (uint64_t)stall_other_fetch;
+    dut_stall.stall_other_single    = (uint64_t)stall_other_single;
+    dut_stall.stall_other_dual      = (uint64_t)stall_other_dual;
+    dut_stall.stall_other_noissue   = (uint64_t)stall_other_noissue;
+    dut_stall.s1_hold_s0complex     = (uint64_t)s1_hold_s0complex;
+    dut_stall.s1_hold_s1complex     = (uint64_t)s1_hold_s1complex;
+    dut_stall.s1_hold_s0branch      = (uint64_t)s1_hold_s0branch;
+    dut_stall.s1_hold_s1branch      = (uint64_t)s1_hold_s1branch;
+    dut_stall.s1_hold_mem           = (uint64_t)s1_hold_mem;
+    dut_stall.s1_hold_dep0          = (uint64_t)s1_hold_dep0;
+    dut_stall.s1_hold_other         = (uint64_t)s1_hold_other;
 }
 
 } // extern "C"

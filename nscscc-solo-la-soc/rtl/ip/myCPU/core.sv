@@ -35,7 +35,13 @@ module core import la32_common::*; #(
     output logic [63:0] stall_branch_flush,
     output logic [63:0] stall_dcache_hit_pipe,
     output logic [63:0] stall_icache_hit_pipe,
-    output logic [63:0] stall_other
+    output logic [63:0] stall_other,
+    // Other-bubble breakdown: fetch-empty / single-issue / dual-issue-fill
+    // / non-empty-no-advance (diagnostic counters).
+    output logic [63:0] stall_other_fetch,
+    output logic [63:0] stall_other_single,
+    output logic [63:0] stall_other_dual,
+    output logic [63:0] stall_other_noissue
 );
 
     typedef struct packed {
@@ -358,8 +364,8 @@ module core import la32_common::*; #(
     assign id_valid1 = if_id1_out.ctrl.valid;
 
     // ----- Issue constraints for slot1 -----
-    // Complex instructions (mul/cacop/ibar/csr*/cpucfg/pcadd) execute in
-    // slot0 only and are exclusive: slot1 is empty when slot0 is complex.
+    // Complex instructions (mul/cacop/ibar/csr*/cpucfg) execute in slot0
+    // only and are exclusive: slot1 is empty when slot0 is complex.
     // EX0 carries the full function (CSR/JAL/pcadd/cpucfg non-ALU paths);
     // EX1 is a pure ALU/address unit, so every non-ALU-producing
     // instruction must stay in slot0.
@@ -391,6 +397,32 @@ module core import la32_common::*; #(
         && !slot1_dep_load0;
     // The slot1 slot issues when the queue head pair accepts.
     assign slot1_issue = slot1_issue_raw && !fq_stall_all && !if_id_flush;
+
+    // Diagnostic: why slot1 was held (slot1_issue_raw = 0 with a valid
+    // slot1).  Priority order matches the raw expression.
+    logic [63:0] s1_hold_s0complex, s1_hold_s1complex, s1_hold_s0branch;
+    logic [63:0] s1_hold_s1branch, s1_hold_mem, s1_hold_dep0, s1_hold_other;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            s1_hold_s0complex <= 64'd0;
+            s1_hold_s1complex <= 64'd0;
+            s1_hold_s0branch  <= 64'd0;
+            s1_hold_s1branch  <= 64'd0;
+            s1_hold_mem       <= 64'd0;
+            s1_hold_dep0      <= 64'd0;
+            s1_hold_other     <= 64'd0;
+        end else if (id_valid1 && !slot1_issue_raw) begin
+            if (slot0_complex)      s1_hold_s0complex <= s1_hold_s0complex + 64'd1;
+            else if (slot1_complex) s1_hold_s1complex <= s1_hold_s1complex + 64'd1;
+            else if (slot0_branch)  s1_hold_s0branch  <= s1_hold_s0branch  + 64'd1;
+            else if (slot1_branch)  s1_hold_s1branch  <= s1_hold_s1branch  + 64'd1;
+            else if (slot0_mem && slot1_mem)
+                                    s1_hold_mem       <= s1_hold_mem       + 64'd1;
+            else if (slot1_dep_load0)
+                                    s1_hold_dep0      <= s1_hold_dep0      + 64'd1;
+            else                    s1_hold_other     <= s1_hold_other     + 64'd1;
+        end
+    end
 
     // ----- JAL/BL redirect (slot0 only) -----
     assign id_jump_req = dec_is_jal_0 && id_valid0;
@@ -1150,6 +1182,10 @@ module core import la32_common::*; #(
             stall_dcache_hit_pipe <= 64'd0;
             stall_icache_hit_pipe <= 64'd0;
             stall_other           <= 64'd0;
+            stall_other_fetch     <= 64'd0;
+            stall_other_single    <= 64'd0;
+            stall_other_dual      <= 64'd0;
+            stall_other_noissue   <= 64'd0;
         end else if (!(mem_wb0_out.ctrl.valid || mem_wb1_out.ctrl.valid)) begin
             if (dcache_in_refill)
                 stall_dcache_refill <= stall_dcache_refill + 64'd1;
@@ -1164,8 +1200,21 @@ module core import la32_common::*; #(
                 stall_dcache_hit_pipe <= stall_dcache_hit_pipe + 64'd1;
             else if (!iresp.data_ok)
                 stall_icache_hit_pipe <= stall_icache_hit_pipe + 64'd1;
-            else
+            else begin
+                // Other-bubble breakdown: the fetch queue empty (fetch not
+                // supplying), single issue (slot1 held by a constraint),
+                // dual issue yet nothing reaches WB (pipeline fill after a
+                // flush), or a non-empty queue that does not advance.
                 stall_other <= stall_other + 64'd1;
+                if (!(fq_valid[0] || fq_valid[1]))
+                    stall_other_fetch <= stall_other_fetch + 64'd1;
+                else if (c0 && !c1)
+                    stall_other_single <= stall_other_single + 64'd1;
+                else if (c0 && c1)
+                    stall_other_dual <= stall_other_dual + 64'd1;
+                else
+                    stall_other_noissue <= stall_other_noissue + 64'd1;
+            end
         end
     end
 
@@ -1274,7 +1323,18 @@ module core import la32_common::*; #(
         .stall_branch_flush(stall_branch_flush),
         .stall_dcache_hit_pipe(stall_dcache_hit_pipe),
         .stall_icache_hit_pipe(stall_icache_hit_pipe),
-        .stall_other(stall_other)
+        .stall_other(stall_other),
+        .stall_other_fetch(stall_other_fetch),
+        .stall_other_single(stall_other_single),
+        .stall_other_dual(stall_other_dual),
+        .stall_other_noissue(stall_other_noissue),
+        .s1_hold_s0complex(s1_hold_s0complex),
+        .s1_hold_s1complex(s1_hold_s1complex),
+        .s1_hold_s0branch(s1_hold_s0branch),
+        .s1_hold_s1branch(s1_hold_s1branch),
+        .s1_hold_mem(s1_hold_mem),
+        .s1_hold_dep0(s1_hold_dep0),
+        .s1_hold_other(s1_hold_other)
     );
 `endif
 

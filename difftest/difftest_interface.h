@@ -85,6 +85,17 @@ struct difftest_stall_state_t {
     uint64_t stall_dcache_hit_pipe;
     uint64_t stall_icache_hit_pipe;
     uint64_t stall_other;
+    uint64_t stall_other_fetch;
+    uint64_t stall_other_single;
+    uint64_t stall_other_dual;
+    uint64_t stall_other_noissue;
+    uint64_t s1_hold_s0complex;
+    uint64_t s1_hold_s1complex;
+    uint64_t s1_hold_s0branch;
+    uint64_t s1_hold_s1branch;
+    uint64_t s1_hold_mem;
+    uint64_t s1_hold_dep0;
+    uint64_t s1_hold_other;
 };
 
 uint32_t* difftest_state_buf();

@@ -430,6 +430,13 @@ static void display_stall_metrics(uint64_t ticks) {
         fprintf(stdout, "[difftest] Stall: Other=%lu (%.2f%%)\n",
                 ss->stall_other,
                 (double)ss->stall_other * pct_total);
+        fprintf(stdout, "[difftest]   Other: fetch-empty=%lu single-issue=%lu dual-fill=%lu no-advance=%lu\n",
+                ss->stall_other_fetch, ss->stall_other_single,
+                ss->stall_other_dual, ss->stall_other_noissue);
+        fprintf(stdout, "[difftest]   S1-hold: s0complex=%lu s1complex=%lu s0branch=%lu s1branch=%lu mem=%lu dep-load0=%lu other=%lu\n",
+                ss->s1_hold_s0complex, ss->s1_hold_s1complex,
+                ss->s1_hold_s0branch, ss->s1_hold_s1branch,
+                ss->s1_hold_mem, ss->s1_hold_dep0, ss->s1_hold_other);
 
         if (total_stalls > 0) {
             fprintf(stdout, "[difftest] Stall composition (%% of stall cycles):\n");
