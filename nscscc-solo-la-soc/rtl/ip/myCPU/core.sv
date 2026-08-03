@@ -258,9 +258,12 @@ module core import la32_common::*; #(
     regfile rf_unit (
         .clk,
         .ra1(id_ex_out.data.rs1), .ra2(id_ex_out.data.rs2),
+        .ra3(5'd0),               .ra4(5'd0),
         .rd1(rf_rd1), .rd2(rf_rd2),
-        .wa(mem_wb_out.data.rd), .wd(wb_final_res),
-        .wen(mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid),
+        .rd3(), .rd4(),
+        .wa1(mem_wb_out.data.rd), .wd1(wb_final_res),
+        .wen1(mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid),
+        .wa2(5'd0), .wd2(32'd0), .wen2(1'b0),
         .gpr_dbg(gpr_state)
     );
 
