@@ -314,25 +314,65 @@ module axi_sram_direct #(
     end
 
     always_comb begin
-        base_ram_addr = ram_addr_out;
-        base_ram_be_n = ram_be_out;
-        base_ram_ce_n = ram_ce_out;
-        base_ram_oe_n = ram_oe_out;
-        base_ram_we_n = ram_we_out;
-        ext_ram_addr  = ram_addr_out;
-        ext_ram_be_n  = ram_be_out;
-        ext_ram_ce_n  = ram_ce_out;
-        ext_ram_oe_n  = ram_oe_out;
-        ext_ram_we_n  = ram_we_out;
-        if (bank_out) begin
+        base_ram_addr = ram_addr_out_r;
+        base_ram_be_n = ram_be_out_r;
+        base_ram_ce_n = ram_ce_out_r;
+        base_ram_oe_n = ram_oe_out_r;
+        base_ram_we_n = ram_we_out_r;
+        ext_ram_addr  = ram_addr_out_r;
+        ext_ram_be_n  = ram_be_out_r;
+        ext_ram_ce_n  = ram_ce_out_r;
+        ext_ram_oe_n  = ram_oe_out_r;
+        ext_ram_we_n  = ram_we_out_r;
+        if (bank_out_r) begin
             base_ram_ce_n = 1'b1;
         end else begin
             ext_ram_ce_n = 1'b1;
         end
     end
 
-    assign base_ram_data = (bank_out == 1'b0 && ram_write_active) ? ram_wdata_out : 32'hz;
-    assign ext_ram_data  = (bank_out == 1'b1 && ram_write_active) ? ram_wdata_out : 32'hz;
+    assign base_ram_data = (bank_out_r == 1'b0 && ram_write_active_r) ? ram_wdata_out_r : 32'hz;
+    assign ext_ram_data  = (bank_out_r == 1'b1 && ram_write_active_r) ? ram_wdata_out_r : 32'hz;
+
+    // ==================== Registered pin drive ====================
+    // The SRAM pins are captured from the combo drive muxes at every edge
+    // so they switch deterministically at the clock edge instead of
+    // tracking the request/drain combinational logic (the write-buffer
+    // FIFO read mux and the forwarding search make the raw drive path too
+    // deep for 100MHz: ~19 logic levels to the OBUFT).  The pins are
+    // stable for a full cycle before the SRAM's tAA/tWP measurement:
+    //   read  : address at pins from cycle 1, sampled at rd_cnt==2 — the
+    //           data capture edge is unchanged, the 2-cycle access holds
+    //   write : address/data at pins from cycle 1 (setup), WE pulses in
+    //           cycle 2, hold in cycle 3 — the background drain just
+    //           completes one cycle later, bvalid already fired at accept
+    logic [19:0] ram_addr_out_r;
+    logic [3:0]  ram_be_out_r;
+    logic        ram_ce_out_r, ram_oe_out_r, ram_we_out_r;
+    logic [31:0] ram_wdata_out_r;
+    logic        ram_write_active_r;
+    logic        bank_out_r;
+    always_ff @(posedge aclk) begin
+        if (!aresetn) begin
+            ram_addr_out_r     <= 20'd0;
+            ram_be_out_r       <= 4'b0000;
+            ram_ce_out_r       <= 1'b1;
+            ram_oe_out_r       <= 1'b1;
+            ram_we_out_r       <= 1'b1;
+            ram_wdata_out_r    <= 32'd0;
+            ram_write_active_r <= 1'b0;
+            bank_out_r         <= 1'b0;
+        end else begin
+            ram_addr_out_r     <= ram_addr_out;
+            ram_be_out_r       <= ram_be_out;
+            ram_ce_out_r       <= ram_ce_out;
+            ram_oe_out_r       <= ram_oe_out;
+            ram_we_out_r       <= ram_we_out;
+            ram_wdata_out_r    <= ram_wdata_out;
+            ram_write_active_r <= ram_write_active;
+            bank_out_r         <= bank_out;
+        end
+    end
 
     // ==================== Sequential logic ====================
     always_ff @(posedge aclk) begin
