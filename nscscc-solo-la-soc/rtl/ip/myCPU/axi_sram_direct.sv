@@ -2,14 +2,24 @@
 
 // axi_sram_direct — bypass the AXI CDC / crossbar / axi2sram chain for the
 // async SRAM range (0x1c000000-0x1c7fffff), driving the BaseRAM/ExtRAM pins
-// directly from the CPU clock domain with a fixed 2-cycle access (first word
-// 2 cycles, back-to-back burst words 2 cycles each, no artificial latency).
-// All other addresses (UART / confreg MMIO) are forwarded unchanged to the
-// existing AXI CDC + crossbar path on the sys_clk side.
+// directly from the CPU clock domain.  All other addresses (UART / confreg
+// MMIO) are forwarded unchanged to the existing AXI CDC + crossbar path.
 //
-// The design assumes serialized transactions (one at a time): the caches
-// issue at most one read or write burst at any moment.
-module axi_sram_direct (
+// Write buffer: stores are accepted into a small FIFO (b fires on the
+// accept, so the LSU retires in ~1 cycle) and drained to the async SRAM in
+// the background with the 3-cycle write (address/data setup, WE pulse,
+// hold — the real IS61WV102416 latches the address at the WE falling edge,
+// zero setup corrupts write addresses on the board).  Loads are forwarded
+// from the FIFO (newest store per byte wins): a load fully covered by
+// pending stores completes in 1 cycle without touching the SRAM; a
+// partially covered load reads the SRAM and merges the buffered bytes.
+//
+// Transactions are serialized by the arbiter (one read or write at a
+// time); the LSU issues single-beat stores and loads only (no AXI write
+// bursts in the no-dcache configuration).
+module axi_sram_direct #(
+    parameter int WB_DEPTH = 8
+) (
     input  logic       aclk,
     input  logic       aresetn,
 
@@ -113,6 +123,22 @@ module axi_sram_direct (
     wire ar_sram = is_sram(araddr);
     wire aw_sram = is_sram(awaddr);
 
+    // ==================== Write buffer FIFO ====================
+    localparam int WB_BITS = $clog2(WB_DEPTH);
+    typedef struct packed {
+        logic        valid;
+        logic [31:0] addr;
+        logic [31:0] data;
+        logic [3:0]  be;
+    } wb_entry_t;
+    wb_entry_t          wb_q [WB_DEPTH];
+    logic [WB_BITS-1:0] wb_head;        // oldest (drain side)
+    logic [WB_BITS-1:0] wb_tail;        // next free (accept side)
+    logic [WB_BITS:0]   wb_count;
+
+    wire wb_full  = (wb_count == WB_DEPTH[WB_BITS:0]);
+    wire wb_empty = (wb_count == 0);
+
     // ==================== In-flight state ====================
     logic        r_mmio;                 // MMIO read accepted, awaiting rlast
     logic        w_mmio;                 // MMIO write accepted, awaiting b
@@ -120,31 +146,68 @@ module axi_sram_direct (
     logic [7:0]  r_rem;
     logic [3:0]  r_id;
     logic        r_bank;
-    logic [1:0]  rd_cnt;                 // 0 idle / 1 hold / 2 respond
-    logic [31:0] w_addr;
+    logic [1:0]  rd_cnt;                 // 0 idle / 1 forward / 2 SRAM respond
+    logic [31:0] w_addr;                 // drain context (head entry)
     logic [31:0] w_data;
     logic [3:0]  w_strb;
-    logic [7:0]  w_rem;
-    logic [3:0]  w_id;
     logic        w_bank;
-    logic [1:0]  wr_cnt;                 // 0 idle / 1 pins / 2 boundary
+    logic [1:0]  wr_cnt;                 // 0 idle / 1 setup / 2 pulse / 3 hold
+    logic        wb_push_b;              // b for the buffered store
+    logic [3:0]  w_id;
 
-    wire idle_ar = (rd_cnt == 2'd0) && (wr_cnt == 2'd0) && !r_mmio && !w_mmio;
-    // The arbiter serializes transactions; aw must only yield to an ar
-    // accepted in the SAME cycle (the fetch presents arvalid nearly every
-    // cycle, so gating on !arvalid would starve writes forever).
-    wire ar_take = idle_ar && arvalid && (ar_sram || mmio_arready);
+    wire idle_ar = (rd_cnt == 2'd0) && !r_mmio && !w_mmio;
+    wire ar_take = arvalid && arready;
+
+    // ==================== Read forwarding from the write buffer ==========
+    // Per-byte coverage and the newest-store data for a read address.
+    // The search walks the FIFO from the newest entry (tail-1) down to the
+    // oldest (head); a newer store to the same byte wins.
+    logic [3:0]  wb_cover_ar, wb_cover_r;
+    logic [31:0] wb_fwd_ar,  wb_fwd_r;
+    wire wb_full_ar = (wb_cover_ar == 4'hf);
+    wire wb_full_r  = (wb_cover_r  == 4'hf);
+    wire [31:0] wb_cover_r_byte = {{8{wb_cover_r[3]}}, {8{wb_cover_r[2]}},
+                                   {8{wb_cover_r[1]}}, {8{wb_cover_r[0]}}};
+
+    always_comb begin
+        wb_cover_ar = 4'd0;
+        wb_fwd_ar   = 32'd0;
+        wb_cover_r  = 4'd0;
+        wb_fwd_r    = 32'd0;
+        for (int i = 0; i < WB_DEPTH; i++) begin
+            automatic logic [WB_BITS-1:0] idx;
+            idx = wb_tail - 1 - i[WB_BITS-1:0];
+            if (i[WB_BITS:0] < wb_count && wb_q[idx].valid) begin
+                // ---- AR address ----
+                if (wb_q[idx].addr[31:2] == araddr[31:2]) begin
+                    if (wb_q[idx].be[0] && !wb_cover_ar[0]) begin wb_cover_ar[0] = 1'b1; wb_fwd_ar[7:0] = wb_q[idx].data[7:0]; end
+                    if (wb_q[idx].be[1] && !wb_cover_ar[1]) begin wb_cover_ar[1] = 1'b1; wb_fwd_ar[15:8] = wb_q[idx].data[15:8]; end
+                    if (wb_q[idx].be[2] && !wb_cover_ar[2]) begin wb_cover_ar[2] = 1'b1; wb_fwd_ar[23:16] = wb_q[idx].data[23:16]; end
+                    if (wb_q[idx].be[3] && !wb_cover_ar[3]) begin wb_cover_ar[3] = 1'b1; wb_fwd_ar[31:24] = wb_q[idx].data[31:24]; end
+                end
+                // ---- registered read address ----
+                if (wb_q[idx].addr[31:2] == r_addr[31:2]) begin
+                    if (wb_q[idx].be[0] && !wb_cover_r[0]) begin wb_cover_r[0] = 1'b1; wb_fwd_r[7:0] = wb_q[idx].data[7:0]; end
+                    if (wb_q[idx].be[1] && !wb_cover_r[1]) begin wb_cover_r[1] = 1'b1; wb_fwd_r[15:8] = wb_q[idx].data[15:8]; end
+                    if (wb_q[idx].be[2] && !wb_cover_r[2]) begin wb_cover_r[2] = 1'b1; wb_fwd_r[23:16] = wb_q[idx].data[23:16]; end
+                    if (wb_q[idx].be[3] && !wb_cover_r[3]) begin wb_cover_r[3] = 1'b1; wb_fwd_r[31:24] = wb_q[idx].data[31:24]; end
+                end
+            end
+        end
+    end
 
     // ==================== Accept handshakes ====================
     // The arbiter's write FSM asserts wvalid combinationally INSIDE its
     // "if (awready)" branch, so awready must not depend on wvalid (a
     // circular dependency would deadlock the first beat forever).
-    assign arready = idle_ar ? (ar_sram || mmio_arready) : 1'b0;
+    // A fully-forwarded read needs no SRAM pins and is accepted even while
+    // the drain owns them; a partial/SRAM read yields to the drain.
+    assign arready = idle_ar
+        ? (ar_sram ? (wb_full_ar || (wr_cnt == 2'd0)) : mmio_arready) : 1'b0;
     assign awready = (idle_ar && !ar_take)
-                     ? (aw_sram || (mmio_awready && mmio_wready)) : 1'b0;
+                     ? (aw_sram ? !wb_full : (mmio_awready && mmio_wready)) : 1'b0;
     assign wready  = (idle_ar && !ar_take)
-                     ? (aw_sram || (mmio_awready && mmio_wready))
-                     : ((wr_cnt == 2'd3) && (w_rem != 8'd0) && !w_mmio);
+                     ? (aw_sram ? !wb_full : (mmio_awready && mmio_wready)) : 1'b0;
 
     wire ar_go = arvalid && arready;
     wire aw_go = awvalid && wvalid && awready;
@@ -178,14 +241,21 @@ module axi_sram_direct (
     assign mmio_bready  = bready;
 
     // ==================== Response channels ====================
-    wire sram_rresp = (rd_cnt == 2'd2) && !r_mmio;
-    wire sram_bresp = (wr_cnt == 2'd3) && (w_rem == 8'd0) && !w_mmio;
+    // Forwarded read responds at rd_cnt==1 (no SRAM access); a partial or
+    // non-forwarded read responds at rd_cnt==2 with the SRAM data merged
+    // with the buffered bytes.
+    wire sram_fwd_resp = (rd_cnt == 2'd1) && wb_full_r && !r_mmio;
+    wire sram_rd_resp  = (rd_cnt == 2'd2) && !r_mmio;
+    wire sram_bresp    = wb_push_b && !w_mmio;
 
-    assign rvalid = r_mmio ? mmio_rvalid : sram_rresp;
-    assign rdata  = r_mmio ? mmio_rdata  : (r_bank ? ext_ram_data : base_ram_data);
+    assign rvalid = r_mmio ? mmio_rvalid : (sram_fwd_resp || sram_rd_resp);
     assign rlast  = r_mmio ? mmio_rlast  : (r_rem == 8'd0);
     assign rid    = r_mmio ? mmio_rid[3:0] : r_id;
     assign rresp  = r_mmio ? mmio_rresp  : 2'b00;
+    assign rdata  = r_mmio ? mmio_rdata
+                 : (sram_fwd_resp ? wb_fwd_r
+                    : ((r_bank ? ext_ram_data : base_ram_data) & ~wb_cover_r_byte)
+                      | (wb_fwd_r & wb_cover_r_byte));
 
     assign bvalid = w_mmio ? mmio_bvalid : sram_bresp;
     assign bid    = w_mmio ? mmio_bid[3:0] : w_id;
@@ -208,7 +278,11 @@ module axi_sram_direct (
         ram_wdata_out   = 32'd0;
         ram_write_active = 1'b0;
         bank_out        = 1'b0;
-        if (rd_cnt != 2'd0) begin
+        if (rd_cnt != 2'd0 && !(rd_cnt == 2'd1 && wb_full_r)) begin
+            // SRAM read in flight (a fully-forwarded read needs no pins and
+            // must NOT override the drain's in-progress write: asserting
+            // the read address/OE mid-write glitches the WE pulse and
+            // corrupts the SRAM write on the board).
             bank_out     = r_bank;
             ram_addr_out = r_addr[21:2];
             ram_be_out   = 4'b0000;
@@ -216,14 +290,10 @@ module axi_sram_direct (
             ram_oe_out   = 1'b0;
             ram_we_out   = 1'b1;
         end else if (wr_cnt != 2'd0) begin
-            // 3-cycle write: cycle 1 = address/data setup (WE high),
-            // cycle 2 = write pulse (WE low), cycle 3 = hold (WE high).
-            // The real async SRAM latches the address/data at the WE
-            // falling edge; asserting WE in the same cycle as the address
-            // (zero tAS/tSD setup) makes the latch capture a settling or
-            // stale address on the board — writes land at wrong addresses
-            // (sim model does not model tAS/tSD, so only on-board shows
-            // the corruption).
+            // Drain: 3-cycle write (setup / pulse / hold).  The real async
+            // SRAM latches the address/data at the WE falling edge; WE must
+            // not assert in the same cycle as the address (zero tAS/tSD
+            // corrupts write addresses on the board).
             bank_out        = w_bank;
             ram_addr_out    = w_addr[21:2];
             ram_be_out      = ~w_strb;
@@ -232,24 +302,14 @@ module axi_sram_direct (
             ram_we_out      = (wr_cnt == 2'd2) ? 1'b0 : 1'b1;
             ram_wdata_out   = w_data;
             ram_write_active = 1'b1;
-        end else if (arvalid && ar_sram && idle_ar) begin
+        end else if (arvalid && ar_sram && idle_ar && !wb_full_ar && (wr_cnt == 2'd0)) begin
+            // SRAM read accept: drive the pins
             bank_out        = araddr[22];
             ram_addr_out    = araddr[21:2];
             ram_be_out      = 4'b0000;
             ram_ce_out      = 1'b0;
             ram_oe_out      = 1'b0;
             ram_we_out      = 1'b1;
-        end else if (awvalid && aw_sram && idle_ar && !ar_take) begin
-            // Write accept: address/data driven now, WE stays high for the
-            // setup cycle (asserted in the wr_cnt==1 cycle).
-            bank_out        = awaddr[22];
-            ram_addr_out    = awaddr[21:2];
-            ram_be_out      = ~wstrb;
-            ram_ce_out      = 1'b0;
-            ram_oe_out      = 1'b1;
-            ram_we_out      = 1'b1;
-            ram_wdata_out   = wdata;
-            ram_write_active = 1'b1;
         end
     end
 
@@ -277,12 +337,17 @@ module axi_sram_direct (
     // ==================== Sequential logic ====================
     always_ff @(posedge aclk) begin
         if (!aresetn) begin
-            r_mmio <= 1'b0;
-            w_mmio <= 1'b0;
-            rd_cnt <= 2'd0;
-            wr_cnt <= 2'd0;
-            r_rem  <= 8'd0;
-            w_rem  <= 8'd0;
+            r_mmio    <= 1'b0;
+            w_mmio    <= 1'b0;
+            rd_cnt    <= 2'd0;
+            wr_cnt    <= 2'd0;
+            r_rem     <= 8'd0;
+            wb_head   <= '0;
+            wb_tail   <= '0;
+            wb_count  <= '0;
+            wb_push_b <= 1'b0;
+            for (int i = 0; i < WB_DEPTH; i++)
+                wb_q[i] <= '0;
         end else begin
             // ---- MMIO in-flight tracking ----
             if (ar_go && !ar_sram) begin
@@ -298,7 +363,54 @@ module axi_sram_direct (
                 w_mmio <= 1'b0;
             end
 
-            // ---- SRAM read FSM ----
+            // ---- Write buffer: accept + push (b fires on the accept) ----
+            if (aw_go && aw_sram) begin
+                wb_q[wb_tail].addr  <= awaddr;
+                wb_q[wb_tail].data  <= wdata;
+                wb_q[wb_tail].be    <= wstrb;
+                wb_q[wb_tail].valid <= 1'b1;
+                wb_tail  <= wb_tail + 1'b1;
+                // The push can coincide with the drain's dequeue (a store
+                // accepted while the drain completes the last entry): the
+                // count must net both, or the pushed entry is excluded from
+                // the count and silently never drained.
+                wb_count <= wb_count + 1'b1
+                            - ((wr_cnt == 2'd3) ? 1'b1 : 1'b0);
+                wb_push_b <= 1'b1;
+                w_id     <= awid;
+            end else if (wr_cnt == 2'd3) begin
+                wb_count <= wb_count - 1'b1;
+            end
+            if (wb_push_b && bready) begin
+                wb_push_b <= 1'b0;
+            end
+
+            // ---- Drain: dequeue the head into the 3-cycle write ----
+            // The drain must not start in the same cycle a read is
+            // accepted: the read's arready sees wr_cnt==0 (drain not yet
+            // started) while the drain's start sees rd_cnt==0 (read not
+            // yet accepted) — both start together and the read's pins
+            // override the write's WE pulse, silently dropping the write.
+            if (wr_cnt == 2'd0 && !wb_empty && rd_cnt == 2'd0 && !ar_go
+                && !r_mmio && !w_mmio) begin
+                wr_cnt <= 2'd1;
+                w_addr <= wb_q[wb_head].addr;
+                w_data <= wb_q[wb_head].data;
+                w_strb <= wb_q[wb_head].be;
+                w_bank <= wb_q[wb_head].addr[22];
+            end else if (wr_cnt == 2'd1) begin
+                wr_cnt <= 2'd2;
+            end else if (wr_cnt == 2'd2) begin
+                wr_cnt <= 2'd3;
+            end else if (wr_cnt == 2'd3) begin
+                // count update is handled together with the push (above):
+                // a push coinciding with this dequeue must net both.
+                wb_q[wb_head].valid <= 1'b0;
+                wb_head  <= wb_head + 1'b1;
+                wr_cnt   <= 2'd0;
+            end
+
+            // ---- SRAM read FSM (with the write-buffer forwarding) ----
             if (ar_go && ar_sram) begin
                 rd_cnt <= 2'd1;
                 r_addr <= araddr;
@@ -306,7 +418,19 @@ module axi_sram_direct (
                 r_id   <= arid;
                 r_bank <= araddr[22];
             end else if (rd_cnt == 2'd1) begin
-                rd_cnt <= 2'd2;
+                if (wb_full_r) begin
+                    // fully forwarded: respond now, no SRAM access
+                    if (rready) begin
+                        if (r_rem == 8'd0) begin
+                            rd_cnt <= 2'd0;
+                        end else begin
+                            r_addr <= r_addr + 32'd4;
+                            r_rem  <= r_rem - 8'd1;
+                        end
+                    end
+                end else begin
+                    rd_cnt <= 2'd2;
+                end
             end else if (rd_cnt == 2'd2) begin
                 if (rready) begin
                     if (r_rem == 8'd0) begin
@@ -316,33 +440,6 @@ module axi_sram_direct (
                         r_addr <= r_addr + 32'd4;
                         r_rem  <= r_rem - 8'd1;
                     end
-                end
-            end
-
-            // ---- SRAM write FSM (3-cycle: setup / pulse / hold) ----
-            if (aw_go && aw_sram) begin
-                wr_cnt <= 2'd1;
-                w_addr <= awaddr;
-                w_data <= wdata;
-                w_strb <= wstrb;
-                w_rem  <= awlen;
-                w_id   <= awid;
-                w_bank <= awaddr[22];
-            end else if (wr_cnt == 2'd1) begin
-                wr_cnt <= 2'd2;
-            end else if (wr_cnt == 2'd2) begin
-                wr_cnt <= 2'd3;
-            end else if (wr_cnt == 2'd3) begin
-                if (w_rem == 8'd0) begin
-                    if (bready) begin
-                        wr_cnt <= 2'd0;
-                    end
-                end else if (wvalid) begin
-                    wr_cnt <= 2'd1;
-                    w_addr <= w_addr + 32'd4;
-                    w_data <= wdata;
-                    w_strb <= wstrb;
-                    w_rem  <= w_rem - 8'd1;
                 end
             end
         end
