@@ -28,6 +28,22 @@ The hardware top is `rtl/soc_top.v`; shared buses, UART, RAM wrappers, PLL, and 
 
 Follow existing lowercase underscore-separated Verilog names and preserve local indentation. Makefile recipes require tabs. Use `apply_patch` for manual edits. Keep CPU-specific implementation inside `rtl/ip/myCPU/`; only the `core_top` interface is an SoC contract. Never commit Vivado projects, `.Xil`, generated IP output products, simulator object directories, waveforms, binaries, or MIF files.
 
+## Timing Optimization Forbidden Practices (HARD RULE)
+
+These were all actually tried during the 100MHz push and each one is forbidden because of its root cause, not just by rule:
+
+1. **Non-default synthesis/implementation strategies (Performance_Explore, Flow_PerfOptimized_high, ...)** — REASON: CI always runs the default strategy (`run_vivado/flow/` is pre-receive protected); PerfExplore is a randomized exploration whose results are not reproducible. A "pass" under a strategy is a mirage that CI can never reproduce.
+2. **Changing timing-constraint semantics to move the WNS (e.g. re-homing I/O delays to a different clock domain, fake generated clocks, relaxing critical-path constraints)** — REASON: `run_vivado/constraints/soc.xdc` is the exact constraint CI copies and checks; editing it moves the goalposts instead of meeting them, and the board-level SRAM timing still must really hold.
+3. **Backgrounding Vivado and polling for completion (nohup, `pgrep -f vivado`, while loops)** — REASON: `pgrep -f` self-matches the polling shell and never exits; decisions get made on a hallucinated "still running". Run foreground-blocking only.
+4. **Sourcing a tcl script that ends with `exit`** — REASON: `source` is inlined, so the `exit` kills the whole session after the first step — a fake success (log looks complete, only step 1 ran). Verify actual results before proceeding.
+5. **Reading/writing `.xci` directly (or committing Vivado's silent `upgrade_ip` rewrites of it)** — REASON: the xci is the tracked IP configuration the CI build starts from; hand-editing bypasses Vivado's legality checks, and tool-format rewrites are not design intent. Restore with `git checkout` and inspect after any Vivado run.
+6. **Unconfirmed git operations (git reset --hard moving HEAD, deleting workspace files incl. untracked experiment artifacts)** — REASON: both are irreversible; branch history and workspace are shared assets.
+7. **Putting experiment scripts inside `run_vivado/flow/`** — REASON: pre-receive hook hard-rejects any change there; the push fails and the branch is polluted.
+8. **Merging multiple distinct changes into one commit** — REASON: a regression cannot be bisected to the offending change.
+9. **Silently paying IPC cost for timing (e.g. unconditionally registering the EX redirect)** — REASON: not sacrificing IPC is the core goal; a silent sacrifice violates it. Must be announced and justified first.
+
+The only acceptable levers are: RTL changes, XDC placement/timing constraints, default-strategy WNS, and IPC-preserving restructuring — verified by the 5-step loop (difftest IPC baseline → fix → full difftest + IPC proof → synthesis margin WNS>2ns → implementation WNS≥0 with 40-min fuse).
+
 ## Cache Storage Instantiation (HARD RULE)
 
 Cache storage (and any other inferable RAM) MUST be instantiated as `ram_sdpram` instances, one per read port, never as in-module arrays with `ram_style` attributes. Vivado 2019.2 does not infer BRAM/LUTRAM macros from multi-dimensional in-module arrays or from arrays with multiple/registered-complex read ports — it silently expands them into LUT logic (~24k Unisim elements in the two-level cache), and implementation routing never converges. Concretely:
