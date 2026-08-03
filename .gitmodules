@@ -1,3 +1,6 @@
 [submodule "rvcpu"]
 	path = rvcpu
 	url = git@github.com:Tan-YiFan/rvcpu.git
+[submodule "synapse-x4"]
+	url = https://github.com/KyleMao2023/LoongArch.git
+	path = synapse-x4
