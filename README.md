@@ -46,22 +46,23 @@
 
 ### 架构
 
-- **流水线**：五级经典流水线 (IF → ID → EX → MEM → WB)，含数据转发与流水线冒险控制
+- **流水线**：五级双发射顺序流水线（IF2/ID2/EX2/MEM2/WB2，2026-08-03 起），深度 3 取指队列，4R2W 寄存器堆，双 EX（EX0 全功能 / EX1 纯 ALU），共享单 LSU，含数据转发与流水线冒险控制
 - **寄存器文件**：32 个 32 位通用寄存器 (r0 恒为 0)，含 write-bypass
 - **总线接口**：AXI4 Master（通过 `core_top` 封装 SoC 接口）
 - **特权级**：支持 DMW 直接映射地址翻译 (DA/PG 模式切换)，CRMD/DMW0/DMW1 可编程
 
-### Cache 系统
+### Cache 与数据访存
 
 - **icache**：2 路组相联、256 组、16 字节行、8KB、只读、PLRU、关键字优先；**0-cycle 命中**（标签 LUTRAM + 数据组合读取，`addr_ok`+`data_ok`+数据同拍响应，fetch 延迟 2 拍 → 0 拍）
-- **dcache（两级，2026-08-02 起）**：`l1dcache`（8KB、256 组 × 2 路 × 16B、写回+写分配、PLRU、**0-cycle 命中**：标签 LUTRAM 组合比较，请求拍内返回数据；miss 直通 L2）+ `l2dcache`（1MB、16384 组 × 4 路 × 16B、全 BRAM、命中 2 级流水 REQ/RESP）；L1 按字填充/写回，L2 对内存 4 字突发 refill/写回（历史 8B 行 4KB 单级 dcache 已移除）
-- **非阻塞（hit-under-miss，单 MSHR）**：请求拍内组合判定命中/缺失，store miss **当拍接受**（数据在 refill 写入阶段合并进新行，流水线在 refill 期间继续运行）；refill 期间命中其他行（load 恒可、store 在写口空闲时）同拍响应；**读回写**（store 命中正在 refill 的行）当拍接受并合并进 refill 写（第二合并槽，后写者优先）；load miss 当拍 `addr_ok` 应答，数据经关键字转发返回。无法处理的二次 miss 等待当前 refill 完成（单 MSHR 上限）
-- **参数化**：dcache 支持 NR_SETS / NR_WAYS / NR_WORDS 三参数配置，组数/路数/行大小可独立调整（`core_top.sv` 的 `DCACHE_SETS/DCACHE_WAYS/DCACHE_WORDS`）。icache 同理。**CPUCFG.0x12 的缓存几何编码随参数化**（offset_bits/index_bits/max_way），NEMU 侧由 `scripts/build.mk` 的 `-DDCACHE_OFFSET_BITS/-DDCACHE_INDEX_BITS/-DDCACHE_MAX_WAY` 宏镜像——**换几何必须两侧同步，且 `rm -rf NEMU/build` 强制重编 NEMU**（make 不跟踪宏变化）。内核 FLUSH_DCACHE 按 CPUCFG 报告的几何遍历，几何不一致会导致收尾 dirty 行漏写回（2026-08-01 实测踩坑，见 DEVLOG）。
-- **CACOP**：支持 `cacop 0x00` (I$ 索引无效)、`cacop 0x01` (D$ 索引无效)、`cacop 0x09` (D$ 索引写回无效)
+- **数据访存（无 dcache，2026-08-04 起）**：LSU 直通 AXI 仲裁器 → `axi_sram_direct` 在 **cpu_clk 直驱异步 SRAM 引脚**（BaseRAM/ExtRAM），固定时序——读 2 拍（地址稳定后采样），写 3 拍（地址/数据建立 + WE 脉冲 + 保持；真 SRAM 在 WE 下降沿锁存地址，同拍驱动会导致写错位）。完全绕开原 AXI CDC / crossbar / axi2sram 链路（~16-20 拍）与人为延迟校准（EXTRA_LATENCY）
+- **写缓冲（8 项 FIFO，store→load 转发）**：store 接受即完成（LSU ~1 拍退休），后台 3 拍排空；load 按字节匹配 FIFO 中最新 store——全覆盖的 load 1 拍完成不碰 SRAM（RMW 模式最快路径），部分覆盖则 SRAM 读 + 合并
+- **MMIO（UART/confreg）**：地址不在 SRAM 范围（0x1c000000-0x1c7fffff）时经原 AXI CDC + crossbar 转发，不受影响
+- **CACOP**：仅 `cacop 0x00` (I$ 索引无效) 生效；`CPUCFG.0x10` bit2 = 0（无 D-cache），内核自动跳过 dcache 初始化与 FLUSH_DCACHE
 - **IBAR**：支持 hint=0 流水线冲刷
-- **Cacheability**：基于 CRMD/DMW 区分 cacheable/uncacheable，支持 auto 和 uncache 两种 kernel 构建
+- **Cacheability**：基于 CRMD/DMW 区分 cacheable/uncacheable，支持 auto 和 uncache 两种 kernel 构建（无 dcache 后 cacheable 仅用于 icache 判定）
 
-> ✅ **两级 cache（wip/2level-cache，2026-08-02 落地）**：8KB 0-cycle L1（LUTRAM tag 组合读，命中 0 拍）+ 1MB L2（直通式，L1 miss 逐字向 L2 refill/写回）。第三轮修复（L1 drain 跳字漏写、drain accept 被抢、fresh fill 残留 dirty 位、L2 幽灵 mem_req、存储改 `ram_sdpram` 实例化等）后**正确性全绿**：单元测试 13/13、difftest 6/6。IPC 对比 1MB 单级：**stream 0.1820→0.2469 (+35.7%)、matrix 0.5815→0.6324 (+8.8%)、cryptonight 0.3686→0.3594 (-2.5%)**、fibonacci 持平（0.1264）、simple 0.5961→0.5202、mixed 0.4962→0.4553。**教训修正：首轮「全面负优化」的结论在修复正确性 bug 后不再成立；直通式逐字通道的惩罚被 L1 命中收益覆盖后仍可正收益。真正的硬教训是 cache 存储必须 `ram_sdpram` 实例化**——模块内多维数组 + ram_style 属性不被 Vivado 2019.2 推断为 BRAM/LUTRAM 宏，展开成 ~24k Unisim 逻辑单元，impl 布线永不收敛（单级 1714 → 两级 25922）。详细数据见 [DEVLOG.md](DEVLOG.md)「2026-08-02（续三）」。
+> **历史**：2026-07-25 ~ 2026-08-02 的两级 dcache 方案（8KB 0-cycle L1 + 1MB BRAM L2，hit-under-miss、word-sector 填充等）已由直连 SRAM 取代并移除（`l1dcache.sv`/`l2dcache.sv` 保留在树中但未实例化）。直连方案下缓存命中优势（0-2 拍）被 2 拍直连追平，而 miss 的 L2 REQ/RESP + 换出写回机械开销成为净负担——cryptonight IPC 0.3854 → 0.7974（+107%），四测试合计周期约减半。详细记录见 [DEVLOG.md](DEVLOG.md)。
+
 
 ### 指令集覆盖
 
@@ -74,16 +75,16 @@
 | 访存 | `ld.b`, `ld.h`, `ld.w`, `ld.bu`, `ld.hu`, `st.b`, `st.h`, `st.w` |
 | 跳转/分支 | `b`, `bl`, `beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu`, `jirl` |
 | 系统/CSR | `csrrd`, `csrwr`, `csrxchg`, `cpucfg` |
-| Cache 维护 | `cacop 0x00/0x01/0x09`, `ibar` |
+| Cache 维护 | `cacop 0x00`（仅 I$；D$ 已无）、`ibar` |
 
 ### 模块清单 (`nscscc-solo-la-soc/rtl/ip/myCPU/`)
 
 | 文件 | 功能 |
 |------|------|
 | `common.sv` | LA32R 基础类型定义 |
-| `core.sv` | 五级流水线顶层，例化全部子模块 |
+| `core.sv` | 五级双发射流水线顶层，例化全部子模块 |
 | `pipeline_reg.sv` | 通用流水线寄存器 (stall/flush) |
-| `regfile.sv` | 32×32 位寄存器文件 (r0=0)，含 write-bypass |
+| `regfile.sv` | 4R2W 寄存器文件 (r0=0)，含 write-bypass |
 | `csr_regfile.sv` | 26 个 CSR 寄存器文件 + DMW 存储 |
 | `decode.sv` | 指令译码 |
 | `alu.sv` | 32 位 ALU |
@@ -92,15 +93,14 @@
 | `npc.sv` | 下一 PC 计算 |
 | `fetch_unit.sv` | 取指单元 |
 | `lsu.sv` | 访存单元 |
-| `l1dcache.sv` | 数据 L1 Cache（256 组 × 2 路 × 16B、8KB、0-cycle 命中、miss 直通 L2、按字填充/写回） |
-| `l2dcache.sv` | 数据 L2 Cache（16384 组 × 4 路 × 16B、1MB、全 BRAM、命中 2 级流水、内存 4 字突发） |
-| `ram_sdpram.sv` | 单读口 RAM 封装（READ_LATENCY 0/1，推断 LUTRAM/BRAM） |
+| `axi_sram_direct.sv` | 直连异步 SRAM 控制器：AXI 从端 + 8 项写缓冲 + store→load 转发 + 3 拍写/2 拍读 |
+| `ram_sdpram.sv` | 单读口 RAM 封装（READ_LATENCY 0/1，推断 LUTRAM/BRAM，icache 存储用） |
 | `icache.sv` | 指令 Cache（2 路组相联、8KB、只读） |
 | `hazard_unit.sv` | 流水线冒险控制 |
 | `axibus_arbiter.sv` | ibus/dbus AXI4 仲裁 |
-| `core_top.sv` | AXI Master 接口封装 |
+| `core_top.sv` | AXI Master 接口封装 + L1/L2 dcache 旁路（无 dcache） |
 
-> **⚠ 2026-08-02 两级状态**：master 为**两级 dcache（直通式）**：`l1dcache.sv`（8KB 0-cycle 命中叠层 + L1 miss 直通 L2 + 按字填充）+ `l2dcache.sv`（1MB、全 BRAM）。单元测试 **15/15**（`unittest/cache_hierarchy/`，60000 次伪随机 storm + 全量 flush walk 内存比对）、difftest **6/6**；L1 存储全部 `ram_sdpram` 实例化（synth BRAM 293.5 tiles / LUT 11284）；上板实测 **2045ms（较单级 2177ms -6.1%）**。`wip/burst-wholeline`（整行 burst 填充）已**存档**：storm 14/14 全绿，但相对两级直通 **difftest 全面无正收益**（matrix 0.5051 vs 0.6324 -20%、stream 0.2444 vs 0.2469 -1%、mixed 0.4452 vs 0.4553 -2%、simple/fib 持平），cryptonight 未过。详细记录见 [DEVLOG.md](DEVLOG.md)「2026-08-02（续二/续三/续六）」。
+> `l1dcache.sv` / `l2dcache.sv`（两级 dcache，2026-07-25 ~ 2026-08-02）保留在树中但**不再实例化**，由直连 SRAM + 写缓冲取代。历史记录见 [DEVLOG.md](DEVLOG.md)。
 
 ## 3. 硬件平台
 
@@ -121,24 +121,24 @@
 | 1 | 功能测试 | 斐波那契数列（裸机） | ✅ DIFF=1 通过 | N/A |
 | 2 | MATRIX | 矩阵乘加 (96×96, 64KB) | ✅ DIFF=1 通过 | ✅ 通过 |
 | 3 | STREAM | ~3 MiB 连续访存 | ✅ DIFF=1 通过 | ✅ 通过 |
-| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=1 通过 | ✅ Verilator 通过<br>⚠ FPGA 平台 50 分 |
+| 4 | CRYPTONIGHT | 2 MiB 内存访问 + 整数运算 | ✅ DIFF=1 通过 | ✅ Verilator 通过<br>⚠ 直连方案上板验证中 |
 | 5 | MIXED | 混合运算 | ✅ DIFF=1 通过 | ✅ 通过 |
-| fibonacci | 自修改代码 | UART 加载 + FLUSH_DCACHE + 执行 | ✅ DIFF=1 通过 | ✅ 通过 |
+| fibonacci | 自修改代码 | UART 加载 + 执行 | ✅ DIFF=1 通过 | ✅ 通过 |
 
-> 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过。
+> 阶段 1-5 + fibonacci 的 difftest 和数据比对均已全部通过（2026-08-04 直连 SRAM + 无 dcache 方案）。
 
-### 当前性能指标（Verilator difftest + FPGA 上板, 2026-08-02，**两级 dcache：8KB 0-cycle L1 + 1MB L2 直通式**）
+### 当前性能指标（Verilator difftest, 2026-08-04，**直连异步 SRAM + 无 dcache + 写缓冲**）
 
-| 测试 | 指令数 | difftest 周期 | difftest IPC | 上板实测 | 真实 IPC（上板） |
+| 测试 | 指令数 | difftest 周期 | difftest IPC | 50MHz 折算 | 旧基线（AXI+两级cache）IPC |
 |------|--------|--------|----------------|:---:|:---:|
-| simple | 803,959 | 1.55M | 0.5202 | — | — |
-| fibonacci | 98,477 | 0.78M | 0.1264 | — | — |
-| stream | 4,736,123 | 19.18M | 0.2469 | **419 ms** | **0.2261** |
-| matrix | 6,426,589 | 10.16M | **0.6324** | **190 ms** | **0.6765** |
-| mixed | 1,111,151 | 2.44M | 0.4553 | **37 ms** | **0.6006** |
-| cryptonight | 23,872,643 | 66.43M | 0.3594 | **1399 ms** | **0.3413** |
+| simple | ~804K | 1.38M | 0.5841 | 27.6 ms | 0.5818 |
+| fibonacci | 111,173 | 0.84M | 0.1328 | 16.7 ms | 0.1265 |
+| stream | 3,951,032 | 7.98M | 0.4951 | 159.6 ms | 0.2543 |
+| matrix | 5,641,498 | 12.60M | 0.4476 | 252.1 ms | 0.7179 |
+| mixed | 326,060 | 0.50M | 0.6503 | 10.1 ms | 0.5070 |
+| cryptonight | 23,087,552 | 28.96M | **0.7974** | 579.1 ms | 0.3854 |
 
-> 真实 IPC = 指令数 ÷ (上板耗时 × 50MHz)。两级 vs 单级 1MB：matrix **190ms vs 209ms**、stream **419ms vs 566ms**（L1 0-cycle 命中消除 1 拍命中惩罚）、cryptonight **1399ms vs 1367ms**、mixed **37ms vs 35ms**（后两者被 L1 容量 miss 逐字往返惩罚）——四测试合计 **2045ms vs 2177ms（-6.1%）**。difftest 与上板偏差源于 `EXTRA_LATENCY=7` 校准（按 8B 行标定，16B 行写回密集场景失真，mixed 偏差最大：difftest 0.4553 vs 真实 0.6006）。
+> 旧基线 = 原 AXI CDC 链路 + 两级 dcache（2026-08-03，上板四测试 1932ms）。直连 SRAM（2 拍读/3 拍写）+ 无 dcache + 写缓冲后：cryptonight +107%、stream +95%、mixed +28%、matrix -38%（其工作集原先吃缓存命中）——**四测试 difftest 周期合计约减半**。矩阵/流等指令数差异 = 内核 FLUSH_DCACHE walk（65,536 步 cacop）在无 dcache 时被正确跳过。difftest 已无人为延迟校准（EXTRA_LATENCY 移除），周期数即真实时序。**上板实测待验证**（CI `submit-nodcache-wb`）。
 
 ### 分支预测准确率（BTFNT, Verilator 仿真, 2026-08-02）
 
@@ -153,7 +153,7 @@
 
 > BTFNT (Backward Taken, Forward Not Taken) 静态预测器，独立模块 `branch_predictor.sv`。`DifftestBranchState` 通过 DPI-C 逐周期上报 `total_branches`（仅条件分支 BEQ/BNE/BLT/BGE/BLTU/BGEU）和 `mispredictions`（预测方向 ≠ 实际方向）。
 >
-> **BTFNT ID 级重定向已实现**：预测 taken 时在 ID 阶段通过 `bp_do_jump` 重定向 fetch，npc 在 EX 阶段抑制冗余 flush 并处理 misprediction 恢复。IPC 提升见上方性能表。
+> **BTFNT ID 级重定向已实现**：预测 taken 时在 ID 阶段通过 `bp_do_jump` 重定向 fetch，npc 在 EX 阶段抑制冗余 flush 并处理 misprediction 恢复。
 
 ## 5. 开发环境搭建
 
@@ -228,20 +228,20 @@ FORCE_VERILATOR_REBUILD=1 make test-simple
 | `DifftestCSRState` | CSR 字段 |
 | `DifftestIdlePC` | regcpy 缓冲区对齐 |
 | `DifftestTrapEvent` | 陷阱事件（已定义，待接入） |
-| `DifftestCacheState` | ICache/DCache 性能计数器（hit/miss/access/writeback + dcache fast_path_load_hits + hit_under_miss_hits） |
+| `DifftestCacheState` | 缓存性能计数器（ICache 全量；DCache 在无 dcache 方案下为 0） |
 | `DifftestBranchState` | 分支预测性能计数器（total_branches/mispredictions） |
-| `DifftestStallState` | 流水线 stall 7 类拆解（DCache/ICache Refill, Load-Use, Branch Flush, Cache Hit Pipe, Other） |
+| `DifftestStallState` | 流水线 stall 7 类拆解（DCache/ICache Refill, Load-Use, Branch Flush, Cache Hit Pipe, Other；无 dcache 后 DCache 类恒 0） |
 
 ### 仿真结束时输出
 
 difftest 正常退出时自动输出：
 
 - **IPC**：`指令数 / 总周期数`
-- **FPGA 运行时估测**：`总周期数 / 50MHz`（cpu_clk 频率）
+- **FPGA 运行时估测**：`总周期数 / 50MHz`（cpu_clk 频率；直连方案无 EXTRA_LATENCY 校准，即为真实时序）
 - **ICache 指标**：访问数 / hit / miss / 命中率
-- **DCache 指标**：访问数 / hit / miss / 命中率 / 写回 word 数 / fast_path_load_hits（load 快速路径命中数）/ hit_under_miss_hits（refill 期间同拍服务的命中数，含读回写合并）
+- **DCache 指标**：无 dcache 方案下恒 0（保留接口）
 - **分支预测指标**：条件分支数 / 误预测数 / 准确率
-- **流水线 Stall 七类拆解**：按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other，输出各类周期数和占 stall 周期百分比
+- **流水线 Stall 拆解**：按优先级 DCache Refill > ICache Refill > Load-Use > Branch Flush > DCache Hit Pipe > ICache Hit Pipe > Other，输出各类周期数和占 stall 周期百分比
 
 ### Mismatch 时输出
 
