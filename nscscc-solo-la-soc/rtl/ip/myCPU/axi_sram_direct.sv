@@ -144,7 +144,7 @@ module axi_sram_direct (
                      ? (aw_sram || (mmio_awready && mmio_wready)) : 1'b0;
     assign wready  = (idle_ar && !ar_take)
                      ? (aw_sram || (mmio_awready && mmio_wready))
-                     : ((wr_cnt == 2'd2) && (w_rem != 8'd0) && !w_mmio);
+                     : ((wr_cnt == 2'd3) && (w_rem != 8'd0) && !w_mmio);
 
     wire ar_go = arvalid && arready;
     wire aw_go = awvalid && wvalid && awready;
@@ -179,7 +179,7 @@ module axi_sram_direct (
 
     // ==================== Response channels ====================
     wire sram_rresp = (rd_cnt == 2'd2) && !r_mmio;
-    wire sram_bresp = (wr_cnt == 2'd2) && (w_rem == 8'd0) && !w_mmio;
+    wire sram_bresp = (wr_cnt == 2'd3) && (w_rem == 8'd0) && !w_mmio;
 
     assign rvalid = r_mmio ? mmio_rvalid : sram_rresp;
     assign rdata  = r_mmio ? mmio_rdata  : (r_bank ? ext_ram_data : base_ram_data);
@@ -216,12 +216,20 @@ module axi_sram_direct (
             ram_oe_out   = 1'b0;
             ram_we_out   = 1'b1;
         end else if (wr_cnt != 2'd0) begin
+            // 3-cycle write: cycle 1 = address/data setup (WE high),
+            // cycle 2 = write pulse (WE low), cycle 3 = hold (WE high).
+            // The real async SRAM latches the address/data at the WE
+            // falling edge; asserting WE in the same cycle as the address
+            // (zero tAS/tSD setup) makes the latch capture a settling or
+            // stale address on the board — writes land at wrong addresses
+            // (sim model does not model tAS/tSD, so only on-board shows
+            // the corruption).
             bank_out        = w_bank;
             ram_addr_out    = w_addr[21:2];
             ram_be_out      = ~w_strb;
             ram_ce_out      = 1'b0;
             ram_oe_out      = 1'b1;
-            ram_we_out      = (wr_cnt == 2'd2) ? 1'b1 : 1'b0;
+            ram_we_out      = (wr_cnt == 2'd2) ? 1'b0 : 1'b1;
             ram_wdata_out   = w_data;
             ram_write_active = 1'b1;
         end else if (arvalid && ar_sram && idle_ar) begin
@@ -232,12 +240,14 @@ module axi_sram_direct (
             ram_oe_out      = 1'b0;
             ram_we_out      = 1'b1;
         end else if (awvalid && aw_sram && idle_ar && !ar_take) begin
+            // Write accept: address/data driven now, WE stays high for the
+            // setup cycle (asserted in the wr_cnt==1 cycle).
             bank_out        = awaddr[22];
             ram_addr_out    = awaddr[21:2];
             ram_be_out      = ~wstrb;
             ram_ce_out      = 1'b0;
             ram_oe_out      = 1'b1;
-            ram_we_out      = 1'b0;
+            ram_we_out      = 1'b1;
             ram_wdata_out   = wdata;
             ram_write_active = 1'b1;
         end
@@ -309,7 +319,7 @@ module axi_sram_direct (
                 end
             end
 
-            // ---- SRAM write FSM ----
+            // ---- SRAM write FSM (3-cycle: setup / pulse / hold) ----
             if (aw_go && aw_sram) begin
                 wr_cnt <= 2'd1;
                 w_addr <= awaddr;
@@ -321,6 +331,8 @@ module axi_sram_direct (
             end else if (wr_cnt == 2'd1) begin
                 wr_cnt <= 2'd2;
             end else if (wr_cnt == 2'd2) begin
+                wr_cnt <= 2'd3;
+            end else if (wr_cnt == 2'd3) begin
                 if (w_rem == 8'd0) begin
                     if (bready) begin
                         wr_cnt <= 2'd0;
