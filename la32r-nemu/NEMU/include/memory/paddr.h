@@ -53,7 +53,7 @@ void paddr_write(paddr_t addr, int len, word_t data);
 
 #ifdef CONFIG_DIFFTEST_STORE_COMMIT
 
-#define STORE_QUEUE_SIZE 48
+#define STORE_QUEUE_SIZE 4096
 typedef struct {
     uint64_t addr;
     uint64_t data;

@@ -834,7 +834,7 @@ module core import la32_common::*; #(
     always_comb begin
         cpucfg_result = 32'd0;
         case (forward_a0)
-            32'd16: cpucfg_result = 32'h00000015;
+            32'd16: cpucfg_result = 32'h00000011; // no D-cache (wip/no-dcache) // no D-cache (wip/no-dcache)
             32'd17: cpucfg_result = ICACHE_CFG;
             32'd18: cpucfg_result = DCACHE_CFG;
             default: cpucfg_result = 32'd0;

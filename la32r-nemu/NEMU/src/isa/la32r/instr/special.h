@@ -61,7 +61,7 @@ def_EHelper(cpucfg) {
   word_t cfg_val = 0;
   switch (*dsrc1) {
     case 0x10:
-      cfg_val = 0x00000015;
+      cfg_val = 0x00000011; // no D-cache (wip/no-dcache)
       break;
     case 0x11:
       cfg_val = (4 << 24) | (ICACHE_INDEX_BITS << 16) | 1;

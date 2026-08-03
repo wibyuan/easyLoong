@@ -102,10 +102,6 @@ module core_top #(
     // The L2's cacop request is gated on the L1's completion: a dirty L1
     // line is first merged into the L2 (the L1's cacop writeback drain),
     // and only then does the L2 write back / invalidate its own line.
-    cacop_req_t l2_cacop_req;
-    assign l2_cacop_req.valid = core_cacop_req.valid && l1_cacop_done;
-    assign l2_cacop_req.code  = core_cacop_req.code;
-    assign l2_cacop_req.addr  = core_cacop_req.addr;
 
     logic [31:0] dcache_data_wb [0:L1CACHE_WAYS-1][0:L1CACHE_WORDS-1];
 
@@ -149,37 +145,28 @@ module core_top #(
         .stall_other(stall_other)
     );
 
-    l1dcache #(.NR_SETS(L1CACHE_SETS), .NR_WAYS(L1CACHE_WAYS),
-               .NR_WORDS(L1CACHE_WORDS)) u_l1dcache (
-        .clk,
-        .reset(~aresetn),
-        .cpu_req(dreq),
-        .cpu_resp(dresp),
-        .mem_req(l1_mem_req),
-        .mem_resp(l1_mem_resp),
-        .cacop_req(core_cacop_req),
-        .cacop_done(l1_cacop_done),
-        .perf_access(dcache_access),
-        .perf_hit(dcache_hit),
-        .perf_miss(dcache_miss),
-        .perf_writeback(dcache_wb),
-        .perf_fast_load(dcache_fast_load),
-        .perf_fast_hum(dcache_fast_hum),
-        .in_refill(dcache_in_refill),
-        .data_wb(dcache_data_wb)
-    );
-
-    l2dcache #(.NR_SETS(DCACHE_SETS), .NR_WAYS(DCACHE_WAYS),
-               .NR_WORDS(DCACHE_WORDS)) u_l2dcache (
-        .clk,
-        .reset(~aresetn),
-        .cpu_req(l1_mem_req),
-        .cpu_resp(l1_mem_resp),
-        .mem_req(l2_mem_req),
-        .mem_resp(l2_mem_resp),
-        .cacop_req(l2_cacop_req),
-        .cacop_done(l2_cacop_done)
-    );
+    // ==================== No-dcache bypass (wip/no-dcache) ============
+    // The LSU's requests go straight to the AXI arbiter: with the direct
+    // async-SRAM path at a fixed 2-cycle access, the L1/L2 hierarchy is
+    // bypassed entirely (all accesses are uncached pass-throughs).
+    assign l2_mem_req = dreq;
+    assign dresp      = l2_mem_resp;
+    assign dresp.hit      = 1'b0;
+    assign dresp.hit_way  = 1'b0;
+    // No dcache to flush: cacop codes 0x01/0x09 complete instantly; the
+    // icache's 0x00 invalidation keeps its own completion handshake.
+    assign core_cacop_done = (core_cacop_req.valid && core_cacop_req.code[2:0] == 3'd0)
+        ? icache_cacop_done : 1'b1;
+    assign dcache_in_refill = 1'b0;
+    assign dcache_access    = 64'd0;
+    assign dcache_hit       = 64'd0;
+    assign dcache_miss      = 64'd0;
+    assign dcache_wb        = 64'd0;
+    assign dcache_fast_load = 64'd0;
+    assign dcache_fast_hum  = 64'd0;
+    for (genvar gw = 0; gw < L1CACHE_WAYS; gw++)
+        for (genvar gw2 = 0; gw2 < L1CACHE_WORDS; gw2++)
+            assign dcache_data_wb[gw][gw2] = 32'd0;
 
     icache #(.NR_SETS(ICACHE_SETS)) u_icache (
         .clk,
@@ -209,11 +196,8 @@ module core_top #(
     // the walk proceeds strictly level-by-level (the L2 is always idle
     // at each cacop boundary, no request can be lost).
     // Other codes retire immediately (icache ibar/cacop handled by the
-    // icache, which pulses done on its own).
-    assign core_cacop_done = (core_cacop_req.valid && core_cacop_req.code[2:0] == 3'd1)
-        ? l2_cacop_done
-        : (icache_cacop_done ||
-           (core_cacop_req.valid && core_cacop_req.code[2:0] != 3'd0));
+    // icache, which pulses done on its own).  Superseded by the no-dcache
+    // bypass assign above.
 
     axibus_arbiter u_arbiter (
         .clk,
