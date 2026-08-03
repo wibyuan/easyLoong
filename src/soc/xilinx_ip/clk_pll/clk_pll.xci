@@ -212,7 +212,7 @@
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_DOUT_PORT">dout</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_DRDY_PORT">drdy</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_DWE_PORT">dwe</spirit:configurableElementValue>
-        <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_D_MAX">42.000</spirit:configurableElementValue>
+        <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_D_MAX">49.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_D_MIN">1.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_ENABLE_CLKOUTPHY">0</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_ENABLE_CLOCK_MONITOR">0</spirit:configurableElementValue>
@@ -250,7 +250,7 @@
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_MMCM_CLKFBOUT_PHASE">0.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_MMCM_CLKFBOUT_USE_FINE_PS">FALSE</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_MMCM_CLKIN1_PERIOD">20.000</spirit:configurableElementValue>
-        <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_MMCM_CLKIN2_PERIOD">10.0</spirit:configurableElementValue>
+        <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_MMCM_CLKIN2_PERIOD">10.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_MMCM_CLKOUT0_DIVIDE_F">17.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_MMCM_CLKOUT0_DUTY_CYCLE">0.500</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_MMCM_CLKOUT0_PHASE">0.000</spirit:configurableElementValue>
@@ -393,7 +393,7 @@
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_USE_SAFE_CLOCK_STARTUP">0</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_USE_SPREAD_SPECTRUM">0</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_USE_STATUS">0</spirit:configurableElementValue>
-        <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_VCO_MAX">1600.000</spirit:configurableElementValue>
+        <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_VCO_MAX">1866.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.C_VCO_MIN">800.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="MODELPARAM_VALUE.c_component_name">clk_pll</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.AUTO_PRIMITIVE">MMCM</spirit:configurableElementValue>
@@ -529,7 +529,7 @@
         <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.MMCM_CLKFBOUT_PHASE">0.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.MMCM_CLKFBOUT_USE_FINE_PS">false</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.MMCM_CLKIN1_PERIOD">20.000</spirit:configurableElementValue>
-        <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.MMCM_CLKIN2_PERIOD">10.0</spirit:configurableElementValue>
+        <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.MMCM_CLKIN2_PERIOD">10.000</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.MMCM_CLKOUT0_DIVIDE_F">17</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.MMCM_CLKOUT0_DUTY_CYCLE">0.500</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="PARAM_VALUE.MMCM_CLKOUT0_PHASE">0.000</spirit:configurableElementValue>
@@ -659,7 +659,7 @@
         <spirit:configurableElementValue spirit:referenceId="PROJECT_PARAM.PREFHDL">VERILOG</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="PROJECT_PARAM.SILICON_REVISION"/>
         <spirit:configurableElementValue spirit:referenceId="PROJECT_PARAM.SIMULATOR_LANGUAGE">MIXED</spirit:configurableElementValue>
-        <spirit:configurableElementValue spirit:referenceId="PROJECT_PARAM.SPEEDGRADE">-1</spirit:configurableElementValue>
+        <spirit:configurableElementValue spirit:referenceId="PROJECT_PARAM.SPEEDGRADE">-2</spirit:configurableElementValue>
         <spirit:configurableElementValue spirit:referenceId="PROJECT_PARAM.STATIC_POWER"/>
         <spirit:configurableElementValue spirit:referenceId="PROJECT_PARAM.TEMPERATURE_GRADE"/>
         <spirit:configurableElementValue spirit:referenceId="PROJECT_PARAM.USE_RDI_CUSTOMIZATION">TRUE</spirit:configurableElementValue>
