@@ -14,6 +14,7 @@ module hazard_unit (
     output logic        if_id_flush,
     output logic        id_ex_flush,
     output logic        load_use_hazard,
+    output logic        pipeline_stall,
     input  logic        jump_flush,
     input  logic        id_jump_req,
     input  logic        bp_do_jump,
@@ -29,7 +30,6 @@ module hazard_unit (
     assign load_use_hazard = id_ex_mem_re &&
                             ((id_ex_rd != 5'd0) && ((id_ex_rd == dec_rs1) || (id_ex_rd == dec_rs2)));
 
-    logic pipeline_stall;
     assign pipeline_stall = lsu_not_ready || cacop_not_ready || ex_not_ready;
 
     // If the EX redirect target equals the current fetch pc, the fetch_unit

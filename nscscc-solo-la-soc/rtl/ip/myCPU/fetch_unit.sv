@@ -16,10 +16,19 @@ module fetch_unit import la32_common::*; (
     output ibus_req_t   ireq,
     input  ibus_resp_t  iresp,
     output logic [31:0] next_pc,
-    output logic        if_pc_valid,
-    output logic [31:0] if_pc,
-    output logic [31:0] if_instr,
-    output logic        if_valid
+    // 2-wide fetch outputs: slot0 always (when if_valid0), slot1 when the
+    // icache delivered a second same-line instruction (if_valid1).
+    // fetch_absorb2: the fetch queue absorbed BOTH outputs this cycle
+    // (advance +8); otherwise +4 (a single instruction is absorbed and the
+    // second is re-fetched next cycle).  pc_stall wins over both.
+    input  logic        fetch_absorb2,
+    output logic        if_valid0,
+    output logic [31:0] if_pc0,
+    output logic [31:0] if_instr0,
+    output logic        if_valid1,
+    output logic [31:0] if_pc1,
+    output logic [31:0] if_instr1,
+    output logic        if_pc_valid
 );
 
     enum logic [1:0] {
@@ -98,10 +107,18 @@ module fetch_unit import la32_common::*; (
         end
     end
 
-    assign if_valid = (state == REQ && iresp.data_ok) ||
-                      (state == WAIT_DATA && iresp.data_ok && pc_current == captured_pc);
-    assign if_pc = iresp.data_ok ? ((state == REQ) ? pc_current : captured_pc) : captured_pc;
-    assign if_instr = iresp.data_ok ? iresp.data : captured_instr;
+
+    // Slot 0 = the icache response (REQ hit, or WAIT_DATA keyword).
+    // Slot 1 = the second same-line instruction, valid only on a REQ hit
+    //          where the icache delivered two (miss responses and
+    //          redirect-abandoned waits deliver one).
+    assign if_valid0 = (state == REQ && iresp.data_ok) ||
+                       (state == WAIT_DATA && iresp.data_ok && pc_current == captured_pc);
+    assign if_pc0 = iresp.data_ok ? ((state == REQ) ? pc_current : captured_pc) : captured_pc;
+    assign if_instr0 = iresp.data_ok ? iresp.data : captured_instr;
+    assign if_valid1 = (state == REQ) && iresp.data_ok && iresp.valid1;
+    assign if_pc1 = pc_current + 32'd4;
+    assign if_instr1 = iresp.data1;
     assign if_pc_valid = 1'b1;
 
     always_comb begin
@@ -116,6 +133,8 @@ module fetch_unit import la32_common::*; (
             next_pc = bp_jump_pc;
         else if (pc_stall)
             next_pc = pc_current;
+        else if (if_valid1 && fetch_absorb2)
+            next_pc = pc_current + 32'd8;
     end
 
 endmodule

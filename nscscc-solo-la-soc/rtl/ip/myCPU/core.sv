@@ -146,7 +146,8 @@ module core import la32_common::*; #(
     } mem_wb_t;
 
     logic [31:0] pc, next_pc_reg;
-    if_id_t  if_id_in,  if_id_out;
+    if_id_t  if_id_out;
+    if_id_t  if_id1_out;
     id_ex_t  id_ex_in,  id_ex_out;
     ex_mem_t ex_mem_in, ex_mem_out;
     mem_wb_t mem_wb_in, mem_wb_out;
@@ -158,6 +159,26 @@ module core import la32_common::*; #(
     logic ex_stage_busy;
     logic ex_jump_flush_hazard;
 
+    // ==================== FETCH QUEUE (2-wide) ====================
+    // 3-entry shift queue between fetch and ID.  ID reads the queue head
+    // (slot0 = entry 0, slot1 = entry 1); slot1 is gated by the issue
+    // constraints (step 4).  Depth 3 absorbs the "produce 2 / consume 1"
+    // skew of a held slot1 without ever losing an instruction; when the
+    // queue is full the fetch is held.
+    localparam int FQ_DEPTH = 3;
+    logic [FQ_DEPTH-1:0]   fq_valid;
+    logic [31:0] fq_pc [0:FQ_DEPTH-1];
+    logic [31:0] fq_instr [0:FQ_DEPTH-1];
+
+    logic fetch_valid0, fetch_valid1;
+    logic [31:0] fetch_pc0, fetch_instr0, fetch_pc1, fetch_instr1;
+    logic fetch_absorb2;
+    // Slot1 issue enable — disabled in step 3 (single-issue skeleton).
+    logic slot1_issue;
+    assign slot1_issue = 1'b0;
+    logic fq_stall_all;
+    logic pipeline_stall;
+
     // ==================== FETCH ====================
     logic do_ex_flush;
     assign do_ex_flush = ex_jump_flush && !ex_mem_stall;
@@ -168,17 +189,17 @@ module core import la32_common::*; #(
 
     fetch_unit if_stage (
         .clk, .reset,
-        .pc_stall, .pc_current(pc),
+        .pc_stall(pc_stall_fetch), .pc_current(pc),
         .wb_jump_req(1'b0), .wb_jump_pc(32'd0),
         .do_ex_flush(do_ex_flush), .ex_jump_pc,
         .do_id_jump(id_jump_req && !id_ex_stall), .id_jump_pc,
         .bp_do_jump(bp_do_jump), .bp_jump_pc(bp_jump_pc),
         .ireq, .iresp,
+        .fetch_absorb2(fetch_absorb2),
         .next_pc(next_pc_reg),
         .if_pc_valid(),
-        .if_pc(if_id_in.data.pc),
-        .if_instr(if_id_in.data.instr),
-        .if_valid(if_id_in.ctrl.valid)
+        .if_valid0(fetch_valid0), .if_pc0(fetch_pc0), .if_instr0(fetch_instr0),
+        .if_valid1(fetch_valid1), .if_pc1(fetch_pc1), .if_instr1(fetch_instr1)
     );
 
     logic [63:0] cyc;
@@ -192,14 +213,74 @@ module core import la32_common::*; #(
         end
     end
 
-    pipeline_reg #($bits(if_id_ctrl_t)) reg_if_id_ctrl (
-        .clk, .reset, .stall(if_id_stall), .flush(if_id_flush),
-        .data_in(if_id_in.ctrl), .data_out(if_id_out.ctrl)
-    );
-    pipeline_reg #($bits(if_id_data_t)) reg_if_id_data (
-        .clk, .reset, .stall(if_id_stall), .flush(1'b0),
-        .data_in(if_id_in.data), .data_out(if_id_out.data)
-    );
+    // Queue-head aliases for the ID stage (slot0 = entry 0, slot1 = entry 1).
+    assign if_id_out.ctrl.valid = fq_valid[0];
+    assign if_id_out.data.pc    = fq_pc[0];
+    assign if_id_out.data.instr = fq_instr[0];
+    assign if_id1_out.ctrl.valid = fq_valid[1];
+    assign if_id1_out.data.pc    = fq_pc[1];
+    assign if_id1_out.data.instr = fq_instr[1];
+
+    // Queue consumption: c0 = slot0 issues, c1 = slot1 issues.  The queue
+    // holds on pipeline_stall/load_use and also while the fetch is not
+    // ready: the legacy single-issue semantics kill the ID->EX entry with
+    // id_ex_flush when if_not_ready fires, so issuing into id_ex during a
+    // fetch stall would lose the instruction (the ID must not advance).
+    // Slot1 issue is disabled in step 3 (single-issue skeleton).
+    assign fq_stall_all = pipeline_stall || load_use_hazard || !iresp.data_ok;
+    wire c0 = fq_valid[0] && !fq_stall_all && !if_id_flush;
+    wire c1 = fq_valid[1] && slot1_issue && !fq_stall_all && !if_id_flush;
+
+    // Free slots after consumption, and how many fetch outputs are taken.
+    wire [2:0] rem_cnt = {1'b0, fq_valid[0] && !c0}
+                       + {1'b0, fq_valid[1] && !c1}
+                       + {2'b0, fq_valid[2]};
+    wire [2:0] fq_space = 3'd3 - rem_cnt;
+    wire f0_ok = fetch_valid0 && (fq_space >= 3'd1);
+    // fetch_absorb2 gates both the fetch advance (+8) and the f1 absorption:
+    // with it off the fetch advances +4 and re-fetches the second word, so
+    // only f0 is taken (single-issue behavior, step 3).
+    assign fetch_absorb2 = 1'b0;
+    wire f1_ok = fetch_absorb2 && (fq_space >= 3'd2);
+
+    // Queue advance: remaining entries first, then absorbed fetch outputs.
+    logic [FQ_DEPTH-1:0]   nfq_valid;
+    logic [31:0] nfq_pc [0:FQ_DEPTH-1];
+    logic [31:0] nfq_instr [0:FQ_DEPTH-1];
+    always_comb begin
+        automatic int rc = 0;
+        for (int i = 0; i < FQ_DEPTH; i++) begin
+            nfq_valid[i] = 1'b0;
+            nfq_pc[i]    = 32'd0;
+            nfq_instr[i] = 32'd0;
+        end
+        if (fq_valid[0] && !c0) begin
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[0]; nfq_instr[rc] = fq_instr[0]; rc++;
+        end
+        if (fq_valid[1] && !c1) begin
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[1]; nfq_instr[rc] = fq_instr[1]; rc++;
+        end
+        if (fq_valid[2]) begin
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[2]; nfq_instr[rc] = fq_instr[2]; rc++;
+        end
+        if (f0_ok) begin
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fetch_pc0; nfq_instr[rc] = fetch_instr0; rc++;
+        end
+        if (f1_ok) begin
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fetch_pc1; nfq_instr[rc] = fetch_instr1;
+        end
+    end
+
+    always_ff @(posedge clk) begin
+        if (reset || if_id_flush) begin
+            fq_valid <= 3'd0;
+        end else if (!fq_stall_all) begin
+            fq_valid  <= nfq_valid;
+            fq_pc[0]  <= nfq_pc[0];    fq_pc[1]  <= nfq_pc[1];    fq_pc[2]  <= nfq_pc[2];
+            fq_instr[0] <= nfq_instr[0]; fq_instr[1] <= nfq_instr[1]; fq_instr[2] <= nfq_instr[2];
+        end
+    end
+
 
     // ==================== DECODE ====================
     logic [4:0] dec_rs1, dec_rs2, dec_rd;
@@ -270,17 +351,15 @@ module core import la32_common::*; #(
     logic id_valid;
     assign id_valid = if_id_out.ctrl.valid;
 
-    // The ID stage must not re-issue the instruction held in IF/ID while
-    // the IF stage is stalled: with if_id_stall=1 the register holds its
+    // The ID stage must not re-issue the instruction held in the queue
+    // while the queue is held: with fq_stall_all=1 the head keeps its
     // content (a branch predicted taken, an instruction behind a stalled
     // fetch, ...) and the ID would decode the SAME instruction again after
-    // id_ex_stall released — the instruction executes twice (observed:
-    // duplicate commit of the WELCOME loop's bne after a dcache refill
-    // stall). Only issue to EX when the IF stage actually advances — i.e.
-    // when it is not stalled, or when it is being flushed (a redirect
-    // discards the IF/ID copy; the JAL/branch must still be issued so it
-    // is not lost entirely).
-    assign id_ex_in.ctrl.valid      = id_valid && !(if_id_stall && !if_id_flush);
+    // id_ex_stall released — the instruction executes twice. Only issue to
+    // EX when the queue actually advances — i.e. when it is not held, or
+    // when it is being flushed (a redirect discards the queue; the
+    // JAL/branch must still be issued so it is not lost entirely).
+    assign id_ex_in.ctrl.valid      = id_valid && !(fq_stall_all && !if_id_flush);
     assign id_ex_in.ctrl.rf_we      = dec_rf_we & id_ex_in.ctrl.valid;
     assign id_ex_in.ctrl.mem_re     = dec_mem_re & id_ex_in.ctrl.valid;
     assign id_ex_in.ctrl.mem_we     = dec_mem_we & id_ex_in.ctrl.valid;
@@ -630,6 +709,7 @@ module core import la32_common::*; #(
     logic mem_valid;
     assign mem_valid = ex_mem_out.ctrl.valid && lsu_ready && !ex_mem_stall;
 
+
     assign mem_wb_in.ctrl.valid     = mem_valid;
     assign mem_wb_in.ctrl.rf_we     = ex_mem_out.ctrl.rf_we & mem_valid;
     assign mem_wb_in.ctrl.mem_re    = ex_mem_out.ctrl.mem_re & mem_valid;
@@ -715,6 +795,11 @@ module core import la32_common::*; #(
 
     assign ex_stage_busy = csr_read_stall || mul_first_cycle;
 
+    // Fetch hold when the queue is full with a fetch output pending (the
+    // queue cannot absorb it); hazard_unit's own pc_stall covers the rest.
+    logic pc_stall_fetch;
+    assign pc_stall_fetch = pc_stall || (fq_space == 3'd0 && fetch_valid0);
+
     hazard_unit hazard_ctrl (
         .if_not_ready(!iresp.data_ok),
         .ex_not_ready(ex_stage_busy),
@@ -726,12 +811,13 @@ module core import la32_common::*; #(
         .pc_stall, .if_id_stall, .id_ex_stall, .ex_mem_stall,
         .if_id_flush, .id_ex_flush,
         .load_use_hazard,
+        .pipeline_stall,
         .jump_flush(ex_jump_flush_hazard),
         .id_jump_req(id_jump_req),
         .bp_do_jump(bp_do_jump),
         .wb_jump_req(1'b0),
-        .if_id_in_valid(if_id_in.ctrl.valid),
-        .if_id_in_pc(if_id_in.data.pc),
+        .if_id_in_valid(fetch_valid0),
+        .if_id_in_pc(fetch_pc0),
         .pc_current(pc),
         .ex_jump_pc(ex_jump_pc),
         .id_jump_pc(id_jump_pc),

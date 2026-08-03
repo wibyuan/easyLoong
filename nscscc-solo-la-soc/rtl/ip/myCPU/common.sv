@@ -75,6 +75,10 @@ package la32_common;
         logic  addr_ok;
         logic  data_ok;
         word_t data;
+        // 2-wide fetch: the second same-line instruction, delivered on a
+        // 0-cycle hit when the fetch stays within the 16B line.
+        word_t data1;
+        logic  valid1;
     } ibus_resp_t;
 
     typedef struct packed {

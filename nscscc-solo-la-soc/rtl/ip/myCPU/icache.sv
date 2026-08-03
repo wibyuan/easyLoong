@@ -160,6 +160,7 @@ module icache import la32_common::*; (
     logic       rf_kw_sent;
     word_t      rf_buf [0:3];
 
+
     // ==================== Init registers ====================
     index_t init_addr;
 
@@ -170,6 +171,8 @@ module icache import la32_common::*; (
         cpu_resp.addr_ok = 1'b0;
         cpu_resp.data_ok = 1'b0;
         cpu_resp.data    = 32'd0;
+        cpu_resp.data1   = 32'd0;
+        cpu_resp.valid1  = 1'b0;
 
         cacop_done = 1'b0;
 
@@ -205,6 +208,12 @@ module icache import la32_common::*; (
                     cpu_resp.addr_ok = 1'b1;
                     cpu_resp.data_ok = 1'b1;
                     cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
+                    // 2-wide fetch: a second instruction when it stays
+                    // within the 16B line (wo != 3).
+                    if (req_wo != 2'd3) begin
+                        cpu_resp.data1  = data_rd_out[req_hit_way][req_wo + 2'd1];
+                        cpu_resp.valid1 = 1'b1;
+                    end
                 end else if (cpu_req.valid && !ghost) begin
                     // Acknowledge the miss so the fetch_unit enters WAIT_DATA
                     // and latches the missing fetch's pc (captured_pc). The
