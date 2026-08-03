@@ -1,7 +1,21 @@
 
-#clock — PLL board XDC creates clk_50M; we use same name to avoid overriding
+#clock — 50MHz board oscillator
 set_property -dict {PACKAGE_PIN K21 IOSTANDARD LVCMOS33} [get_ports clk_50M]
 create_clock -period 20.000 -name clk_50M [get_ports clk_50M]
+
+# PLL generated clocks — explicit definitions for the two output domains
+# (thinpad_top/u_soc_top/pll_clk/clk_pll).  cpu_clk = CLKOUT0 (100MHz),
+# sys_clk = CLKOUT1 (25MHz); the divider values come from clk_pll.xci and
+# the derived frequencies are validated at synthesis.
+create_generated_clock -name cpu_clk [get_pins u_soc_top/pll_clk.u_clk_pll/inst/plle2_adv_inst/CLKOUT0]
+create_generated_clock -name sys_clk [get_pins u_soc_top/pll_clk.u_clk_pll/inst/plle2_adv_inst/CLKOUT1]
+
+# The wildcard form below matches nothing at synthesis and leaves the
+# cpu_clk<->sys_clk CDC paths unconstrained; the explicit clock names make
+# the domain split unambiguous.
+set_clock_groups -asynchronous \
+    -group [get_clocks cpu_clk] \
+    -group [get_clocks sys_clk]
 
 #reset
 set_property -dict {PACKAGE_PIN U5 IOSTANDARD LVCMOS33} [get_ports reset_btn]
@@ -227,38 +241,37 @@ set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 
-set_clock_groups -asynchronous \
-    -group [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT0]] \
-    -group [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]]
+# SRAM interface — driven directly from the cpu_clk domain by
+# axi_sram_direct (fixed 2-cycle read / 3-cycle write); the I/O delays must
+# be referenced to cpu_clk, not sys_clk (the old CDC path's domain).
+set_input_delay -clock cpu_clk -max 3   [get_ports {base_ram_data[*]}]
+set_input_delay -clock cpu_clk -min 2   [get_ports {base_ram_data[*]}]
 
-set_input_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 3   [get_ports {base_ram_data[*]}]
-set_input_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min 2   [get_ports {base_ram_data[*]}]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports {base_ram_data[*]}]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports {base_ram_data[*]}]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports {base_ram_addr[*]}]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports {base_ram_addr[*]}]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports {base_ram_be_n[*]}]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports {base_ram_be_n[*]}]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports  base_ram_ce_n]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports  base_ram_ce_n]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports  base_ram_oe_n]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports  base_ram_oe_n]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports  base_ram_we_n]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports  base_ram_we_n]
 
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports {base_ram_data[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports {base_ram_data[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports {base_ram_addr[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports {base_ram_addr[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports {base_ram_be_n[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports {base_ram_be_n[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports  base_ram_ce_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports  base_ram_ce_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports  base_ram_oe_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports  base_ram_oe_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports  base_ram_we_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports  base_ram_we_n]
+set_input_delay -clock cpu_clk -max 3   [get_ports {ext_ram_data[*]}]
+set_input_delay -clock cpu_clk -min 2   [get_ports {ext_ram_data[*]}]
 
-set_input_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 3   [get_ports {ext_ram_data[*]}]
-set_input_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min 2   [get_ports {ext_ram_data[*]}]
-
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports {ext_ram_data[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports {ext_ram_data[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports {ext_ram_addr[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports {ext_ram_addr[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports {ext_ram_be_n[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports {ext_ram_be_n[*]}]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports  ext_ram_ce_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports  ext_ram_ce_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports  ext_ram_oe_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports  ext_ram_oe_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -max 0.3  [get_ports  ext_ram_we_n]
-set_output_delay -clock [get_clocks -include_generated_clocks -of_objects [get_pins -hierarchical *CLKOUT1]] -min -0.3 [get_ports  ext_ram_we_n]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports {ext_ram_data[*]}]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports {ext_ram_data[*]}]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports {ext_ram_addr[*]}]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports {ext_ram_addr[*]}]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports {ext_ram_be_n[*]}]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports {ext_ram_be_n[*]}]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports  ext_ram_ce_n]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports  ext_ram_ce_n]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports  ext_ram_oe_n]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports  ext_ram_oe_n]
+set_output_delay -clock cpu_clk -max 0.3  [get_ports  ext_ram_we_n]
+set_output_delay -clock cpu_clk -min -0.3 [get_ports  ext_ram_we_n]
