@@ -75,7 +75,14 @@ module core import la32_common::*; #(
         logic [31:0] imm;
         logic [31:0] target_pc;
         logic [31:0] pc_plus_4;
-        logic        fw_a_ex_hit, fw_a_mem_hit, fw_b_ex_hit, fw_b_mem_hit;
+        // Forward flags computed at ID against the EX/MEM producers:
+        //   fw_*_ex0/ex1 : 1-back producers in the EX slots this cycle
+        //   fw_*_mem0/mem1 : 2-back producers in the MEM slots this cycle
+        // The EX stage resolves them against the (then-current) MEM/WB
+        // slots; slot1 additionally bypasses slot0's combinational ALU
+        // result for the in-slot RAW (same-cycle issue pair).
+        logic        fw_a_ex0, fw_a_ex1, fw_a_mem0, fw_a_mem1;
+        logic        fw_b_ex0, fw_b_ex1, fw_b_mem0, fw_b_mem1;
         alu_op_t     alu_op;
         br_type_t    br_type;
         logic        alu_src_sel;
@@ -148,9 +155,12 @@ module core import la32_common::*; #(
     logic [31:0] pc, next_pc_reg;
     if_id_t  if_id_out;
     if_id_t  if_id1_out;
-    id_ex_t  id_ex_in,  id_ex_out;
-    ex_mem_t ex_mem_in, ex_mem_out;
-    mem_wb_t mem_wb_in, mem_wb_out;
+    id_ex_t  id_ex0_in,  id_ex0_out;
+    id_ex_t  id_ex1_in,  id_ex1_out;
+    ex_mem_t ex_mem0_in, ex_mem0_out;
+    ex_mem_t ex_mem1_in, ex_mem1_out;
+    mem_wb_t mem_wb0_in, mem_wb0_out;
+    mem_wb_t mem_wb1_in, mem_wb1_out;
 
     logic pc_stall, if_id_stall, id_ex_stall, ex_mem_stall;
     logic if_id_flush, id_ex_flush, ex_jump_flush;
@@ -162,9 +172,9 @@ module core import la32_common::*; #(
     // ==================== FETCH QUEUE (2-wide) ====================
     // 3-entry shift queue between fetch and ID.  ID reads the queue head
     // (slot0 = entry 0, slot1 = entry 1); slot1 is gated by the issue
-    // constraints (step 4).  Depth 3 absorbs the "produce 2 / consume 1"
-    // skew of a held slot1 without ever losing an instruction; when the
-    // queue is full the fetch is held.
+    // constraints.  Depth 3 absorbs the "produce 2 / consume 1" skew of a
+    // held slot1 without ever losing an instruction; when the queue is
+    // full the fetch is held.
     localparam int FQ_DEPTH = 3;
     logic [FQ_DEPTH-1:0]   fq_valid;
     logic [31:0] fq_pc [0:FQ_DEPTH-1];
@@ -173,9 +183,7 @@ module core import la32_common::*; #(
     logic fetch_valid0, fetch_valid1;
     logic [31:0] fetch_pc0, fetch_instr0, fetch_pc1, fetch_instr1;
     logic fetch_absorb2;
-    // Slot1 issue enable — disabled in step 3 (single-issue skeleton).
     logic slot1_issue;
-    assign slot1_issue = 1'b0;
     logic fq_stall_all;
     logic pipeline_stall;
 
@@ -185,7 +193,7 @@ module core import la32_common::*; #(
 
     logic bp_do_jump;
     logic [31:0] bp_jump_pc;
-    assign ex_jump_flush_hazard = ex_jump_flush && !id_ex_out.ctrl.is_jal;
+    assign ex_jump_flush_hazard = ex_jump_flush && !id_ex0_out.ctrl.is_jal;
 
     fetch_unit if_stage (
         .clk, .reset,
@@ -226,7 +234,6 @@ module core import la32_common::*; #(
     // ready: the legacy single-issue semantics kill the ID->EX entry with
     // id_ex_flush when if_not_ready fires, so issuing into id_ex during a
     // fetch stall would lose the instruction (the ID must not advance).
-    // Slot1 issue is disabled in step 3 (single-issue skeleton).
     assign fq_stall_all = pipeline_stall || load_use_hazard || !iresp.data_ok;
     wire c0 = fq_valid[0] && !fq_stall_all && !if_id_flush;
     wire c1 = fq_valid[1] && slot1_issue && !fq_stall_all && !if_id_flush;
@@ -237,16 +244,22 @@ module core import la32_common::*; #(
                        + {2'b0, fq_valid[2]};
     wire [2:0] fq_space = 3'd3 - rem_cnt;
     wire f0_ok = fetch_valid0 && (fq_space >= 3'd1);
-    // fetch_absorb2 gates both the fetch advance (+8) and the f1 absorption:
-    // with it off the fetch advances +4 and re-fetches the second word, so
-    // only f0 is taken (single-issue behavior, step 3).
-    assign fetch_absorb2 = 1'b0;
-    wire f1_ok = fetch_absorb2 && (fq_space >= 3'd2);
+    // fetch_absorb2 gates both the fetch advance (+8) and the f1
+    // absorption; when it is off the fetch advances +4 and re-fetches the
+    // second word, so only f0 is taken (single-issue behavior).
+    assign fetch_absorb2 = fetch_valid1 && (fq_space >= 3'd2);
+    wire f1_ok = fetch_absorb2;
 
     // Queue advance: remaining entries first, then absorbed fetch outputs.
+    // When slot0 issues as a predicted-taken branch (bp_do_jump), the queue
+    // tail behind it is wrong-path: the legacy if_id_flush is suppressed
+    // while load_use holds the branch (Bug 7) or after the fetch already
+    // redirected (pc == bp target), so the tail must be discarded here —
+    // the single-issue IF/ID register overwrote it, the queue accumulates.
     logic [FQ_DEPTH-1:0]   nfq_valid;
     logic [31:0] nfq_pc [0:FQ_DEPTH-1];
     logic [31:0] nfq_instr [0:FQ_DEPTH-1];
+    wire fq_kill_slot1 = c0 && bp_do_jump;
     always_comb begin
         automatic int rc = 0;
         for (int i = 0; i < FQ_DEPTH; i++) begin
@@ -257,10 +270,10 @@ module core import la32_common::*; #(
         if (fq_valid[0] && !c0) begin
             nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[0]; nfq_instr[rc] = fq_instr[0]; rc++;
         end
-        if (fq_valid[1] && !c1) begin
+        if (fq_valid[1] && !c1 && !fq_kill_slot1) begin
             nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[1]; nfq_instr[rc] = fq_instr[1]; rc++;
         end
-        if (fq_valid[2]) begin
+        if (fq_valid[2] && !fq_kill_slot1) begin
             nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[2]; nfq_instr[rc] = fq_instr[2]; rc++;
         end
         if (f0_ok) begin
@@ -281,53 +294,120 @@ module core import la32_common::*; #(
         end
     end
 
+    // ==================== DECODE (dual slot) ====================
+    logic [4:0]  dec_rs1_0, dec_rs2_0, dec_rd_0;
+    logic [4:0]  dec_rs1_1, dec_rs2_1, dec_rd_1;
+    logic        dec_rf_we_0, dec_alu_src_sel_0;
+    logic        dec_rf_we_1, dec_alu_src_sel_1;
+    logic        dec_mem_re_0, dec_mem_we_0, dec_mem_unsigned_0;
+    logic        dec_mem_re_1, dec_mem_we_1, dec_mem_unsigned_1;
+    logic        dec_is_branch_0, dec_is_jal_0, dec_is_jalr_0;
+    logic        dec_is_branch_1, dec_is_jal_1, dec_is_jalr_1;
+    logic        dec_is_pcadd_0, dec_is_cpucfg_0;
+    logic        dec_is_pcadd_1, dec_is_cpucfg_1;
+    logic        dec_is_csrrd_0, dec_is_csrwr_0, dec_is_csrxchg_0;
+    logic        dec_is_csrrd_1, dec_is_csrwr_1, dec_is_csrxchg_1;
+    logic        dec_is_cacop_0, dec_is_ibar_0;
+    logic        dec_is_cacop_1, dec_is_ibar_1;
+    logic [31:0] dec_imm_0, dec_imm_1;
+    alu_op_t     dec_alu_op_0, dec_alu_op_1;
+    br_type_t    dec_br_type_0, dec_br_type_1;
+    msize_t      dec_mem_size_0, dec_mem_size_1;
 
-    // ==================== DECODE ====================
-    logic [4:0] dec_rs1, dec_rs2, dec_rd;
-    logic       dec_rf_we, dec_alu_src_sel;
-    logic       dec_mem_re, dec_mem_we, dec_mem_unsigned;
-    logic       dec_is_branch, dec_is_jal, dec_is_jalr, dec_is_pcadd, dec_is_cpucfg;
-    logic       dec_is_csrrd, dec_is_csrwr, dec_is_csrxchg, dec_is_cacop, dec_is_ibar, dec_is_illegal;
-    logic [31:0] dec_imm;
-    alu_op_t    dec_alu_op;
-    br_type_t   dec_br_type;
-    msize_t     dec_mem_size;
-
-    decode dec_unit (
+    decode dec_unit0 (
         .instr(if_id_out.data.instr),
-        .rs1(dec_rs1), .rs2(dec_rs2), .rd(dec_rd),
-        .rf_we(dec_rf_we), .imm(dec_imm),
-        .alu_op(dec_alu_op), .alu_src_sel(dec_alu_src_sel),
+        .rs1(dec_rs1_0), .rs2(dec_rs2_0), .rd(dec_rd_0),
+        .rf_we(dec_rf_we_0), .imm(dec_imm_0),
+        .alu_op(dec_alu_op_0), .alu_src_sel(dec_alu_src_sel_0),
         .is_word_op(),
-        .mem_we(dec_mem_we), .mem_re(dec_mem_re),
-        .mem_size(dec_mem_size), .mem_unsigned(dec_mem_unsigned),
-        .is_branch(dec_is_branch), .is_jal(dec_is_jal), .is_jalr(dec_is_jalr),
-        .br_type(dec_br_type),
-        .is_pcadd(dec_is_pcadd),
-        .is_cpucfg(dec_is_cpucfg),
-        .is_csrrd(dec_is_csrrd),
-        .is_csrwr(dec_is_csrwr),
-        .is_csrxchg(dec_is_csrxchg),
-        .is_cacop(dec_is_cacop),
-        .is_ibar(dec_is_ibar),
-        .is_illegal(dec_is_illegal)
+        .mem_we(dec_mem_we_0), .mem_re(dec_mem_re_0),
+        .mem_size(dec_mem_size_0), .mem_unsigned(dec_mem_unsigned_0),
+        .is_branch(dec_is_branch_0), .is_jal(dec_is_jal_0), .is_jalr(dec_is_jalr_0),
+        .br_type(dec_br_type_0),
+        .is_pcadd(dec_is_pcadd_0),
+        .is_cpucfg(dec_is_cpucfg_0),
+        .is_csrrd(dec_is_csrrd_0),
+        .is_csrwr(dec_is_csrwr_0),
+        .is_csrxchg(dec_is_csrxchg_0),
+        .is_cacop(dec_is_cacop_0),
+        .is_ibar(dec_is_ibar_0),
+        .is_illegal()
+    );
+    decode dec_unit1 (
+        .instr(if_id1_out.data.instr),
+        .rs1(dec_rs1_1), .rs2(dec_rs2_1), .rd(dec_rd_1),
+        .rf_we(dec_rf_we_1), .imm(dec_imm_1),
+        .alu_op(dec_alu_op_1), .alu_src_sel(dec_alu_src_sel_1),
+        .is_word_op(),
+        .mem_we(dec_mem_we_1), .mem_re(dec_mem_re_1),
+        .mem_size(dec_mem_size_1), .mem_unsigned(dec_mem_unsigned_1),
+        .is_branch(dec_is_branch_1), .is_jal(dec_is_jal_1), .is_jalr(dec_is_jalr_1),
+        .br_type(dec_br_type_1),
+        .is_pcadd(dec_is_pcadd_1),
+        .is_cpucfg(dec_is_cpucfg_1),
+        .is_csrrd(dec_is_csrrd_1),
+        .is_csrwr(dec_is_csrwr_1),
+        .is_csrxchg(dec_is_csrxchg_1),
+        .is_cacop(dec_is_cacop_1),
+        .is_ibar(dec_is_ibar_1),
+        .is_illegal()
     );
 
-    assign id_jump_req = dec_is_jal && if_id_out.ctrl.valid;
-    assign id_jump_pc  = if_id_out.data.pc + dec_imm;
+    logic id_valid0, id_valid1;
+    assign id_valid0 = if_id_out.ctrl.valid;
+    assign id_valid1 = if_id1_out.ctrl.valid;
+
+    // ----- Issue constraints for slot1 -----
+    // Complex instructions (mul/cacop/ibar/csr*/cpucfg/pcadd) execute in
+    // slot0 only and are exclusive: slot1 is empty when slot0 is complex.
+    // EX0 carries the full function (CSR/JAL/pcadd/cpucfg non-ALU paths);
+    // EX1 is a pure ALU/address unit, so every non-ALU-producing
+    // instruction must stay in slot0.
+    wire slot0_complex = id_valid0 &&
+        ((id_valid0 && dec_alu_op_0 == ALU_MUL) || dec_is_cacop_0 || dec_is_ibar_0 ||
+         dec_is_csrrd_0 || dec_is_csrwr_0 || dec_is_csrxchg_0 || dec_is_cpucfg_0 ||
+         dec_is_pcadd_0);
+    wire slot1_complex = id_valid1 &&
+        ((id_valid1 && dec_alu_op_1 == ALU_MUL) || dec_is_cacop_1 || dec_is_ibar_1 ||
+         dec_is_csrrd_1 || dec_is_csrwr_1 || dec_is_csrxchg_1 || dec_is_cpucfg_1 ||
+         dec_is_pcadd_1);
+    wire slot0_mem = id_valid0 && (dec_mem_re_0 || dec_mem_we_0);
+    wire slot1_mem = id_valid1 && (dec_mem_re_1 || dec_mem_we_1);
+    // A branch/jump in slot0 is exclusive: slot1 is the fall-through path
+    // which the redirect (ID or EX) must not have executed.  The slot1
+    // instruction re-issues next cycle as slot0.
+    wire slot0_branch = id_valid0 && (dec_is_branch_0 || dec_is_jal_0 || dec_is_jalr_0);
+    wire slot1_branch = id_valid1 && (dec_is_branch_1 || dec_is_jal_1 || dec_is_jalr_1);
+    logic slot1_issue_raw;
+    // slot1 reading slot0's load result: the data is not available at EX
+    // (the load completes at MEM), so hold slot1.
+    wire slot0_load = id_valid0 && dec_mem_re_0;
+    wire slot1_dep_load0 = slot0_load && (dec_rd_0 != 5'd0) &&
+        ((dec_rs1_1 == dec_rd_0) || (dec_rs2_1 == dec_rd_0));
+
+    assign slot1_issue_raw = id_valid1 && !slot0_complex && !slot1_complex
+        && !slot0_branch && !slot1_branch
+        && !(slot0_mem && slot1_mem)
+        && !slot1_dep_load0;
+    // The slot1 slot issues when the queue head pair accepts.
+    assign slot1_issue = slot1_issue_raw && !fq_stall_all && !if_id_flush;
+
+    // ----- JAL/BL redirect (slot0 only) -----
+    assign id_jump_req = dec_is_jal_0 && id_valid0;
+    assign id_jump_pc  = if_id_out.data.pc + dec_imm_0;
 
     logic id_predict_taken;
     branch_predictor bp_unit (
         .clk, .reset,
         .id_pc(if_id_out.data.pc),
-        .id_imm(dec_imm),
-        .id_br_type(dec_br_type),
-        .id_is_cond_branch(dec_is_branch & id_valid & (dec_br_type != BR_NONE)),
+        .id_imm(dec_imm_0),
+        .id_br_type(dec_br_type_0),
+        .id_is_cond_branch(dec_is_branch_0 & id_valid0 & (dec_br_type_0 != BR_NONE)),
         .id_valid(if_id_out.ctrl.valid),
         .id_stall(id_ex_stall),
-        .ex_br_taken(br_taken),
-        .ex_valid(id_ex_out.ctrl.valid),
-        .ex_predict_taken(id_ex_out.ctrl.predict_taken),
+        .ex_br_taken(br_taken_0),
+        .ex_valid(id_ex0_out.ctrl.valid),
+        .ex_predict_taken(id_ex0_out.ctrl.predict_taken),
         .predict_taken(id_predict_taken),
         .bp_redirect(bp_do_jump),
         .bp_target(bp_jump_pc),
@@ -335,105 +415,237 @@ module core import la32_common::*; #(
         .bp_correct_pc()
     );
 
+    // ----- Register file: 4R2W, slot0 = write port 1, slot1 = port 2 -----
     logic [31:0] gpr_state [31:0];
+    logic [31:0] rf_rd1_0, rf_rd2_0, rf_rd1_1, rf_rd2_1;
     regfile rf_unit (
         .clk,
-        .ra1(id_ex_out.data.rs1), .ra2(id_ex_out.data.rs2),
-        .ra3(5'd0),               .ra4(5'd0),
-        .rd1(rf_rd1), .rd2(rf_rd2),
-        .rd3(), .rd4(),
-        .wa1(mem_wb_out.data.rd), .wd1(wb_final_res),
-        .wen1(mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid),
-        .wa2(5'd0), .wd2(32'd0), .wen2(1'b0),
+        .ra1(id_ex0_out.data.rs1), .ra2(id_ex0_out.data.rs2),
+        .ra3(id_ex1_out.data.rs1), .ra4(id_ex1_out.data.rs2),
+        .rd1(rf_rd1_0), .rd2(rf_rd2_0), .rd3(rf_rd1_1), .rd4(rf_rd2_1),
+        .wa1(mem_wb0_out.data.rd), .wd1(wb_final_res0),
+        .wen1(mem_wb0_out.ctrl.rf_we && mem_wb0_out.ctrl.valid),
+        .wa2(mem_wb1_out.data.rd), .wd2(wb_final_res1),
+        .wen2(mem_wb1_out.ctrl.rf_we && mem_wb1_out.ctrl.valid),
         .gpr_dbg(gpr_state)
     );
 
-    logic id_valid;
-    assign id_valid = if_id_out.ctrl.valid;
-
+    // ----- ID -> EX (slot0) -----
     // The ID stage must not re-issue the instruction held in the queue
     // while the queue is held: with fq_stall_all=1 the head keeps its
-    // content (a branch predicted taken, an instruction behind a stalled
-    // fetch, ...) and the ID would decode the SAME instruction again after
+    // content and the ID would decode the SAME instruction again after
     // id_ex_stall released — the instruction executes twice. Only issue to
     // EX when the queue actually advances — i.e. when it is not held, or
     // when it is being flushed (a redirect discards the queue; the
     // JAL/branch must still be issued so it is not lost entirely).
-    assign id_ex_in.ctrl.valid      = id_valid && !(fq_stall_all && !if_id_flush);
-    assign id_ex_in.ctrl.rf_we      = dec_rf_we & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.mem_re     = dec_mem_re & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.mem_we     = dec_mem_we & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_branch  = dec_is_branch & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_cond_branch = (dec_is_branch & id_ex_in.ctrl.valid) && (dec_br_type != BR_NONE);
-    assign id_ex_in.ctrl.predict_taken  = id_predict_taken & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_jal     = dec_is_jal & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_jalr    = dec_is_jalr & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_pcadd   = dec_is_pcadd & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_cpucfg  = dec_is_cpucfg & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_csrrd   = dec_is_csrrd & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_csrwr   = dec_is_csrwr & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_csrxchg = dec_is_csrxchg & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_cacop   = dec_is_cacop & id_ex_in.ctrl.valid;
-    assign id_ex_in.ctrl.is_ibar    = dec_is_ibar  & id_ex_in.ctrl.valid;
+    assign id_ex0_in.ctrl.valid      = id_valid0 && !(fq_stall_all && !if_id_flush);
+    assign id_ex0_in.ctrl.rf_we      = dec_rf_we_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.mem_re     = dec_mem_re_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.mem_we     = dec_mem_we_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_branch  = dec_is_branch_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_cond_branch = (dec_is_branch_0 & id_ex0_in.ctrl.valid) && (dec_br_type_0 != BR_NONE);
+    assign id_ex0_in.ctrl.predict_taken  = id_predict_taken & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_jal     = dec_is_jal_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_jalr    = dec_is_jalr_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_pcadd   = dec_is_pcadd_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_cpucfg  = dec_is_cpucfg_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_csrrd   = dec_is_csrrd_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_csrwr   = dec_is_csrwr_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_csrxchg = dec_is_csrxchg_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_cacop   = dec_is_cacop_0 & id_ex0_in.ctrl.valid;
+    assign id_ex0_in.ctrl.is_ibar    = dec_is_ibar_0  & id_ex0_in.ctrl.valid;
 
-    assign id_ex_in.data.fw_a_ex_hit  = (dec_rs1 != 5'd0) && (dec_rs1 == id_ex_out.data.rd);
-    assign id_ex_in.data.fw_a_mem_hit = (dec_rs1 != 5'd0) && (dec_rs1 == ex_mem_out.data.rd);
-    assign id_ex_in.data.fw_b_ex_hit  = (dec_rs2 != 5'd0) && (dec_rs2 == id_ex_out.data.rd);
-    assign id_ex_in.data.fw_b_mem_hit = (dec_rs2 != 5'd0) && (dec_rs2 == ex_mem_out.data.rd);
+    assign id_ex0_in.data.fw_a_ex0   = (dec_rs1_0 != 5'd0) && (dec_rs1_0 == id_ex0_out.data.rd);
+    assign id_ex0_in.data.fw_a_ex1   = (dec_rs1_0 != 5'd0) && (dec_rs1_0 == id_ex1_out.data.rd);
+    assign id_ex0_in.data.fw_a_mem0  = (dec_rs1_0 != 5'd0) && (dec_rs1_0 == ex_mem0_out.data.rd);
+    assign id_ex0_in.data.fw_a_mem1  = (dec_rs1_0 != 5'd0) && (dec_rs1_0 == ex_mem1_out.data.rd);
+    assign id_ex0_in.data.fw_b_ex0   = (dec_rs2_0 != 5'd0) && (dec_rs2_0 == id_ex0_out.data.rd);
+    assign id_ex0_in.data.fw_b_ex1   = (dec_rs2_0 != 5'd0) && (dec_rs2_0 == id_ex1_out.data.rd);
+    assign id_ex0_in.data.fw_b_mem0  = (dec_rs2_0 != 5'd0) && (dec_rs2_0 == ex_mem0_out.data.rd);
+    assign id_ex0_in.data.fw_b_mem1  = (dec_rs2_0 != 5'd0) && (dec_rs2_0 == ex_mem1_out.data.rd);
 
-    assign id_ex_in.data.pc         = if_id_out.data.pc;
-    assign id_ex_in.data.instr      = if_id_out.data.instr;
-    assign id_ex_in.data.rs1        = dec_rs1;
-    assign id_ex_in.data.rs2        = dec_rs2;
-    assign id_ex_in.data.rd         = dec_rd;
-    assign id_ex_in.data.imm        = dec_imm;
-    assign id_ex_in.data.target_pc  = if_id_out.data.pc + dec_imm;
-    assign id_ex_in.data.pc_plus_4  = if_id_out.data.pc + 32'd4;
-    assign id_ex_in.data.alu_op     = dec_alu_op;
-    assign id_ex_in.data.br_type    = dec_br_type;
-    assign id_ex_in.data.alu_src_sel = dec_alu_src_sel;
-    assign id_ex_in.data.mem_size   = dec_mem_size;
-    assign id_ex_in.data.mem_unsigned = dec_mem_unsigned;
+    assign id_ex0_in.data.pc         = if_id_out.data.pc;
+    assign id_ex0_in.data.instr      = if_id_out.data.instr;
+    assign id_ex0_in.data.rs1        = dec_rs1_0;
+    assign id_ex0_in.data.rs2        = dec_rs2_0;
+    assign id_ex0_in.data.rd         = dec_rd_0;
+    assign id_ex0_in.data.imm        = dec_imm_0;
+    assign id_ex0_in.data.target_pc  = if_id_out.data.pc + dec_imm_0;
+    assign id_ex0_in.data.pc_plus_4  = if_id_out.data.pc + 32'd4;
+    assign id_ex0_in.data.alu_op     = dec_alu_op_0;
+    assign id_ex0_in.data.br_type    = dec_br_type_0;
+    assign id_ex0_in.data.alu_src_sel = dec_alu_src_sel_0;
+    assign id_ex0_in.data.mem_size   = dec_mem_size_0;
+    assign id_ex0_in.data.mem_unsigned = dec_mem_unsigned_0;
 
-    pipeline_reg #($bits(id_ex_ctrl_t)) reg_id_ex_ctrl (
+    // ----- ID -> EX (slot1, gated by slot1_issue) -----
+    assign id_ex1_in.ctrl.valid      = slot1_issue;
+    assign id_ex1_in.ctrl.rf_we      = dec_rf_we_1 & slot1_issue;
+    assign id_ex1_in.ctrl.mem_re     = dec_mem_re_1 & slot1_issue;
+    assign id_ex1_in.ctrl.mem_we     = dec_mem_we_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_branch  = dec_is_branch_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_cond_branch = (dec_is_branch_1 & slot1_issue) && (dec_br_type_1 != BR_NONE);
+    assign id_ex1_in.ctrl.predict_taken  = 1'b0;
+    assign id_ex1_in.ctrl.is_jal     = dec_is_jal_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_jalr    = dec_is_jalr_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_pcadd   = dec_is_pcadd_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_cpucfg  = dec_is_cpucfg_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_csrrd   = dec_is_csrrd_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_csrwr   = dec_is_csrwr_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_csrxchg = dec_is_csrxchg_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_cacop   = dec_is_cacop_1 & slot1_issue;
+    assign id_ex1_in.ctrl.is_ibar    = dec_is_ibar_1  & slot1_issue;
+
+    // Slot1 forward flags: EX0/EX1 (1-back), MEM0/MEM1 (2-back); the
+    // in-slot EX0 bypass (same-cycle issue pair) is resolved combinationally
+    // in the EX stage.
+    assign id_ex1_in.data.fw_a_ex0   = (dec_rs1_1 != 5'd0) && (dec_rs1_1 == id_ex0_out.data.rd);
+    assign id_ex1_in.data.fw_a_ex1   = (dec_rs1_1 != 5'd0) && (dec_rs1_1 == id_ex1_out.data.rd);
+    assign id_ex1_in.data.fw_a_mem0  = (dec_rs1_1 != 5'd0) && (dec_rs1_1 == ex_mem0_out.data.rd);
+    assign id_ex1_in.data.fw_a_mem1  = (dec_rs1_1 != 5'd0) && (dec_rs1_1 == ex_mem1_out.data.rd);
+    assign id_ex1_in.data.fw_b_ex0   = (dec_rs2_1 != 5'd0) && (dec_rs2_1 == id_ex0_out.data.rd);
+    assign id_ex1_in.data.fw_b_ex1   = (dec_rs2_1 != 5'd0) && (dec_rs2_1 == id_ex1_out.data.rd);
+    assign id_ex1_in.data.fw_b_mem0  = (dec_rs2_1 != 5'd0) && (dec_rs2_1 == ex_mem0_out.data.rd);
+    assign id_ex1_in.data.fw_b_mem1  = (dec_rs2_1 != 5'd0) && (dec_rs2_1 == ex_mem1_out.data.rd);
+
+    assign id_ex1_in.data.pc         = if_id1_out.data.pc;
+    assign id_ex1_in.data.instr      = if_id1_out.data.instr;
+    assign id_ex1_in.data.rs1        = dec_rs1_1;
+    assign id_ex1_in.data.rs2        = dec_rs2_1;
+    assign id_ex1_in.data.rd         = dec_rd_1;
+    assign id_ex1_in.data.imm        = dec_imm_1;
+    assign id_ex1_in.data.target_pc  = if_id1_out.data.pc + dec_imm_1;
+    assign id_ex1_in.data.pc_plus_4  = if_id1_out.data.pc + 32'd4;
+    assign id_ex1_in.data.alu_op     = dec_alu_op_1;
+    assign id_ex1_in.data.br_type    = dec_br_type_1;
+    assign id_ex1_in.data.alu_src_sel = dec_alu_src_sel_1;
+    assign id_ex1_in.data.mem_size   = dec_mem_size_1;
+    assign id_ex1_in.data.mem_unsigned = dec_mem_unsigned_1;
+
+    pipeline_reg #($bits(id_ex_ctrl_t)) reg_id_ex0_ctrl (
         .clk, .reset, .stall(id_ex_stall), .flush(id_ex_flush),
-        .data_in(id_ex_in.ctrl), .data_out(id_ex_out.ctrl)
+        .data_in(id_ex0_in.ctrl), .data_out(id_ex0_out.ctrl)
     );
-    pipeline_reg #($bits(id_ex_data_t)) reg_id_ex_data (
+    pipeline_reg #($bits(id_ex_data_t)) reg_id_ex0_data (
         .clk, .reset, .stall(id_ex_stall), .flush(1'b0),
-        .data_in(id_ex_in.data), .data_out(id_ex_out.data)
+        .data_in(id_ex0_in.data), .data_out(id_ex0_out.data)
+    );
+    pipeline_reg #($bits(id_ex_ctrl_t)) reg_id_ex1_ctrl (
+        .clk, .reset, .stall(id_ex_stall), .flush(id_ex_flush),
+        .data_in(id_ex1_in.ctrl), .data_out(id_ex1_out.ctrl)
+    );
+    pipeline_reg #($bits(id_ex_data_t)) reg_id_ex1_data (
+        .clk, .reset, .stall(id_ex_stall), .flush(1'b0),
+        .data_in(id_ex1_in.data), .data_out(id_ex1_out.data)
     );
 
-    // ==================== EXECUTE ====================
-    // Operands are read combinationally from the regfile at EX (with the
-    // WB write-bypass), not latched at ID: a pipeline stall can hold the
-    // EX stage for many cycles (e.g. dcache miss refill), during which a
-    // producer may retire; only a live regfile read stays consistent.
-    logic [31:0] rf_rd1, rf_rd2;
-    logic [31:0] forward_a, forward_b, alu_result;
-    logic fw_a_em, fw_a_mw, fw_b_em, fw_b_mw;
-    assign fw_a_em = id_ex_out.data.fw_a_ex_hit  && ex_mem_out.ctrl.rf_we && ex_mem_out.ctrl.valid && !ex_mem_out.ctrl.mem_re;
-    assign fw_a_mw = id_ex_out.data.fw_a_mem_hit && mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid;
-    assign fw_b_em = id_ex_out.data.fw_b_ex_hit  && ex_mem_out.ctrl.rf_we && ex_mem_out.ctrl.valid && !ex_mem_out.ctrl.mem_re;
-    assign fw_b_mw = id_ex_out.data.fw_b_mem_hit && mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid;
+    // ==================== EXECUTE (dual) ====================
+    // Forwarding matrix.  Flags are computed at ID against the EX slots
+    // (1-back producers) and the MEM slots (2-back producers); the EX
+    // stage resolves them against the then-current MEM/WB slots:
+    //   fw_*_em0/em1 : 1-back, producer now in MEM (ex_mem0/ex_mem1)
+    //   fw_*_mw0/mw1 : 2-back, producer now in WB (wb_final_res0/1)
+    // Priority: slot1 (newer) > slot0 for both depths.  Slot1 also
+    // bypasses slot0's combinational result for the same-cycle pair.
+    logic [31:0] forward_a0, forward_b0, forward_a1, forward_b1;
+    logic [31:0] alu_res0, alu_res1;
+    logic [31:0] ex0_result;      // ALU or non-ALU (CSR/JAL/pcadd/cpucfg)
+    logic fw_a0_em0, fw_a0_em1, fw_a0_mw0, fw_a0_mw1;
+    logic fw_b0_em0, fw_b0_em1, fw_b0_mw0, fw_b0_mw1;
+    logic fw_a1_em0, fw_a1_em1, fw_a1_mw0, fw_a1_mw1;
+    logic fw_b1_em0, fw_b1_em1, fw_b1_mw0, fw_b1_mw1;
+
+    assign fw_a0_em0 = id_ex0_out.data.fw_a_ex0 && ex_mem0_out.ctrl.rf_we && ex_mem0_out.ctrl.valid && !ex_mem0_out.ctrl.mem_re;
+    assign fw_a0_em1 = id_ex0_out.data.fw_a_ex1 && ex_mem1_out.ctrl.rf_we && ex_mem1_out.ctrl.valid && !ex_mem1_out.ctrl.mem_re;
+    assign fw_a0_mw0 = id_ex0_out.data.fw_a_mem0 && mem_wb0_out.ctrl.rf_we && mem_wb0_out.ctrl.valid;
+    assign fw_a0_mw1 = id_ex0_out.data.fw_a_mem1 && mem_wb1_out.ctrl.rf_we && mem_wb1_out.ctrl.valid;
+    assign fw_b0_em0 = id_ex0_out.data.fw_b_ex0 && ex_mem0_out.ctrl.rf_we && ex_mem0_out.ctrl.valid && !ex_mem0_out.ctrl.mem_re;
+    assign fw_b0_em1 = id_ex0_out.data.fw_b_ex1 && ex_mem1_out.ctrl.rf_we && ex_mem1_out.ctrl.valid && !ex_mem1_out.ctrl.mem_re;
+    assign fw_b0_mw0 = id_ex0_out.data.fw_b_mem0 && mem_wb0_out.ctrl.rf_we && mem_wb0_out.ctrl.valid;
+    assign fw_b0_mw1 = id_ex0_out.data.fw_b_mem1 && mem_wb1_out.ctrl.rf_we && mem_wb1_out.ctrl.valid;
+
+    // In-slot bypass: slot1 reading the same-cycle slot0 producer's ALU
+    // result (the issue gate already excludes slot1 depending on slot0's
+    // load/mul/branch, so the EX0 result is available).
+    logic fw_a1_ex0_comb, fw_b1_ex0_comb;
+    assign fw_a1_ex0_comb = id_ex1_out.ctrl.valid && id_ex0_out.ctrl.valid &&
+        (id_ex1_out.data.rs1 != 5'd0) && (id_ex1_out.data.rs1 == id_ex0_out.data.rd) &&
+        id_ex0_out.ctrl.rf_we && !id_ex0_out.ctrl.mem_re && !mul_in_progress;
+    assign fw_b1_ex0_comb = id_ex1_out.ctrl.valid && id_ex0_out.ctrl.valid &&
+        (id_ex1_out.data.rs2 != 5'd0) && (id_ex1_out.data.rs2 == id_ex0_out.data.rd) &&
+        id_ex0_out.ctrl.rf_we && !id_ex0_out.ctrl.mem_re && !mul_in_progress;
+
+    assign fw_a1_em0 = id_ex1_out.data.fw_a_ex0 && ex_mem0_out.ctrl.rf_we && ex_mem0_out.ctrl.valid && !ex_mem0_out.ctrl.mem_re;
+    assign fw_a1_em1 = id_ex1_out.data.fw_a_ex1 && ex_mem1_out.ctrl.rf_we && ex_mem1_out.ctrl.valid && !ex_mem1_out.ctrl.mem_re;
+    assign fw_a1_mw0 = id_ex1_out.data.fw_a_mem0 && mem_wb0_out.ctrl.rf_we && mem_wb0_out.ctrl.valid;
+    assign fw_a1_mw1 = id_ex1_out.data.fw_a_mem1 && mem_wb1_out.ctrl.rf_we && mem_wb1_out.ctrl.valid;
+    assign fw_b1_em0 = id_ex1_out.data.fw_b_ex0 && ex_mem0_out.ctrl.rf_we && ex_mem0_out.ctrl.valid && !ex_mem0_out.ctrl.mem_re;
+    assign fw_b1_em1 = id_ex1_out.data.fw_b_ex1 && ex_mem1_out.ctrl.rf_we && ex_mem1_out.ctrl.valid && !ex_mem1_out.ctrl.mem_re;
+    assign fw_b1_mw0 = id_ex1_out.data.fw_b_mem0 && mem_wb0_out.ctrl.rf_we && mem_wb0_out.ctrl.valid;
+    assign fw_b1_mw1 = id_ex1_out.data.fw_b_mem1 && mem_wb1_out.ctrl.rf_we && mem_wb1_out.ctrl.valid;
 
     always_comb begin
-        if (fw_a_em)      forward_a = ex_mem_out.data.alu_res;
-        else if (fw_a_mw) forward_a = wb_final_res;
-        else              forward_a = rf_rd1;
+        if (fw_a0_em1)      forward_a0 = ex_mem1_out.data.alu_res;
+        else if (fw_a0_em0) forward_a0 = ex_mem0_out.data.alu_res;
+        else if (fw_a0_mw1) forward_a0 = wb_final_res1;
+        else if (fw_a0_mw0) forward_a0 = wb_final_res0;
+        else                forward_a0 = rf_rd1_0;
 
-        if (fw_b_em)      forward_b = ex_mem_out.data.alu_res;
-        else if (fw_b_mw) forward_b = wb_final_res;
-        else              forward_b = rf_rd2;
+        if (fw_b0_em1)      forward_b0 = ex_mem1_out.data.alu_res;
+        else if (fw_b0_em0) forward_b0 = ex_mem0_out.data.alu_res;
+        else if (fw_b0_mw1) forward_b0 = wb_final_res1;
+        else if (fw_b0_mw0) forward_b0 = wb_final_res0;
+        else                forward_b0 = rf_rd2_0;
     end
 
-    alu alu_unit (
-        .a(forward_a),
-        .b(id_ex_out.data.alu_src_sel ? id_ex_out.data.imm : forward_b),
-        .op(id_ex_out.data.alu_op),
-        .res(alu_result)
+    always_comb begin
+        if (fw_a1_ex0_comb) forward_a1 = ex0_result;
+        else if (fw_a1_em1) forward_a1 = ex_mem1_out.data.alu_res;
+        else if (fw_a1_em0) forward_a1 = ex_mem0_out.data.alu_res;
+        else if (fw_a1_mw1) forward_a1 = wb_final_res1;
+        else if (fw_a1_mw0) forward_a1 = wb_final_res0;
+        else                forward_a1 = rf_rd1_1;
+
+        if (fw_b1_ex0_comb) forward_b1 = ex0_result;
+        else if (fw_b1_em1) forward_b1 = ex_mem1_out.data.alu_res;
+        else if (fw_b1_em0) forward_b1 = ex_mem0_out.data.alu_res;
+        else if (fw_b1_mw1) forward_b1 = wb_final_res1;
+        else if (fw_b1_mw0) forward_b1 = wb_final_res0;
+        else                forward_b1 = rf_rd2_1;
+    end
+
+    // ---- EX0 (full function) ----
+    logic [31:0] alu_a0, alu_b0;
+    assign alu_a0 = forward_a0;
+    assign alu_b0 = id_ex0_out.data.alu_src_sel ? id_ex0_out.data.imm : forward_b0;
+    alu alu_unit0 (
+        .a(alu_a0), .b(alu_b0),
+        .op(id_ex0_out.data.alu_op),
+        .res(alu_res0)
     );
 
+    logic br_taken_0;
+    bcu bcu_unit0 (
+        .rs1_val(forward_a0), .rs2_val(forward_b0),
+        .br_type(id_ex0_out.data.br_type), .br_taken(br_taken_0)
+    );
+
+    npc npc_unit0 (
+        .target_pc(id_ex0_out.data.target_pc),
+        .pc_plus_4(id_ex0_out.data.pc_plus_4),
+        .rs1_val(forward_a0),
+        .imm(id_ex0_out.data.imm),
+        .is_branch(id_ex0_out.ctrl.is_branch),
+        .is_jal(id_ex0_out.ctrl.is_jal),
+        .is_jalr(id_ex0_out.ctrl.is_jalr),
+        .is_ibar(id_ex0_out.ctrl.is_ibar),
+        .br_taken(br_taken_0),
+        .predict_taken(id_ex0_out.ctrl.predict_taken),
+        .next_pc(ex_jump_pc),
+        .flush_req(ex_jump_flush)
+    );
+
+    // ---- MUL (slot0 only, 2 cycles) ----
     logic        mul_in_progress;
     logic        mul_first_cycle;
     logic [31:0] mul_p0_reg;
@@ -441,10 +653,9 @@ module core import la32_common::*; #(
     logic [15:0] mul_p2l_reg;
     logic [15:0] mul_hi;
     logic [31:0] mul_result;
-    logic [31:0] ex_alu_result;
 
-    assign mul_first_cycle = id_ex_out.ctrl.valid &&
-        id_ex_out.data.alu_op == ALU_MUL &&
+    assign mul_first_cycle = id_ex0_out.ctrl.valid &&
+        id_ex0_out.data.alu_op == ALU_MUL &&
         !mul_in_progress;
 
     always_ff @(posedge clk) begin
@@ -452,52 +663,24 @@ module core import la32_common::*; #(
             mul_in_progress <= 1'b0;
         else if (mul_in_progress)
             mul_in_progress <= 1'b0;
-        else if (id_ex_out.ctrl.valid && id_ex_out.data.alu_op == ALU_MUL)
+        else if (id_ex0_out.ctrl.valid && id_ex0_out.data.alu_op == ALU_MUL)
             mul_in_progress <= 1'b1;
     end
 
     always_ff @(posedge clk) begin
         if (mul_first_cycle) begin
-            mul_p0_reg  <= forward_a[15:0] * forward_b[15:0];
-            mul_p1l_reg <= forward_a[15:0] * forward_b[31:16];
-            mul_p2l_reg <= forward_a[31:16] * forward_b[15:0];
+            mul_p0_reg  <= forward_a0[15:0] * forward_b0[15:0];
+            mul_p1l_reg <= forward_a0[15:0] * forward_b0[31:16];
+            mul_p2l_reg <= forward_a0[31:16] * forward_b0[15:0];
         end
     end
 
     assign mul_hi     = mul_p0_reg[31:16] + mul_p1l_reg + mul_p2l_reg;
     assign mul_result = {mul_hi[15:0], mul_p0_reg[15:0]};
-    assign ex_alu_result = mul_in_progress ? mul_result : alu_result;
+    logic [31:0] ex0_alu_result;
+    assign ex0_alu_result = mul_in_progress ? mul_result : alu_res0;
 
-    logic br_taken;
-    bcu bcu_unit (
-        .rs1_val(forward_a), .rs2_val(forward_b),
-        .br_type(id_ex_out.data.br_type), .br_taken(br_taken)
-    );
-
-    npc npc_unit (
-        .target_pc(id_ex_out.data.target_pc),
-        .pc_plus_4(id_ex_out.data.pc_plus_4),
-        .rs1_val(forward_a),
-        .imm(id_ex_out.data.imm),
-        .is_branch(id_ex_out.ctrl.is_branch),
-        .is_jal(id_ex_out.ctrl.is_jal),
-        .is_jalr(id_ex_out.ctrl.is_jalr),
-        .is_ibar(id_ex_out.ctrl.is_ibar),
-        .br_taken(br_taken),
-        .predict_taken(id_ex_out.ctrl.predict_taken),
-        .next_pc(ex_jump_pc),
-        .flush_req(ex_jump_flush)
-    );
-
-    logic cacop_not_ready;
-    logic cacop_in_ex;
-    assign cacop_in_ex = id_ex_out.ctrl.is_cacop && id_ex_out.ctrl.valid;
-    assign cacop_req.valid = cacop_in_ex;
-    assign cacop_req.code  = id_ex_out.data.instr[4:0];
-    assign cacop_req.addr  = alu_result;
-    assign cacop_not_ready = cacop_in_ex && !cacop_done;
-
-    // ==================== CSR REGISTER FILE ====================
+    // ---- CSR (slot0 only) ----
     logic [13:0] csr_num;
     logic [31:0] csr_rdata, csr_wdata;
     logic [31:0] csr_crmd, csr_dmw0, csr_dmw1;
@@ -506,7 +689,7 @@ module core import la32_common::*; #(
     logic [31:0] csr_save0, csr_save1, csr_save2, csr_save3;
     logic [31:0] csr_tid, csr_tcfg, csr_tval, csr_llbctl, csr_tlbrentry;
 
-    assign csr_num = id_ex_out.data.instr[23:10];
+    assign csr_num = id_ex0_out.data.instr[23:10];
 
     logic [13:0] csr_num_r;
     logic [31:0] csr_rdata_r;
@@ -520,8 +703,7 @@ module core import la32_common::*; #(
         csr_rdata_r <= csr_rdata;
     end
 
-    // ==================== CSR RETIREMENT & FORWARDING ====================
-    // CSR writes take effect at the WB retirement point (in-order). The real
+    // CSR writes take effect at the WB retirement point (in-order). The
     // regfile array write happens when the csrwr/csrxchg retires, so the
     // architectural state (and difftest comparison) is always consistent.
     // In-flight write tracking for EX-stage forwarding:
@@ -574,36 +756,31 @@ module core import la32_common::*; #(
     );
 
     always_comb begin
-        if (id_ex_out.ctrl.is_csrwr)
-            csr_wdata = forward_a;
-        else if (id_ex_out.ctrl.is_csrxchg)
-            csr_wdata = (csr_rdata_final & ~forward_a) | (forward_b & forward_a);
+        if (id_ex0_out.ctrl.is_csrwr)
+            csr_wdata = forward_a0;
+        else if (id_ex0_out.ctrl.is_csrxchg)
+            csr_wdata = (csr_rdata_final & ~forward_a0) | (forward_b0 & forward_a0);
         else
             csr_wdata = 32'd0;
     end
 
-    assign mem_csr_we    = ex_mem_out.ctrl.valid && (ex_mem_out.ctrl.is_csrwr || ex_mem_out.ctrl.is_csrxchg);
-    assign mem_csr_num   = ex_mem_out.data.instr[23:10];
-    assign mem_csr_wdata = ex_mem_out.data.csr_wdata;
-    assign wb_csr_we     = mem_wb_out.ctrl.valid && (mem_wb_out.ctrl.is_csrwr || mem_wb_out.ctrl.is_csrxchg);
-    assign wb_csr_num    = mem_wb_out.data.instr[23:10];
-    assign wb_csr_wdata  = mem_wb_out.data.csr_wdata;
+    assign mem_csr_we    = ex_mem0_out.ctrl.valid && (ex_mem0_out.ctrl.is_csrwr || ex_mem0_out.ctrl.is_csrxchg);
+    assign mem_csr_num   = ex_mem0_out.data.instr[23:10];
+    assign mem_csr_wdata = ex_mem0_out.data.csr_wdata;
+    assign wb_csr_we     = mem_wb0_out.ctrl.valid && (mem_wb0_out.ctrl.is_csrwr || mem_wb0_out.ctrl.is_csrxchg);
+    assign wb_csr_num    = mem_wb0_out.data.instr[23:10];
+    assign wb_csr_wdata  = mem_wb0_out.data.csr_wdata;
 
-    // ==================== EXECUTE (continued) ====================
-    logic ex_valid;
-    assign ex_valid = id_ex_out.ctrl.valid;
+    logic csr_read_stall;
+    assign csr_read_stall = id_ex0_out.ctrl.valid &&
+        (id_ex0_out.ctrl.is_csrrd || id_ex0_out.ctrl.is_csrxchg) &&
+        (csr_num != csr_num_r);
 
-    assign ex_mem_in.ctrl.valid     = ex_valid;
-    assign ex_mem_in.ctrl.rf_we     = id_ex_out.ctrl.rf_we & ex_valid;
-    assign ex_mem_in.ctrl.mem_re    = id_ex_out.ctrl.mem_re & ex_valid;
-    assign ex_mem_in.ctrl.mem_we    = id_ex_out.ctrl.mem_we & ex_valid;
-    assign ex_mem_in.ctrl.is_cond_branch = id_ex_out.ctrl.is_cond_branch & ex_valid;
-    assign ex_mem_in.ctrl.is_csrwr  = id_ex_out.ctrl.is_csrwr & ex_valid;
-    assign ex_mem_in.ctrl.is_csrxchg = id_ex_out.ctrl.is_csrxchg & ex_valid;
-
-    assign ex_mem_in.data.pc        = id_ex_out.data.pc;
-    assign ex_mem_in.data.instr     = id_ex_out.data.instr;
-    assign ex_mem_in.data.rd        = id_ex_out.data.rd;
+    logic        is_non_alu0;
+    logic [31:0] non_alu_result0;
+    assign is_non_alu0 = id_ex0_out.ctrl.is_csrrd || id_ex0_out.ctrl.is_csrwr ||
+        id_ex0_out.ctrl.is_csrxchg || id_ex0_out.ctrl.is_jal || id_ex0_out.ctrl.is_jalr ||
+        id_ex0_out.ctrl.is_pcadd || id_ex0_out.ctrl.is_cpucfg;
 
     logic [31:0] cpucfg_result;
     // CPUCFG.0x11/0x12 use the kernel-private encoding
@@ -618,7 +795,7 @@ module core import la32_common::*; #(
                             (DCACHE_WAYS - 1);
     always_comb begin
         cpucfg_result = 32'd0;
-        case (forward_a)
+        case (forward_a0)
             32'd16: cpucfg_result = 32'h00000015;
             32'd17: cpucfg_result = ICACHE_CFG;
             32'd18: cpucfg_result = DCACHE_CFG;
@@ -626,36 +803,83 @@ module core import la32_common::*; #(
         endcase
     end
 
-    logic csr_read_stall;
-    assign csr_read_stall = id_ex_out.ctrl.valid &&
-        (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrxchg) &&
-        (csr_num != csr_num_r);
-
-    logic        is_non_alu;
-    logic [31:0] non_alu_result;
-    assign is_non_alu = id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrwr ||
-        id_ex_out.ctrl.is_csrxchg || id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr ||
-        id_ex_out.ctrl.is_pcadd || id_ex_out.ctrl.is_cpucfg;
-
     always_comb begin
-        if (id_ex_out.ctrl.is_csrrd || id_ex_out.ctrl.is_csrwr || id_ex_out.ctrl.is_csrxchg)
-            non_alu_result = csr_rdata_final;
-        else if (id_ex_out.ctrl.is_jal || id_ex_out.ctrl.is_jalr)
-            non_alu_result = id_ex_out.data.pc_plus_4;
-        else if (id_ex_out.ctrl.is_pcadd)
-            non_alu_result = id_ex_out.data.pc + id_ex_out.data.imm;
-        else if (id_ex_out.ctrl.is_cpucfg)
-            non_alu_result = cpucfg_result;
+        if (id_ex0_out.ctrl.is_csrrd || id_ex0_out.ctrl.is_csrwr || id_ex0_out.ctrl.is_csrxchg)
+            non_alu_result0 = csr_rdata_final;
+        else if (id_ex0_out.ctrl.is_jal || id_ex0_out.ctrl.is_jalr)
+            non_alu_result0 = id_ex0_out.data.pc_plus_4;
+        else if (id_ex0_out.ctrl.is_pcadd)
+            non_alu_result0 = id_ex0_out.data.pc + id_ex0_out.data.imm;
+        else if (id_ex0_out.ctrl.is_cpucfg)
+            non_alu_result0 = cpucfg_result;
         else
-            non_alu_result = 32'd0;
+            non_alu_result0 = 32'd0;
     end
+    assign ex0_result = is_non_alu0 ? non_alu_result0 : ex0_alu_result;
 
-    assign ex_mem_in.data.alu_res = is_non_alu ? non_alu_result : ex_alu_result;
+    // ---- CACOP (slot0 only) ----
+    logic cacop_not_ready;
+    logic cacop_in_ex;
+    assign cacop_in_ex = id_ex0_out.ctrl.is_cacop && id_ex0_out.ctrl.valid;
+    assign cacop_req.valid = cacop_in_ex;
+    assign cacop_req.code  = id_ex0_out.data.instr[4:0];
+    assign cacop_req.addr  = ex0_result;
+    assign cacop_not_ready = cacop_in_ex && !cacop_done;
 
-    assign ex_mem_in.data.rs2_val   = forward_b;
+    // ---- EX1 (ALU / address only) ----
+    logic [31:0] alu_a1, alu_b1;
+    assign alu_a1 = forward_a1;
+    assign alu_b1 = id_ex1_out.data.alu_src_sel ? id_ex1_out.data.imm : forward_b1;
+    alu alu_unit1 (
+        .a(alu_a1), .b(alu_b1),
+        .op(id_ex1_out.data.alu_op),
+        .res(alu_res1)
+    );
 
-    logic [31:0] ex_mem_addr;
-    logic        ex_mem_cacheable;
+    // ==================== EX -> MEM (dual) ====================
+    logic ex_valid0, ex_valid1;
+    assign ex_valid0 = id_ex0_out.ctrl.valid;
+    assign ex_valid1 = id_ex1_out.ctrl.valid;
+
+    assign ex_mem0_in.ctrl.valid     = ex_valid0;
+    assign ex_mem0_in.ctrl.rf_we     = id_ex0_out.ctrl.rf_we & ex_valid0;
+    assign ex_mem0_in.ctrl.mem_re    = id_ex0_out.ctrl.mem_re & ex_valid0;
+    assign ex_mem0_in.ctrl.mem_we    = id_ex0_out.ctrl.mem_we & ex_valid0;
+    assign ex_mem0_in.ctrl.is_cond_branch = id_ex0_out.ctrl.is_cond_branch & ex_valid0;
+    assign ex_mem0_in.ctrl.is_csrwr  = id_ex0_out.ctrl.is_csrwr & ex_valid0;
+    assign ex_mem0_in.ctrl.is_csrxchg = id_ex0_out.ctrl.is_csrxchg & ex_valid0;
+    assign ex_mem0_in.data.pc        = id_ex0_out.data.pc;
+    assign ex_mem0_in.data.instr     = id_ex0_out.data.instr;
+    assign ex_mem0_in.data.rd        = id_ex0_out.data.rd;
+    assign ex_mem0_in.data.alu_res   = ex0_result;
+    assign ex_mem0_in.data.rs2_val   = forward_b0;
+    assign ex_mem0_in.data.mem_size  = id_ex0_out.data.mem_size;
+    assign ex_mem0_in.data.mem_unsigned = id_ex0_out.data.mem_unsigned;
+    assign ex_mem0_in.data.csr_wdata = csr_wdata;
+
+    assign ex_mem1_in.ctrl.valid     = ex_valid1;
+    assign ex_mem1_in.ctrl.rf_we     = id_ex1_out.ctrl.rf_we & ex_valid1;
+    assign ex_mem1_in.ctrl.mem_re    = id_ex1_out.ctrl.mem_re & ex_valid1;
+    assign ex_mem1_in.ctrl.mem_we    = id_ex1_out.ctrl.mem_we & ex_valid1;
+    assign ex_mem1_in.ctrl.is_cond_branch = id_ex1_out.ctrl.is_cond_branch & ex_valid1;
+    assign ex_mem1_in.ctrl.is_csrwr  = id_ex1_out.ctrl.is_csrwr & ex_valid1;
+    assign ex_mem1_in.ctrl.is_csrxchg = id_ex1_out.ctrl.is_csrxchg & ex_valid1;
+    assign ex_mem1_in.data.pc        = id_ex1_out.data.pc;
+    assign ex_mem1_in.data.instr     = id_ex1_out.data.instr;
+    assign ex_mem1_in.data.rd        = id_ex1_out.data.rd;
+    assign ex_mem1_in.data.alu_res   = alu_res1;
+    assign ex_mem1_in.data.rs2_val   = forward_b1;
+    assign ex_mem1_in.data.mem_size  = id_ex1_out.data.mem_size;
+    assign ex_mem1_in.data.mem_unsigned = id_ex1_out.data.mem_unsigned;
+    assign ex_mem1_in.data.csr_wdata = 32'd0;
+
+    // ---- DMW translation for the memory slot (at most one) ----
+    // Performed at EX on the slot's computed address (ex0_result/alu_res1).
+    logic        ex_slot0_mem;
+    logic [31:0] ex_mem_slot_addr;
+    assign ex_slot0_mem = id_ex0_out.ctrl.valid && (id_ex0_out.ctrl.mem_re || id_ex0_out.ctrl.mem_we);
+    assign ex_mem_slot_addr = ex_slot0_mem ? ex0_result : alu_res1;
+
     logic [31:0] crmd_eff, dmw0_eff, dmw1_eff;
     // MEM-stage bypass: a csrwr/csrxchg one instruction older is still
     // in-flight; the WB-stage write is covered by csr_regfile output bypass,
@@ -663,78 +887,133 @@ module core import la32_common::*; #(
     assign crmd_eff  = (mem_csr_we && mem_csr_num == 14'h000) ? mem_csr_wdata : csr_crmd;
     assign dmw0_eff  = (mem_csr_we && mem_csr_num == 14'h180) ? mem_csr_wdata : csr_dmw0;
     assign dmw1_eff  = (mem_csr_we && mem_csr_num == 14'h181) ? mem_csr_wdata : csr_dmw1;
+
+    logic [31:0] ex_mem_addr_eff;
+    logic        ex_mem_cacheable_eff;
     always_comb begin
-        ex_mem_addr = alu_result;
-        ex_mem_cacheable = 1'b0;
+        ex_mem_addr_eff = ex_mem_slot_addr;
+        ex_mem_cacheable_eff = 1'b0;
         if (!crmd_eff[3] && crmd_eff[4]) begin
-            if (alu_result[31:29] == dmw0_eff[31:29] && dmw0_eff[0]) begin
-                ex_mem_addr = {dmw0_eff[27:25], alu_result[28:0]};
-                ex_mem_cacheable = 1'b1;
-            end else if (alu_result[31:29] == dmw1_eff[31:29] && dmw1_eff[0]) begin
-                ex_mem_addr = {dmw1_eff[27:25], alu_result[28:0]};
+            if (ex_mem_slot_addr[31:29] == dmw0_eff[31:29] && dmw0_eff[0]) begin
+                ex_mem_addr_eff = {dmw0_eff[27:25], ex_mem_slot_addr[28:0]};
+                ex_mem_cacheable_eff = 1'b1;
+            end else if (ex_mem_slot_addr[31:29] == dmw1_eff[31:29] && dmw1_eff[0]) begin
+                ex_mem_addr_eff = {dmw1_eff[27:25], ex_mem_slot_addr[28:0]};
             end
         end
     end
 
-    assign ex_mem_in.data.mem_addr  = ex_mem_addr;
-    assign ex_mem_in.data.mem_size  = id_ex_out.data.mem_size;
-    assign ex_mem_in.data.mem_unsigned = id_ex_out.data.mem_unsigned;
-    assign ex_mem_in.data.mem_cacheable = ex_mem_cacheable;
-    assign ex_mem_in.data.csr_wdata = csr_wdata;
+    // Only the memory slot carries the translated address.
+    assign ex_mem0_in.data.mem_addr  = ex_slot0_mem ? ex_mem_addr_eff : 32'd0;
+    assign ex_mem0_in.data.mem_cacheable = ex_slot0_mem ? ex_mem_cacheable_eff : 1'b0;
+    assign ex_mem1_in.data.mem_addr  = ex_slot0_mem ? 32'd0 : ex_mem_addr_eff;
+    assign ex_mem1_in.data.mem_cacheable = ex_slot0_mem ? 1'b0 : ex_mem_cacheable_eff;
 
-    pipeline_reg #($bits(ex_mem_ctrl_t)) reg_ex_mem_ctrl (
+    pipeline_reg #($bits(ex_mem_ctrl_t)) reg_ex_mem0_ctrl (
         .clk, .reset, .stall(ex_mem_stall), .flush(1'b0),
-        .data_in(ex_mem_in.ctrl), .data_out(ex_mem_out.ctrl)
+        .data_in(ex_mem0_in.ctrl), .data_out(ex_mem0_out.ctrl)
     );
-    pipeline_reg #($bits(ex_mem_data_t)) reg_ex_mem_data (
+    pipeline_reg #($bits(ex_mem_data_t)) reg_ex_mem0_data (
         .clk, .reset, .stall(ex_mem_stall), .flush(1'b0),
-        .data_in(ex_mem_in.data), .data_out(ex_mem_out.data)
+        .data_in(ex_mem0_in.data), .data_out(ex_mem0_out.data)
+    );
+    pipeline_reg #($bits(ex_mem_ctrl_t)) reg_ex_mem1_ctrl (
+        .clk, .reset, .stall(ex_mem_stall), .flush(1'b0),
+        .data_in(ex_mem1_in.ctrl), .data_out(ex_mem1_out.ctrl)
+    );
+    pipeline_reg #($bits(ex_mem_data_t)) reg_ex_mem1_data (
+        .clk, .reset, .stall(ex_mem_stall), .flush(1'b0),
+        .data_in(ex_mem1_in.data), .data_out(ex_mem1_out.data)
     );
 
-    // ==================== MEMORY ====================
+    // ==================== MEMORY (single LSU, ≤1 mem instr/cycle) ====================
     logic [31:0] lsu_rdata;
     logic lsu_ready;
 
+    // The memory slot: at most one of the two MEM slots is a load/store
+    // (the issue gate forbids two mem instructions in the same cycle, and
+    // successive mem instructions occupy different slots as they flow).
+    wire mem_slot_is_slot0 = ex_mem0_out.ctrl.valid &&
+        (ex_mem0_out.ctrl.mem_re || ex_mem0_out.ctrl.mem_we);
+
     lsu lsu_unit (
         .clk, .reset,
-        .valid_in(ex_mem_out.ctrl.valid),
-        .mem_re(ex_mem_out.ctrl.mem_re), .mem_we(ex_mem_out.ctrl.mem_we),
-        .mem_size(ex_mem_out.data.mem_size), .mem_unsigned(ex_mem_out.data.mem_unsigned),
-        .addr(ex_mem_out.data.mem_addr), .wdata(ex_mem_out.data.rs2_val),
-        .cacheable(ex_mem_out.data.mem_cacheable),
+        .valid_in(mem_slot_is_slot0 ? ex_mem0_out.ctrl.valid : ex_mem1_out.ctrl.valid),
+        .mem_re(mem_slot_is_slot0 ? ex_mem0_out.ctrl.mem_re : ex_mem1_out.ctrl.mem_re),
+        .mem_we(mem_slot_is_slot0 ? ex_mem0_out.ctrl.mem_we : ex_mem1_out.ctrl.mem_we),
+        .mem_size(mem_slot_is_slot0 ? ex_mem0_out.data.mem_size : ex_mem1_out.data.mem_size),
+        .mem_unsigned(mem_slot_is_slot0 ? ex_mem0_out.data.mem_unsigned : ex_mem1_out.data.mem_unsigned),
+        .addr(mem_slot_is_slot0 ? ex_mem0_out.data.mem_addr : ex_mem1_out.data.mem_addr),
+        .wdata(mem_slot_is_slot0 ? ex_mem0_out.data.rs2_val : ex_mem1_out.data.rs2_val),
+        .cacheable(mem_slot_is_slot0 ? ex_mem0_out.data.mem_cacheable : ex_mem1_out.data.mem_cacheable),
         .rdata_out(lsu_rdata), .lsu_ready,
         .dreq, .dresp
     );
 
-    logic mem_valid;
-    assign mem_valid = ex_mem_out.ctrl.valid && lsu_ready && !ex_mem_stall;
+    logic mem_valid0, mem_valid1;
+    // Both slots advance with the LSU: a MEM-level load/store hold (e.g. a
+    // dcache refill) stalls the whole memory stage, preserving the legacy
+    // global-stall semantics.
+    assign mem_valid0 = ex_mem0_out.ctrl.valid && lsu_ready && !ex_mem_stall;
+    assign mem_valid1 = ex_mem1_out.ctrl.valid && lsu_ready && !ex_mem_stall;
 
+    // The memory slot's load data is the lsu_rdata (0-cycle hit) or the
+    // pass-through response; the WB stage re-extracts for L1 hits.
+    logic [31:0] mem0_final_res, mem1_final_res;
+    assign mem0_final_res = ex_mem0_out.ctrl.mem_re ? lsu_rdata : ex_mem0_out.data.alu_res;
+    assign mem1_final_res = ex_mem1_out.ctrl.mem_re ? lsu_rdata : ex_mem1_out.data.alu_res;
 
-    assign mem_wb_in.ctrl.valid     = mem_valid;
-    assign mem_wb_in.ctrl.rf_we     = ex_mem_out.ctrl.rf_we & mem_valid;
-    assign mem_wb_in.ctrl.mem_re    = ex_mem_out.ctrl.mem_re & mem_valid;
-    assign mem_wb_in.ctrl.mem_we    = ex_mem_out.ctrl.mem_we & mem_valid;
-    assign mem_wb_in.ctrl.is_cond_branch = ex_mem_out.ctrl.is_cond_branch & mem_valid;
-    assign mem_wb_in.ctrl.is_csrwr  = ex_mem_out.ctrl.is_csrwr & mem_valid;
-    assign mem_wb_in.ctrl.is_csrxchg = ex_mem_out.ctrl.is_csrxchg & mem_valid;
-    assign mem_wb_in.ctrl.mem_hit   = mem_valid && ex_mem_out.ctrl.mem_re && dresp.hit;
-    assign mem_wb_in.ctrl.mem_hit_way = dresp.hit_way;
-    assign mem_wb_in.ctrl.mem_size  = ex_mem_out.data.mem_size;
-    assign mem_wb_in.ctrl.mem_unsigned = ex_mem_out.data.mem_unsigned;
-    assign mem_wb_in.data.pc        = ex_mem_out.data.pc;
-    assign mem_wb_in.data.instr     = ex_mem_out.data.instr;
-    assign mem_wb_in.data.rd        = ex_mem_out.data.rd;
-    assign mem_wb_in.data.final_res = ex_mem_out.ctrl.mem_re ? lsu_rdata : ex_mem_out.data.alu_res;
-    assign mem_wb_in.data.mem_addr  = ex_mem_out.data.mem_addr;
-    assign mem_wb_in.data.csr_wdata = ex_mem_out.data.csr_wdata;
+    assign mem_wb0_in.ctrl.valid     = mem_valid0;
+    assign mem_wb0_in.ctrl.rf_we     = ex_mem0_out.ctrl.rf_we & mem_valid0;
+    assign mem_wb0_in.ctrl.mem_re    = ex_mem0_out.ctrl.mem_re & mem_valid0;
+    assign mem_wb0_in.ctrl.mem_we    = ex_mem0_out.ctrl.mem_we & mem_valid0;
+    assign mem_wb0_in.ctrl.is_cond_branch = ex_mem0_out.ctrl.is_cond_branch & mem_valid0;
+    assign mem_wb0_in.ctrl.is_csrwr  = ex_mem0_out.ctrl.is_csrwr & mem_valid0;
+    assign mem_wb0_in.ctrl.is_csrxchg = ex_mem0_out.ctrl.is_csrxchg & mem_valid0;
+    assign mem_wb0_in.ctrl.mem_hit   = mem_valid0 && ex_mem0_out.ctrl.mem_re && dresp.hit;
+    assign mem_wb0_in.ctrl.mem_hit_way = dresp.hit_way;
+    assign mem_wb0_in.ctrl.mem_size  = ex_mem0_out.data.mem_size;
+    assign mem_wb0_in.ctrl.mem_unsigned = ex_mem0_out.data.mem_unsigned;
+    assign mem_wb0_in.data.pc        = ex_mem0_out.data.pc;
+    assign mem_wb0_in.data.instr     = ex_mem0_out.data.instr;
+    assign mem_wb0_in.data.rd        = ex_mem0_out.data.rd;
+    assign mem_wb0_in.data.final_res = mem0_final_res;
+    assign mem_wb0_in.data.mem_addr  = ex_mem0_out.data.mem_addr;
+    assign mem_wb0_in.data.csr_wdata = ex_mem0_out.data.csr_wdata;
 
-    pipeline_reg #($bits(mem_wb_ctrl_t)) reg_mem_wb_ctrl (
+    assign mem_wb1_in.ctrl.valid     = mem_valid1;
+    assign mem_wb1_in.ctrl.rf_we     = ex_mem1_out.ctrl.rf_we & mem_valid1;
+    assign mem_wb1_in.ctrl.mem_re    = ex_mem1_out.ctrl.mem_re & mem_valid1;
+    assign mem_wb1_in.ctrl.mem_we    = ex_mem1_out.ctrl.mem_we & mem_valid1;
+    assign mem_wb1_in.ctrl.is_cond_branch = ex_mem1_out.ctrl.is_cond_branch & mem_valid1;
+    assign mem_wb1_in.ctrl.is_csrwr  = ex_mem1_out.ctrl.is_csrwr & mem_valid1;
+    assign mem_wb1_in.ctrl.is_csrxchg = ex_mem1_out.ctrl.is_csrxchg & mem_valid1;
+    assign mem_wb1_in.ctrl.mem_hit   = mem_valid1 && ex_mem1_out.ctrl.mem_re && dresp.hit;
+    assign mem_wb1_in.ctrl.mem_hit_way = dresp.hit_way;
+    assign mem_wb1_in.ctrl.mem_size  = ex_mem1_out.data.mem_size;
+    assign mem_wb1_in.ctrl.mem_unsigned = ex_mem1_out.data.mem_unsigned;
+    assign mem_wb1_in.data.pc        = ex_mem1_out.data.pc;
+    assign mem_wb1_in.data.instr     = ex_mem1_out.data.instr;
+    assign mem_wb1_in.data.rd        = ex_mem1_out.data.rd;
+    assign mem_wb1_in.data.final_res = mem1_final_res;
+    assign mem_wb1_in.data.mem_addr  = ex_mem1_out.data.mem_addr;
+    assign mem_wb1_in.data.csr_wdata = ex_mem1_out.data.csr_wdata;
+
+    pipeline_reg #($bits(mem_wb_ctrl_t)) reg_mem_wb0_ctrl (
         .clk, .reset, .stall(1'b0), .flush(1'b0),
-        .data_in(mem_wb_in.ctrl), .data_out(mem_wb_out.ctrl)
+        .data_in(mem_wb0_in.ctrl), .data_out(mem_wb0_out.ctrl)
     );
-    pipeline_reg #($bits(mem_wb_data_t)) reg_mem_wb_data (
+    pipeline_reg #($bits(mem_wb_data_t)) reg_mem_wb0_data (
         .clk, .reset, .stall(1'b0), .flush(1'b0),
-        .data_in(mem_wb_in.data), .data_out(mem_wb_out.data)
+        .data_in(mem_wb0_in.data), .data_out(mem_wb0_out.data)
+    );
+    pipeline_reg #($bits(mem_wb_ctrl_t)) reg_mem_wb1_ctrl (
+        .clk, .reset, .stall(1'b0), .flush(1'b0),
+        .data_in(mem_wb1_in.ctrl), .data_out(mem_wb1_out.ctrl)
+    );
+    pipeline_reg #($bits(mem_wb_data_t)) reg_mem_wb1_data (
+        .clk, .reset, .stall(1'b0), .flush(1'b0),
+        .data_in(mem_wb1_in.data), .data_out(mem_wb1_out.data)
     );
 
     // ==================== WB load data (rvcpu-style sampling) ====================
@@ -772,21 +1051,32 @@ module core import la32_common::*; #(
         endcase
     endfunction
 
-    wire [31:0] wb_final_res;
+    wire [31:0] wb_final_res0, wb_final_res1;
     generate
         if (L1CACHE_WORDS > 1) begin : g_wb_word_sel
-            assign wb_final_res = mem_wb_out.ctrl.mem_hit
-                ? wb_readdata(dcache_data_wb[mem_wb_out.ctrl.mem_hit_way]
-                                           [mem_wb_out.data.mem_addr[WB_WORD_WIDTH+1:2]],
-                              mem_wb_out.ctrl.mem_size,
-                              mem_wb_out.data.mem_addr[1:0], mem_wb_out.ctrl.mem_unsigned)
-                : mem_wb_out.data.final_res;
+            assign wb_final_res0 = mem_wb0_out.ctrl.mem_hit
+                ? wb_readdata(dcache_data_wb[mem_wb0_out.ctrl.mem_hit_way]
+                                           [mem_wb0_out.data.mem_addr[WB_WORD_WIDTH+1:2]],
+                              mem_wb0_out.ctrl.mem_size,
+                              mem_wb0_out.data.mem_addr[1:0], mem_wb0_out.ctrl.mem_unsigned)
+                : mem_wb0_out.data.final_res;
+            assign wb_final_res1 = mem_wb1_out.ctrl.mem_hit
+                ? wb_readdata(dcache_data_wb[mem_wb1_out.ctrl.mem_hit_way]
+                                           [mem_wb1_out.data.mem_addr[WB_WORD_WIDTH+1:2]],
+                              mem_wb1_out.ctrl.mem_size,
+                              mem_wb1_out.data.mem_addr[1:0], mem_wb1_out.ctrl.mem_unsigned)
+                : mem_wb1_out.data.final_res;
         end else begin : g_wb_word_sel_1w
-            assign wb_final_res = mem_wb_out.ctrl.mem_hit
-                ? wb_readdata(dcache_data_wb[mem_wb_out.ctrl.mem_hit_way][0],
-                              mem_wb_out.ctrl.mem_size,
-                              mem_wb_out.data.mem_addr[1:0], mem_wb_out.ctrl.mem_unsigned)
-                : mem_wb_out.data.final_res;
+            assign wb_final_res0 = mem_wb0_out.ctrl.mem_hit
+                ? wb_readdata(dcache_data_wb[mem_wb0_out.ctrl.mem_hit_way][0],
+                              mem_wb0_out.ctrl.mem_size,
+                              mem_wb0_out.data.mem_addr[1:0], mem_wb0_out.ctrl.mem_unsigned)
+                : mem_wb0_out.data.final_res;
+            assign wb_final_res1 = mem_wb1_out.ctrl.mem_hit
+                ? wb_readdata(dcache_data_wb[mem_wb1_out.ctrl.mem_hit_way][0],
+                              mem_wb1_out.ctrl.mem_size,
+                              mem_wb1_out.data.mem_addr[1:0], mem_wb1_out.ctrl.mem_unsigned)
+                : mem_wb1_out.data.final_res;
         end
     endgenerate
 
@@ -805,9 +1095,12 @@ module core import la32_common::*; #(
         .ex_not_ready(ex_stage_busy),
         .lsu_not_ready(!lsu_ready),
         .cacop_not_ready(cacop_not_ready),
-        .id_ex_rd(id_ex_out.data.rd),
-        .id_ex_mem_re(id_ex_out.ctrl.mem_re),
-        .dec_rs1(dec_rs1), .dec_rs2(dec_rs2),
+        .id_ex0_rd(id_ex0_out.data.rd),
+        .id_ex0_mem_re(id_ex0_out.ctrl.mem_re),
+        .id_ex1_rd(id_ex1_out.data.rd),
+        .id_ex1_mem_re(id_ex1_out.ctrl.mem_re),
+        .dec_rs1_0(dec_rs1_0), .dec_rs2_0(dec_rs2_0),
+        .dec_rs1_1(dec_rs1_1), .dec_rs2_1(dec_rs2_1),
         .pc_stall, .if_id_stall, .id_ex_stall, .ex_mem_stall,
         .if_id_flush, .id_ex_flush,
         .load_use_hazard,
@@ -818,6 +1111,8 @@ module core import la32_common::*; #(
         .wb_jump_req(1'b0),
         .if_id_in_valid(fetch_valid0),
         .if_id_in_pc(fetch_pc0),
+        .fq_head_valid(fq_valid[0]),
+        .fq_head_pc(fq_pc[0]),
         .pc_current(pc),
         .ex_jump_pc(ex_jump_pc),
         .id_jump_pc(id_jump_pc),
@@ -825,11 +1120,12 @@ module core import la32_common::*; #(
     );
 
     // ==================== DEBUG OUTPUT ====================
-    assign debug_wb_pc      = mem_wb_out.data.pc;
-    assign debug_wb_inst    = mem_wb_out.data.instr;
-    assign debug_wb_rf_wen  = mem_wb_out.ctrl.rf_we && mem_wb_out.ctrl.valid;
-    assign debug_wb_rf_wnum = mem_wb_out.data.rd;
-    assign debug_wb_rf_wdata = wb_final_res;
+    assign debug_wb_pc      = mem_wb0_out.data.pc;
+    assign debug_wb_inst    = mem_wb0_out.data.instr;
+    assign debug_wb_rf_wen  = mem_wb0_out.ctrl.rf_we && mem_wb0_out.ctrl.valid;
+    assign debug_wb_rf_wnum = mem_wb0_out.data.rd;
+    assign debug_wb_rf_wdata = wb_final_res0;
+
 
     // ==================== STALL COUNTERS ====================
     logic lsu_not_ready;
@@ -844,15 +1140,15 @@ module core import la32_common::*; #(
             stall_dcache_hit_pipe <= 64'd0;
             stall_icache_hit_pipe <= 64'd0;
             stall_other           <= 64'd0;
-        end else if (!mem_wb_out.ctrl.valid) begin
+        end else if (!(mem_wb0_out.ctrl.valid || mem_wb1_out.ctrl.valid)) begin
             if (dcache_in_refill)
                 stall_dcache_refill <= stall_dcache_refill + 64'd1;
             else if (icache_in_refill)
                 stall_icache_refill <= stall_icache_refill + 64'd1;
             else if (load_use_hazard)
                 stall_load_use <= stall_load_use + 64'd1;
-            else if ((if_id_flush && if_id_out.ctrl.valid) ||
-                     (id_ex_flush && id_ex_out.ctrl.valid))
+            else if ((if_id_flush && (if_id_out.ctrl.valid || if_id1_out.ctrl.valid)) ||
+                     (id_ex_flush && (id_ex0_out.ctrl.valid || id_ex1_out.ctrl.valid)))
                 stall_branch_flush <= stall_branch_flush + 64'd1;
             else if (lsu_not_ready)
                 stall_dcache_hit_pipe <= stall_dcache_hit_pipe + 64'd1;
@@ -877,21 +1173,33 @@ module core import la32_common::*; #(
         .gpr_28(gpr_state[28]), .gpr_29(gpr_state[29]), .gpr_30(gpr_state[30]), .gpr_31(gpr_state[31])
     );
 
-    DifftestInstrCommit u_difftest_commit (
+    DifftestInstrCommit u_difftest_commit0 (
         .clock(clk),
-        .valid(mem_wb_out.ctrl.valid),
-        .pc(mem_wb_out.data.pc),
-        .instr(mem_wb_out.data.instr),
-        .wen(mem_wb_out.ctrl.rf_we),
-        .wdest(mem_wb_out.data.rd),
-        .wdata(wb_final_res),
-        .mem_addr(mem_wb_out.data.mem_addr),
-        .mem_re(mem_wb_out.ctrl.mem_re)
+        .valid(mem_wb0_out.ctrl.valid),
+        .pc(mem_wb0_out.data.pc),
+        .instr(mem_wb0_out.data.instr),
+        .wen(mem_wb0_out.ctrl.rf_we),
+        .wdest(mem_wb0_out.data.rd),
+        .wdata(wb_final_res0),
+        .mem_addr(mem_wb0_out.data.mem_addr),
+        .mem_re(mem_wb0_out.ctrl.mem_re)
+    );
+
+    DifftestInstrCommit1 u_difftest_commit1 (
+        .clock(clk),
+        .valid(mem_wb1_out.ctrl.valid),
+        .pc(mem_wb1_out.data.pc),
+        .instr(mem_wb1_out.data.instr),
+        .wen(mem_wb1_out.ctrl.rf_we),
+        .wdest(mem_wb1_out.data.rd),
+        .wdata(wb_final_res1),
+        .mem_addr(mem_wb1_out.data.mem_addr),
+        .mem_re(mem_wb1_out.ctrl.mem_re)
     );
 
     DifftestIdlePC u_difftest_idle (
         .clock(clk),
-        .idle_pc(mem_wb_out.data.pc)
+        .idle_pc(mem_wb1_out.ctrl.valid ? mem_wb1_out.data.pc : mem_wb0_out.data.pc)
     );
 
     DifftestCSRState u_difftest_csr (
@@ -932,10 +1240,12 @@ module core import la32_common::*; #(
             difftest_total_branches <= 64'd0;
             difftest_mispredictions <= 64'd0;
         end else begin
-            if (mem_wb_out.ctrl.valid && mem_wb_out.ctrl.is_cond_branch)
+            if (mem_wb0_out.ctrl.valid && mem_wb0_out.ctrl.is_cond_branch)
                 difftest_total_branches <= difftest_total_branches + 64'd1;
-            if (id_ex_out.ctrl.valid && id_ex_out.ctrl.is_cond_branch &&
-                br_taken != id_ex_out.ctrl.predict_taken)
+            if (mem_wb1_out.ctrl.valid && mem_wb1_out.ctrl.is_cond_branch)
+                difftest_total_branches <= difftest_total_branches + 64'd1;
+            if (id_ex0_out.ctrl.valid && id_ex0_out.ctrl.is_cond_branch &&
+                br_taken_0 != id_ex0_out.ctrl.predict_taken)
                 difftest_mispredictions <= difftest_mispredictions + 64'd1;
         end
     end

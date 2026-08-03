@@ -273,7 +273,9 @@ static void update_global() {
 
 /* Simulate how the CPU works. */
 void cpu_exec(uint64_t n) {
-  IFDEF(CONFIG_SHARE, assert(n <= 1));
+  // The difftest ref model steps one retire slot per call; the 2-wide
+  // core retires up to two instructions per cycle (slot0 then slot1).
+  IFDEF(CONFIG_SHARE, assert(n <= 2));
   g_print_step = (n < MAX_INSTR_TO_PRINT);
   switch (nemu_state.state) {
     case NEMU_END: case NEMU_ABORT:

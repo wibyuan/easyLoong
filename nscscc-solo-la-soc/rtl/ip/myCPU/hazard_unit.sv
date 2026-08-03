@@ -3,10 +3,14 @@ module hazard_unit (
     input  logic        ex_not_ready,
     input  logic        lsu_not_ready,
     input  logic        cacop_not_ready,
-    input  logic [4:0]  id_ex_rd,
-    input  logic        id_ex_mem_re,
-    input  logic [4:0]  dec_rs1,
-    input  logic [4:0]  dec_rs2,
+    input  logic [4:0]  id_ex0_rd,
+    input  logic        id_ex0_mem_re,
+    input  logic [4:0]  id_ex1_rd,
+    input  logic        id_ex1_mem_re,
+    input  logic [4:0]  dec_rs1_0,
+    input  logic [4:0]  dec_rs2_0,
+    input  logic [4:0]  dec_rs1_1,
+    input  logic [4:0]  dec_rs2_1,
     output logic        pc_stall,
     output logic        if_id_stall,
     output logic        id_ex_stall,
@@ -21,28 +25,38 @@ module hazard_unit (
     input  logic        wb_jump_req,
     input  logic        if_id_in_valid,
     input  logic [31:0] if_id_in_pc,
+    input  logic        fq_head_valid,
+    input  logic [31:0] fq_head_pc,
     input  logic [31:0] pc_current,
     input  logic [31:0] ex_jump_pc,
     input  logic [31:0] id_jump_pc,
     input  logic [31:0] bp_jump_pc
 );
 
-    assign load_use_hazard = id_ex_mem_re &&
-                            ((id_ex_rd != 5'd0) && ((id_ex_rd == dec_rs1) || (id_ex_rd == dec_rs2)));
+    // A load in either EX slot feeding any ID slot operand: the load data
+    // is not available until MEM, so the pipeline is held (legacy
+    // single-issue semantics; slot1 re-issues next cycle as slot0).
+    assign load_use_hazard =
+        (id_ex0_mem_re && (id_ex0_rd != 5'd0) &&
+         ((dec_rs1_0 == id_ex0_rd) || (dec_rs2_0 == id_ex0_rd) ||
+          (dec_rs1_1 == id_ex0_rd) || (dec_rs2_1 == id_ex0_rd))) ||
+        (id_ex1_mem_re && (id_ex1_rd != 5'd0) &&
+         ((dec_rs1_0 == id_ex1_rd) || (dec_rs2_0 == id_ex1_rd) ||
+          (dec_rs1_1 == id_ex1_rd) || (dec_rs2_1 == id_ex1_rd)));
 
     assign pipeline_stall = lsu_not_ready || cacop_not_ready || ex_not_ready;
 
-    // If the EX redirect target equals the current fetch pc, the fetch_unit
-    // suppresses its own redirect (the target is already being fetched) — the
-    // if_id capture in that cycle IS the target, so the flush must not kill
-    // it. The pc_current equality alone is not sufficient: the fetch can
-    // reach the target address while the if_id still holds the branch's
-    // fall-through captured one cycle earlier (e.g. the branch at the last
-    // word of a line whose fall-through is the sequential pc+4 equal to the
-    // target). Only keep the capture when it really is the target.
+    // The legacy EX-redirect capture protection is disabled for the
+    // 2-wide core: the fetch queue absorbs (space-gated) rather than
+    // overwrites, so after a flush the fetch re-delivers the target on the
+    // next cycle (pc held by the queue-full stall, or the redirect already
+    // moving pc to the target).  Keeping the queue would instead leave
+    // stale wrong-path instructions ahead of the target (observed: the
+    // wrong-path b executed after the bne redirect) or duplicate the
+    // target when the fetch re-delivers it.  The single-issue capture
+    // (if_id register, flush-overwrites) never had these two effects.
     logic jump_flush_keep_capture;
-    assign jump_flush_keep_capture = jump_flush && (pc_current == ex_jump_pc) &&
-                                     if_id_in_valid && (if_id_in_pc == ex_jump_pc);
+    assign jump_flush_keep_capture = 1'b0;
 
     always_comb begin
         pc_stall     = pipeline_stall || load_use_hazard || if_not_ready;
@@ -53,10 +67,10 @@ module hazard_unit (
         id_ex_flush  = wb_jump_req || ( !(lsu_not_ready || cacop_not_ready || ex_not_ready) &&
                        (jump_flush || load_use_hazard || (if_not_ready && !id_jump_req && !bp_do_jump)) );
 
-        // id_jump/bp redirects flush the wrong-path if_id capture, but must
+        // id_jump/bp redirects flush the wrong-path queue head, but must
         // not kill the branch instruction itself: when the load_use hazard
         // holds the branch in ID (its ID->EX entry was already flushed), the
-        // if_id register still contains the branch — flushing it destroys the
+        // queue head still contains the branch — flushing it destroys the
         // instruction while the fetch continues down the predicted path.
         // Also mirror the fetch_unit's pc_current != jump_target redirect
         // suppression: when the fetch is already at the target, the if_id
