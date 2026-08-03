@@ -641,14 +641,14 @@ module core import la32_common::*; #(
     end
 
     always_comb begin
-        if (fw_a1_ex0_comb) forward_a1 = ex0_result;
+        if (fw_a1_ex0_comb) forward_a1 = alu_res0;
         else if (fw_a1_em1) forward_a1 = ex_mem1_out.data.alu_res;
         else if (fw_a1_em0) forward_a1 = ex_mem0_out.data.alu_res;
         else if (fw_a1_mw1) forward_a1 = wb_final_res1;
         else if (fw_a1_mw0) forward_a1 = wb_final_res0;
         else                forward_a1 = rf_rd1_1;
 
-        if (fw_b1_ex0_comb) forward_b1 = ex0_result;
+        if (fw_b1_ex0_comb) forward_b1 = alu_res0;
         else if (fw_b1_em1) forward_b1 = ex_mem1_out.data.alu_res;
         else if (fw_b1_em0) forward_b1 = ex_mem0_out.data.alu_res;
         else if (fw_b1_mw1) forward_b1 = wb_final_res1;
