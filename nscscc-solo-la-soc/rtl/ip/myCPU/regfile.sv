@@ -26,16 +26,19 @@ module regfile (
             regs[wa2] <= wd2;
     end
 
+    // Read path: the array mux only.  The current-cycle WB write (the
+    // 2-back producer) is delivered by the core's forwarding matrix
+    // (mw0/mw1 entries re-validated against the WB-stage rf_we), so the
+    // combinational write-bypass is redundant here — dropping it keeps two
+    // LUT levels off the RF read path (100MHz critical path).  The gpr_dbg
+    // port keeps the bypass so the difftest state snapshot always shows
+    // the architecturally newest value.
     function automatic logic [31:0] read(
         input logic [4:0]  ra,
         input logic [31:0] regs [31:0]
     );
         if (ra == 5'd0)
             read = 32'd0;
-        else if (wen2 && wa2 == ra)
-            read = wd2;
-        else if (wen1 && wa1 == ra)
-            read = wd1;
         else
             read = regs[ra];
     endfunction
