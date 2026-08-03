@@ -241,6 +241,15 @@ set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 
+# Floorplan: keep the core compact.  At the low overall utilization
+# (9-10% LUT) the placer scatters the core's logic across the whole chip
+# (u_core spanned X0-X114), leaving the EX-stage critical paths with
+# multi-nanosecond cross-chip route hops.  The Pblock forces the core's
+# placement into the region its critical logic already occupies.
+create_pblock pblock_core
+add_cells_to_pblock pblock_core [get_cells u_soc_top/u_cpu/u_core]
+resize_pblock pblock_core -add {SLICE_X20Y10:SLICE_X75Y65}
+
 # SRAM interface — driven directly from the cpu_clk domain by
 # axi_sram_direct (fixed 2-cycle read / 3-cycle write); the I/O delays must
 # be referenced to cpu_clk, not sys_clk (the old CDC path's domain).
