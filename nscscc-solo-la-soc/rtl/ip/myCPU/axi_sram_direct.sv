@@ -162,35 +162,76 @@ module axi_sram_direct #(
     // Per-byte coverage and the newest-store data for a read address.
     // The search walks the FIFO from the newest entry (tail-1) down to the
     // oldest (head); a newer store to the same byte wins.
-    logic [3:0]  wb_cover_ar, wb_cover_r;
-    logic [31:0] wb_fwd_ar,  wb_fwd_r;
+    logic [3:0]  wb_cover_ar;
+    logic [31:0] wb_fwd_ar;
+    // Line-based coverage for the read RESPONSE: the 16-byte line's
+    // per-byte coverage and forwarded data are captured at the read
+    // accept, so the 8-entry search's combinational depth is off the
+    // response path; burst beats select their word's slice via the
+    // registered r_addr[3:2].  Exactness: no store is accepted while a
+    // read is in flight, and a store drained between accept and response
+    // leaves the same value in the SRAM (the drained write completes
+    // before the dequeue).
+    logic [15:0]  wb_cover_line;
+    logic [127:0] wb_fwd_line;
+    logic [15:0]  wb_cover_line_r;
+    logic [127:0] wb_fwd_line_r;
+    always_ff @(posedge aclk) begin
+        if (!aresetn) begin
+            wb_cover_line_r <= 16'd0;
+            wb_fwd_line_r   <= 128'd0;
+        end else if (ar_go && ar_sram) begin
+            wb_cover_line_r <= wb_cover_line;
+            wb_fwd_line_r   <= wb_fwd_line;
+        end
+    end
+    wire [1:0]  r_word = r_addr[3:2];
+    wire [3:0]  wb_cover_r = wb_cover_line_r[r_word*4 +: 4];
+    wire [31:0] wb_fwd_r   = wb_fwd_line_r[r_word*32 +: 32];
     wire wb_full_ar = (wb_cover_ar == 4'hf);
     wire wb_full_r  = (wb_cover_r  == 4'hf);
     wire [31:0] wb_cover_r_byte = {{8{wb_cover_r[3]}}, {8{wb_cover_r[2]}},
                                    {8{wb_cover_r[1]}}, {8{wb_cover_r[0]}}};
 
     always_comb begin
-        wb_cover_ar = 4'd0;
-        wb_fwd_ar   = 32'd0;
-        wb_cover_r  = 4'd0;
-        wb_fwd_r    = 32'd0;
+        wb_cover_ar   = 4'd0;
+        wb_fwd_ar     = 32'd0;
+        wb_cover_line = 16'd0;
+        wb_fwd_line   = 128'd0;
         for (int i = 0; i < WB_DEPTH; i++) begin
             automatic logic [WB_BITS-1:0] idx;
             idx = wb_tail - 1 - i[WB_BITS-1:0];
             if (i[WB_BITS:0] < wb_count && wb_q[idx].valid) begin
-                // ---- AR address ----
+                // ---- AR address (word coverage for the accept) ----
                 if (wb_q[idx].addr[31:2] == araddr[31:2]) begin
                     if (wb_q[idx].be[0] && !wb_cover_ar[0]) begin wb_cover_ar[0] = 1'b1; wb_fwd_ar[7:0] = wb_q[idx].data[7:0]; end
                     if (wb_q[idx].be[1] && !wb_cover_ar[1]) begin wb_cover_ar[1] = 1'b1; wb_fwd_ar[15:8] = wb_q[idx].data[15:8]; end
                     if (wb_q[idx].be[2] && !wb_cover_ar[2]) begin wb_cover_ar[2] = 1'b1; wb_fwd_ar[23:16] = wb_q[idx].data[23:16]; end
                     if (wb_q[idx].be[3] && !wb_cover_ar[3]) begin wb_cover_ar[3] = 1'b1; wb_fwd_ar[31:24] = wb_q[idx].data[31:24]; end
                 end
-                // ---- registered read address ----
-                if (wb_q[idx].addr[31:2] == r_addr[31:2]) begin
-                    if (wb_q[idx].be[0] && !wb_cover_r[0]) begin wb_cover_r[0] = 1'b1; wb_fwd_r[7:0] = wb_q[idx].data[7:0]; end
-                    if (wb_q[idx].be[1] && !wb_cover_r[1]) begin wb_cover_r[1] = 1'b1; wb_fwd_r[15:8] = wb_q[idx].data[15:8]; end
-                    if (wb_q[idx].be[2] && !wb_cover_r[2]) begin wb_cover_r[2] = 1'b1; wb_fwd_r[23:16] = wb_q[idx].data[23:16]; end
-                    if (wb_q[idx].be[3] && !wb_cover_r[3]) begin wb_cover_r[3] = 1'b1; wb_fwd_r[31:24] = wb_q[idx].data[31:24]; end
+                // ---- AR address (line coverage for the response) ----
+                if (wb_q[idx].addr[31:4] == araddr[31:4]) begin
+                    if (wb_q[idx].addr[3:2] == 2'd0) begin
+                        if (wb_q[idx].be[0] && !wb_cover_line[0])  begin wb_cover_line[0]  = 1'b1; wb_fwd_line[7:0]   = wb_q[idx].data[7:0];   end
+                        if (wb_q[idx].be[1] && !wb_cover_line[1])  begin wb_cover_line[1]  = 1'b1; wb_fwd_line[15:8]  = wb_q[idx].data[15:8];  end
+                        if (wb_q[idx].be[2] && !wb_cover_line[2])  begin wb_cover_line[2]  = 1'b1; wb_fwd_line[23:16] = wb_q[idx].data[23:16]; end
+                        if (wb_q[idx].be[3] && !wb_cover_line[3])  begin wb_cover_line[3]  = 1'b1; wb_fwd_line[31:24] = wb_q[idx].data[31:24]; end
+                    end else if (wb_q[idx].addr[3:2] == 2'd1) begin
+                        if (wb_q[idx].be[0] && !wb_cover_line[4])  begin wb_cover_line[4]  = 1'b1; wb_fwd_line[39:32] = wb_q[idx].data[7:0];   end
+                        if (wb_q[idx].be[1] && !wb_cover_line[5])  begin wb_cover_line[5]  = 1'b1; wb_fwd_line[47:40] = wb_q[idx].data[15:8];  end
+                        if (wb_q[idx].be[2] && !wb_cover_line[6])  begin wb_cover_line[6]  = 1'b1; wb_fwd_line[55:48] = wb_q[idx].data[23:16]; end
+                        if (wb_q[idx].be[3] && !wb_cover_line[7])  begin wb_cover_line[7]  = 1'b1; wb_fwd_line[63:56] = wb_q[idx].data[31:24]; end
+                    end else if (wb_q[idx].addr[3:2] == 2'd2) begin
+                        if (wb_q[idx].be[0] && !wb_cover_line[8])  begin wb_cover_line[8]  = 1'b1; wb_fwd_line[71:64] = wb_q[idx].data[7:0];   end
+                        if (wb_q[idx].be[1] && !wb_cover_line[9])  begin wb_cover_line[9]  = 1'b1; wb_fwd_line[79:72] = wb_q[idx].data[15:8];  end
+                        if (wb_q[idx].be[2] && !wb_cover_line[10]) begin wb_cover_line[10] = 1'b1; wb_fwd_line[87:80] = wb_q[idx].data[23:16]; end
+                        if (wb_q[idx].be[3] && !wb_cover_line[11]) begin wb_cover_line[11] = 1'b1; wb_fwd_line[95:88] = wb_q[idx].data[31:24]; end
+                    end else begin
+                        if (wb_q[idx].be[0] && !wb_cover_line[12]) begin wb_cover_line[12] = 1'b1; wb_fwd_line[103:96]  = wb_q[idx].data[7:0];   end
+                        if (wb_q[idx].be[1] && !wb_cover_line[13]) begin wb_cover_line[13] = 1'b1; wb_fwd_line[111:104] = wb_q[idx].data[15:8];  end
+                        if (wb_q[idx].be[2] && !wb_cover_line[14]) begin wb_cover_line[14] = 1'b1; wb_fwd_line[119:112] = wb_q[idx].data[23:16]; end
+                        if (wb_q[idx].be[3] && !wb_cover_line[15]) begin wb_cover_line[15] = 1'b1; wb_fwd_line[127:120] = wb_q[idx].data[31:24]; end
+                    end
                 end
             end
         end
