@@ -1,0 +1,1 @@
+../../../nscscc-solo-la-soc/rtl/ip/myCPU/axi_sram_direct.sv

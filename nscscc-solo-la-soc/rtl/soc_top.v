@@ -1170,36 +1170,169 @@ core_top u_cpu(
 );
 
 //clock sync: from CPU to AXI_Crossbar
+// ===================== direct async-SRAM path =====================
+// The CPU's AXI master is routed by axi_sram_direct: the SRAM range
+// (0x1c000000-0x1c7fffff) is driven directly on the async SRAM pins at
+// cpu_clk with a fixed 2-cycle access; everything else (UART/confreg
+// MMIO) is forwarded to the AXI CDC + crossbar on the sys_clk side.
+wire [4:0]  cdc_awid   ;
+wire [31:0] cdc_awaddr ;
+wire [7:0]  cdc_awlen  ;
+wire [2:0]  cdc_awsize ;
+wire [1:0]  cdc_awburst;
+wire        cdc_awlock ;
+wire [3:0]  cdc_awcache;
+wire [2:0]  cdc_awprot ;
+wire        cdc_awvalid;
+wire        cdc_awready;
+wire [31:0] cdc_wdata  ;
+wire [3:0]  cdc_wstrb  ;
+wire        cdc_wlast  ;
+wire        cdc_wvalid ;
+wire        cdc_wready ;
+wire [4:0]  cdc_bid    ;
+wire [1:0]  cdc_bresp  ;
+wire        cdc_bvalid ;
+wire        cdc_bready ;
+wire [4:0]  cdc_arid   ;
+wire [31:0] cdc_araddr ;
+wire [7:0]  cdc_arlen  ;
+wire [2:0]  cdc_arsize ;
+wire [1:0]  cdc_arburst;
+wire        cdc_arlock ;
+wire [3:0]  cdc_arcache;
+wire [2:0]  cdc_arprot ;
+wire        cdc_arvalid;
+wire        cdc_arready;
+wire [4:0]  cdc_rid    ;
+wire [31:0] cdc_rdata  ;
+wire [1:0]  cdc_rresp  ;
+wire        cdc_rlast  ;
+wire        cdc_rvalid ;
+wire        cdc_rready ;
+
+axi_sram_direct u_axi_sram_direct (
+    .aclk             ( cpu_clk           ),
+    .aresetn          ( cpu_resetn        ),
+    // AXI slave (CPU master)
+    .arid             ( cpu_arid          ),
+    .araddr           ( cpu_araddr        ),
+    .arlen            ( cpu_arlen         ),
+    .arsize           ( cpu_arsize        ),
+    .arburst          ( cpu_arburst       ),
+    .arlock           ( cpu_arlock        ),
+    .arcache          ( cpu_arcache       ),
+    .arprot           ( cpu_arprot        ),
+    .arvalid          ( cpu_arvalid       ),
+    .arready          ( cpu_arready       ),
+    .rid              ( cpu_rid           ),
+    .rdata            ( cpu_rdata         ),
+    .rresp            ( cpu_rresp         ),
+    .rlast            ( cpu_rlast         ),
+    .rvalid           ( cpu_rvalid        ),
+    .rready           ( cpu_rready        ),
+    .awid             ( cpu_awid          ),
+    .awaddr           ( cpu_awaddr        ),
+    .awlen            ( cpu_awlen         ),
+    .awsize           ( cpu_awsize        ),
+    .awburst          ( cpu_awburst       ),
+    .awlock           ( cpu_awlock        ),
+    .awcache          ( cpu_awcache       ),
+    .awprot           ( cpu_awprot        ),
+    .awvalid          ( cpu_awvalid       ),
+    .awready          ( cpu_awready       ),
+    .wid              ( cpu_wid           ),
+    .wdata            ( cpu_wdata         ),
+    .wstrb            ( cpu_wstrb         ),
+    .wlast            ( cpu_wlast         ),
+    .wvalid           ( cpu_wvalid        ),
+    .wready           ( cpu_wready        ),
+    .bid              ( cpu_bid           ),
+    .bresp            ( cpu_bresp         ),
+    .bvalid           ( cpu_bvalid        ),
+    .bready           ( cpu_bready        ),
+    // async SRAM pins
+    .base_ram_addr    ( base_ram_addr     ),
+    .base_ram_be_n    ( base_ram_be_n     ),
+    .base_ram_ce_n    ( base_ram_ce_n     ),
+    .base_ram_oe_n    ( base_ram_oe_n     ),
+    .base_ram_we_n    ( base_ram_we_n     ),
+    .base_ram_data    ( base_ram_data     ),
+    .ext_ram_addr     ( ext_ram_addr      ),
+    .ext_ram_be_n     ( ext_ram_be_n      ),
+    .ext_ram_ce_n     ( ext_ram_ce_n      ),
+    .ext_ram_oe_n     ( ext_ram_oe_n      ),
+    .ext_ram_we_n     ( ext_ram_we_n      ),
+    .ext_ram_data     ( ext_ram_data      ),
+    // MMIO master (to the AXI CDC)
+    .mmio_arvalid     ( cdc_arvalid       ),
+    .mmio_arready     ( cdc_arready       ),
+    .mmio_arid        ( cdc_arid          ),
+    .mmio_araddr      ( cdc_araddr        ),
+    .mmio_arlen       ( cdc_arlen         ),
+    .mmio_arsize      ( cdc_arsize        ),
+    .mmio_arburst     ( cdc_arburst       ),
+    .mmio_arlock      ( cdc_arlock        ),
+    .mmio_arcache     ( cdc_arcache       ),
+    .mmio_arprot      ( cdc_arprot        ),
+    .mmio_rid         ( cdc_rid           ),
+    .mmio_rdata       ( cdc_rdata         ),
+    .mmio_rresp       ( cdc_rresp         ),
+    .mmio_rlast       ( cdc_rlast         ),
+    .mmio_rvalid      ( cdc_rvalid        ),
+    .mmio_rready      ( cdc_rready        ),
+    .mmio_awvalid     ( cdc_awvalid       ),
+    .mmio_awready     ( cdc_awready       ),
+    .mmio_awid        ( cdc_awid          ),
+    .mmio_awaddr      ( cdc_awaddr        ),
+    .mmio_awlen       ( cdc_awlen         ),
+    .mmio_awsize      ( cdc_awsize        ),
+    .mmio_awburst     ( cdc_awburst       ),
+    .mmio_awlock      ( cdc_awlock        ),
+    .mmio_awcache     ( cdc_awcache       ),
+    .mmio_awprot      ( cdc_awprot        ),
+    .mmio_wvalid      ( cdc_wvalid        ),
+    .mmio_wready      ( cdc_wready        ),
+    .mmio_wid         (                   ),
+    .mmio_wdata       ( cdc_wdata         ),
+    .mmio_wstrb       ( cdc_wstrb         ),
+    .mmio_wlast       ( cdc_wlast         ),
+    .mmio_bid         ( cdc_bid           ),
+    .mmio_bresp       ( cdc_bresp         ),
+    .mmio_bvalid      ( cdc_bvalid        ),
+    .mmio_bready      ( cdc_bready        )
+);
+
 Axi_CDC  u_Axi_CDC (
     .axiInClk                ( cpu_clk             ),
     .axiInRstn               ( cpu_resetn          ),
     .axiOutClk               ( sys_clk             ),
     .axiOutRstn              ( sys_resetn          ),
 
-    .axiIn_awvalid           ( cpu_awvalid         ),
-    .axiIn_awaddr            ( cpu_awaddr          ),
-    .axiIn_awid              ( {1'b0,cpu_awid}     ),
-    .axiIn_awlen             ( cpu_awlen           ),
-    .axiIn_awsize            ( cpu_awsize          ),
-    .axiIn_awburst           ( cpu_awburst         ),
-    .axiIn_awlock            ( cpu_awlock[0]       ),
-    .axiIn_awcache           ( cpu_awcache         ),
-    .axiIn_awprot            ( cpu_awprot          ),
-    .axiIn_wvalid            ( cpu_wvalid          ),
-    .axiIn_wdata             ( cpu_wdata           ),
-    .axiIn_wstrb             ( cpu_wstrb           ),
-    .axiIn_wlast             ( cpu_wlast           ),
-    .axiIn_bready            ( cpu_bready          ),
-    .axiIn_arvalid           ( cpu_arvalid         ),
-    .axiIn_araddr            ( cpu_araddr          ),
-    .axiIn_arid              ( {1'b0,cpu_arid}     ),
-    .axiIn_arlen             ( cpu_arlen           ),
-    .axiIn_arsize            ( cpu_arsize          ),
-    .axiIn_arburst           ( cpu_arburst         ),
-    .axiIn_arlock            ( cpu_arlock[0]       ),
-    .axiIn_arcache           ( cpu_arcache         ),
-    .axiIn_arprot            ( cpu_arprot          ),
-    .axiIn_rready            ( cpu_rready          ),
+    .axiIn_awvalid           ( cdc_awvalid         ),
+    .axiIn_awaddr            ( cdc_awaddr          ),
+    .axiIn_awid              ( cdc_awid            ),
+    .axiIn_awlen             ( cdc_awlen           ),
+    .axiIn_awsize            ( cdc_awsize          ),
+    .axiIn_awburst           ( cdc_awburst         ),
+    .axiIn_awlock            ( cdc_awlock          ),
+    .axiIn_awcache           ( cdc_awcache         ),
+    .axiIn_awprot            ( cdc_awprot          ),
+    .axiIn_wvalid            ( cdc_wvalid          ),
+    .axiIn_wdata             ( cdc_wdata           ),
+    .axiIn_wstrb             ( cdc_wstrb           ),
+    .axiIn_wlast             ( cdc_wlast           ),
+    .axiIn_bready            ( cdc_bready          ),
+    .axiIn_arvalid           ( cdc_arvalid         ),
+    .axiIn_araddr            ( cdc_araddr          ),
+    .axiIn_arid              ( cdc_arid            ),
+    .axiIn_arlen             ( cdc_arlen           ),
+    .axiIn_arsize            ( cdc_arsize          ),
+    .axiIn_arburst           ( cdc_arburst         ),
+    .axiIn_arlock            ( cdc_arlock          ),
+    .axiIn_arcache           ( cdc_arcache         ),
+    .axiIn_arprot            ( cdc_arprot          ),
+    .axiIn_rready            ( cdc_rready          ),
     .axiOut_awready          ( cpu_sync_awready    ),
     .axiOut_wready           ( cpu_sync_wready     ),
     .axiOut_bvalid           ( cpu_sync_bvalid     ),
@@ -1212,17 +1345,17 @@ Axi_CDC  u_Axi_CDC (
     .axiOut_rresp            ( cpu_sync_rresp      ),
     .axiOut_rlast            ( cpu_sync_rlast      ),
 
-    .axiIn_awready           ( cpu_awready         ),
-    .axiIn_wready            ( cpu_wready          ),
-    .axiIn_bvalid            ( cpu_bvalid          ),
-    .axiIn_bid               ( {cpu_bid_4,cpu_bid} ),
-    .axiIn_bresp             ( cpu_bresp           ),
-    .axiIn_arready           ( cpu_arready         ),
-    .axiIn_rvalid            ( cpu_rvalid          ),
-    .axiIn_rdata             ( cpu_rdata           ),
-    .axiIn_rid               ( {cpu_rid_4,cpu_rid} ),
-    .axiIn_rresp             ( cpu_rresp           ),
-    .axiIn_rlast             ( cpu_rlast           ),
+    .axiIn_awready           ( cdc_awready         ),
+    .axiIn_wready            ( cdc_wready          ),
+    .axiIn_bvalid            ( cdc_bvalid          ),
+    .axiIn_bid               ( cdc_bid             ),
+    .axiIn_bresp             ( cdc_bresp           ),
+    .axiIn_arready           ( cdc_arready         ),
+    .axiIn_rvalid            ( cdc_rvalid          ),
+    .axiIn_rdata             ( cdc_rdata           ),
+    .axiIn_rid               ( cdc_rid             ),
+    .axiIn_rresp             ( cdc_rresp           ),
+    .axiIn_rlast             ( cdc_rlast           ),
     .axiOut_awvalid          ( cpu_sync_awvalid    ),
     .axiOut_awaddr           ( cpu_sync_awaddr     ),
     .axiOut_awid             ( {cpu_sync_awid_4,cpu_sync_awid}),
@@ -1249,65 +1382,20 @@ Axi_CDC  u_Axi_CDC (
     .axiOut_rready           ( cpu_sync_rready     )
 );
 
-//axi ram
-axi_wrap_ram_sp_external u_axi_ram (
-    .aclk          ( sys_clk            ),
-    .aresetn       ( sys_resetn         ),
-    //ar
-    .axi_arid      ( ram_arid           ),
-    .axi_araddr    ( ram_araddr         ),
-    .axi_arlen     ( ram_arlen          ),
-    .axi_arsize    ( ram_arsize         ),
-    .axi_arburst   ( ram_arburst        ),
-    .axi_arlock    ( ram_arlock         ),
-    .axi_arcache   ( ram_arcache        ),
-    .axi_arprot    ( ram_arprot         ),
-    .axi_arvalid   ( ram_arvalid        ),
-    .axi_arready   ( ram_arready        ),
-    //r             
-    .axi_rid       ( ram_rid            ),
-    .axi_rdata     ( ram_rdata          ),
-    .axi_rresp     ( ram_rresp          ),
-    .axi_rlast     ( ram_rlast          ),
-    .axi_rvalid    ( ram_rvalid         ),
-    .axi_rready    ( ram_rready         ),
-    //aw           
-    .axi_awid      ( ram_awid           ),
-    .axi_awaddr    ( ram_awaddr         ),
-    .axi_awlen     ( ram_awlen          ),
-    .axi_awsize    ( ram_awsize         ),
-    .axi_awburst   ( ram_awburst        ),
-    .axi_awlock    ( ram_awlock         ),
-    .axi_awcache   ( ram_awcache        ),
-    .axi_awprot    ( ram_awprot         ),
-    .axi_awvalid   ( ram_awvalid        ),
-    .axi_awready   ( ram_awready        ),
-    //w          
-    .axi_wdata     ( ram_wdata          ),
-    .axi_wstrb     ( ram_wstrb          ),
-    .axi_wlast     ( ram_wlast          ),
-    .axi_wvalid    ( ram_wvalid         ),
-    .axi_wready    ( ram_wready         ),
-    //b              ram
-    .axi_bid       ( ram_bid            ),
-    .axi_bresp     ( ram_bresp          ),
-    .axi_bvalid    ( ram_bvalid         ),
-    .axi_bready    ( ram_bready         ),
-
-    .base_ram_addr ( base_ram_addr      ),
-    .base_ram_be_n ( base_ram_be_n      ),
-    .base_ram_ce_n ( base_ram_ce_n      ),
-    .base_ram_oe_n ( base_ram_oe_n      ),
-    .base_ram_we_n ( base_ram_we_n      ),
-    .ext_ram_addr  ( ext_ram_addr       ),
-    .ext_ram_be_n  ( ext_ram_be_n       ),
-    .ext_ram_ce_n  ( ext_ram_ce_n       ),
-    .ext_ram_oe_n  ( ext_ram_oe_n       ),
-    .ext_ram_we_n  ( ext_ram_we_n       ),
-
-    .base_ram_data ( base_ram_data      ),
-    .ext_ram_data  ( ext_ram_data       )
-);
+// SRAM is driven directly from the CPU clock domain by axi_sram_direct
+// (2-cycle fixed access, no CDC).  The crossbar's ram slave port is tied
+// off: no address in the SRAM range ever reaches the MMIO path.
+assign ram_arready = 1'b1;
+assign ram_rvalid  = 1'b0;
+assign ram_rdata   = 32'd0;
+assign ram_rresp   = 2'd0;
+assign ram_rlast   = 1'b0;
+assign ram_rid     = 5'd0;
+assign ram_awready = 1'b1;
+assign ram_wready  = 1'b1;
+assign ram_bvalid  = 1'b0;
+assign ram_bresp   = 2'd0;
+assign ram_bid     = 5'd0;
 
 //AXI2APB
 axi_uart_controller u_axi_uart_controller
