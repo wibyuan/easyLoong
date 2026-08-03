@@ -1027,3 +1027,46 @@ raddr mux 最初把 `f_valid`（fill 进行中）切到 `f_idx`（fill 写判定
 ### 结论
 
 两级直通式（本分支，上板 **2045ms**）为当前最优配置。burst 整行方向验证完毕：能修对（storm 14/14）但相对直通式无 difftest 收益且 cryptonight 未收敛，**存档于 wip/burst-wholeline**（含全部修复与单测，供未来参考——若重走两级路线，优先在直通式上修 cryptonight 的 load 读到 0（2MB thrash 路径），而非整行填充）。
+
+---
+
+## 下一步方向（2026-08-03）：Runahead —— 掩盖顺序核的 miss 延迟
+
+### 问题（已量化）
+
+cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依赖链（`addr2` 依赖 `pad[addr1]` 返回数据）。**多 MSHR / load-under-miss 收益 <5%**（DEVLOG 2026-08-01 实测）：顺序流水线一次只有一条 load 在 MEM，后续地址算得出但发不出——**MSHR 只是存储槽，不产生并发**。并发地址只能来自预取器 / runahead / 乱序执行。
+
+### 方案：MERE（`docs/md/2504.01582v1.pdf_by_PaddleOCR-VL-1.6.md`，东南大学 2025，J.ACM）
+
+标量顺序核上实现 runahead：**miss 时不 stall**，继续投机执行后续指令（不提交、不写 GPR），把链上后续访存地址当预取发出；miss 返回瞬间算好下一地址继续预取（**提前一个 miss 步长**），正常执行重跑时命中。核心组件：
+
+- **RCU**（runahead 控制单元 + Efficiency Detector：检测间接访存，预取准确率 95%）
+- **MC-CP**（多周期 GPR checkpoint / 恢复）
+- **Runahead-Cache**（投机 store 暂存，供投机 load 转发）
+- **释放电路**（依赖 stall-load 寄存器的指令跳过，scoreboard 式）
+
+论文结果：达到 2-wide OoO 的 **93.5% 性能**，面积/功耗 <5%。
+
+### 与我们的匹配
+
+- cryptonight 的链式间接访问正是论文 target 的 **indirect miss** 模式（地址依赖前一个 miss 数据）
+- 我们的 2-wide 顺序 + 单 MSHR 两级 cache 与论文基座（5 级标量顺序 + 非阻塞 D-cache）同构
+- mixed_stride 的伪随机索引 + 依赖链同样受益
+
+### 关键结论（多轮分析收敛）
+
+1. **单 MSHR 即可起步**：cryptonight 的 B 地址依赖 A 数据，天然串行，每时刻只有一个可发预取——单 MSHR 够用
+2. **多 MSHR 不是先决条件，是增强**（stream/mixed 的独立预取并发），可后置
+3. **真正的先决**：LSU fire-and-forget（miss 不 stall、发出即释放）+ L1 预取接受语义 + checkpoint/释放电路
+4. **MSHR 覆盖顺序、不覆盖随机**：随机 + 依赖链的地址不可提前预测，多 MSHR 只能干等
+
+### 路线
+
+在 **master（单 LSU 双发射，`a7e6b67`，上板 1932ms）** 上实施，与双 LSU 方向互斥（双 LSU 的锁步 vs runahead 的投机自由推进）：
+
+1. LSU fire-and-forget + L1 预取路径（runahead 模式）
+2. GPR checkpoint / 恢复（MC-CP）
+3. Runahead-Cache（投机 store 转发）
+4. Efficiency Detector + StepCounter（进入/退出条件）
+
+双 LSU 分支（`dev/ilp-2wide`）已存档：difftest 6/6 全过但仅 matrix +1.9%（其余 0%），且尚未上板验证，**性价比低，不回用**。
