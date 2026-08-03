@@ -396,22 +396,11 @@ module core import la32_common::*; #(
     wire slot0_load = id_valid0 && dec_mem_re_0;
     wire slot1_dep_load0 = slot0_load && (dec_rd_0 != 5'd0) &&
         ((dec_rs1_1 == dec_rd_0) || (dec_rs2_1 == dec_rd_0));
-    // A slot1 instruction whose operand is slot0's same-cycle ALU result
-    // would compute through two serial adders (ALU0 then ALU1 via the
-    // in-slot bypass value alu_res0) — a 100MHz critical path.  The pair
-    // is denied; slot1 waits for the registered em0/mw0 forwards instead.
-    // The store-data dependency (rs2 of a store) does NOT serialize (the
-    // store data path bypasses ALU1) and stays allowed; a load's decoded
-    // rs2 is the imm's top bits and never a real dependency.
-    wire slot0_alu_prod = id_valid0 && dec_rf_we_0 && !dec_mem_re_0 && !dec_mem_we_0;
-    wire slot1_dep_alu0 = slot0_alu_prod && (dec_rd_0 != 5'd0) &&
-        ((dec_rs1_1 == dec_rd_0) ||
-         (dec_rs2_1 == dec_rd_0 && (dec_mem_we_1 || !dec_mem_re_1)));
 
     assign slot1_issue_raw = id_valid1 && !slot0_complex && !slot1_complex
         && !slot0_branch && !slot1_branch
         && !(slot0_mem && slot1_mem)
-        && !slot1_dep_load0 && !slot1_dep_alu0;
+        && !slot1_dep_load0;
     // The slot1 slot issues when the queue head pair accepts.
     assign slot1_issue = slot1_issue_raw && !fq_stall_all && !if_id_flush;
 
