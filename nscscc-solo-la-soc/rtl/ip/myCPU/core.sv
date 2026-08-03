@@ -990,27 +990,46 @@ module core import la32_common::*; #(
     assign dmw0_eff  = (wb_csr_we && wb_csr_num == 14'h180) ? wb_csr_wdata : csr_dmw0;
     assign dmw1_eff  = (wb_csr_we && wb_csr_num == 14'h181) ? wb_csr_wdata : csr_dmw1;
 
+    // The effective DMW state is captured at the EX->MEM boundary with the
+    // instruction: a combinational path from the WB stage through the
+    // translate mux into the (combinational) LSU request made the WB->CSR
+    // ->translate->arbiter->write-buffer-search cloud a 100MHz critical
+    // path.  The registered values are equivalent to the EX-time bypass
+    // (the 2-back's write lands at the capture edge).
+    logic [31:0] crmd_eff_r, dmw0_eff_r, dmw1_eff_r;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            crmd_eff_r <= 32'h00000008;
+            dmw0_eff_r <= 32'd0;
+            dmw1_eff_r <= 32'd0;
+        end else begin
+            crmd_eff_r <= crmd_eff;
+            dmw0_eff_r <= dmw0_eff;
+            dmw1_eff_r <= dmw1_eff;
+        end
+    end
+
     logic [31:0] mem_addr_eff0, mem_addr_eff1;
     logic        mem_cacheable0, mem_cacheable1;
     always_comb begin
         mem_addr_eff0  = ex_mem0_out.data.mem_addr;
         mem_cacheable0 = 1'b0;
-        if (!crmd_eff[3] && crmd_eff[4]) begin
-            if (ex_mem0_out.data.mem_addr[31:29] == dmw0_eff[31:29] && dmw0_eff[0]) begin
-                mem_addr_eff0  = {dmw0_eff[27:25], ex_mem0_out.data.mem_addr[28:0]};
+        if (!crmd_eff_r[3] && crmd_eff_r[4]) begin
+            if (ex_mem0_out.data.mem_addr[31:29] == dmw0_eff_r[31:29] && dmw0_eff_r[0]) begin
+                mem_addr_eff0  = {dmw0_eff_r[27:25], ex_mem0_out.data.mem_addr[28:0]};
                 mem_cacheable0 = 1'b1;
-            end else if (ex_mem0_out.data.mem_addr[31:29] == dmw1_eff[31:29] && dmw1_eff[0]) begin
-                mem_addr_eff0  = {dmw1_eff[27:25], ex_mem0_out.data.mem_addr[28:0]};
+            end else if (ex_mem0_out.data.mem_addr[31:29] == dmw1_eff_r[31:29] && dmw1_eff_r[0]) begin
+                mem_addr_eff0  = {dmw1_eff_r[27:25], ex_mem0_out.data.mem_addr[28:0]};
             end
         end
         mem_addr_eff1  = ex_mem1_out.data.mem_addr;
         mem_cacheable1 = 1'b0;
-        if (!crmd_eff[3] && crmd_eff[4]) begin
-            if (ex_mem1_out.data.mem_addr[31:29] == dmw0_eff[31:29] && dmw0_eff[0]) begin
-                mem_addr_eff1  = {dmw0_eff[27:25], ex_mem1_out.data.mem_addr[28:0]};
+        if (!crmd_eff_r[3] && crmd_eff_r[4]) begin
+            if (ex_mem1_out.data.mem_addr[31:29] == dmw0_eff_r[31:29] && dmw0_eff_r[0]) begin
+                mem_addr_eff1  = {dmw0_eff_r[27:25], ex_mem1_out.data.mem_addr[28:0]};
                 mem_cacheable1 = 1'b1;
-            end else if (ex_mem1_out.data.mem_addr[31:29] == dmw1_eff[31:29] && dmw1_eff[0]) begin
-                mem_addr_eff1  = {dmw1_eff[27:25], ex_mem1_out.data.mem_addr[28:0]};
+            end else if (ex_mem1_out.data.mem_addr[31:29] == dmw1_eff_r[31:29] && dmw1_eff_r[0]) begin
+                mem_addr_eff1  = {dmw1_eff_r[27:25], ex_mem1_out.data.mem_addr[28:0]};
             end
         end
     end
