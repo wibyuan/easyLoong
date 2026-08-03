@@ -604,7 +604,11 @@ module core import la32_common::*; #(
 
     // In-slot bypass: slot1 reading the same-cycle slot0 producer's ALU
     // result (the issue gate already excludes slot1 depending on slot0's
-    // load/mul/branch, so the EX0 result is available).
+    // load/mul/branch, so the EX0 result is available).  The bypass value
+    // is the raw ALU result: the issue gate restricts paired slot0 to
+    // pure-ALU instructions (mul/csr/cpucfg/pcadd/jal are slot0-exclusive
+    // and never pair), so ex0_result == alu_res0 and the two result-select
+    // mux levels (mul / non-ALU) stay off the slot1 address critical path.
     logic fw_a1_ex0_comb, fw_b1_ex0_comb;
     assign fw_a1_ex0_comb = id_ex1_out.ctrl.valid && id_ex0_out.ctrl.valid &&
         (id_ex1_out.data.rs1 != 5'd0) && (id_ex1_out.data.rs1 == id_ex0_out.data.rd) &&
@@ -917,40 +921,20 @@ module core import la32_common::*; #(
     assign ex_mem1_in.data.csr_wdata = 32'd0;
 
     // ---- DMW translation for the memory slot (at most one) ----
-    // Performed at EX on the slot's computed address (ex0_result/alu_res1).
+    // The RAW slot address is captured at EX; the DMW translation happens
+    // at MEM on the registered address (the translate compare/mux is off
+    // the EX critical path; the low address bits used by the WB word
+    // select are unaffected by the translation).
     logic        ex_slot0_mem;
     logic [31:0] ex_mem_slot_addr;
     assign ex_slot0_mem = id_ex0_out.ctrl.valid && (id_ex0_out.ctrl.mem_re || id_ex0_out.ctrl.mem_we);
     assign ex_mem_slot_addr = ex_slot0_mem ? ex0_result : alu_res1;
 
-    logic [31:0] crmd_eff, dmw0_eff, dmw1_eff;
-    // MEM-stage bypass: a csrwr/csrxchg one instruction older is still
-    // in-flight; the WB-stage write is covered by csr_regfile output bypass,
-    // and fully-retired writes are already in the array.
-    assign crmd_eff  = (mem_csr_we && mem_csr_num == 14'h000) ? mem_csr_wdata : csr_crmd;
-    assign dmw0_eff  = (mem_csr_we && mem_csr_num == 14'h180) ? mem_csr_wdata : csr_dmw0;
-    assign dmw1_eff  = (mem_csr_we && mem_csr_num == 14'h181) ? mem_csr_wdata : csr_dmw1;
-
-    logic [31:0] ex_mem_addr_eff;
-    logic        ex_mem_cacheable_eff;
-    always_comb begin
-        ex_mem_addr_eff = ex_mem_slot_addr;
-        ex_mem_cacheable_eff = 1'b0;
-        if (!crmd_eff[3] && crmd_eff[4]) begin
-            if (ex_mem_slot_addr[31:29] == dmw0_eff[31:29] && dmw0_eff[0]) begin
-                ex_mem_addr_eff = {dmw0_eff[27:25], ex_mem_slot_addr[28:0]};
-                ex_mem_cacheable_eff = 1'b1;
-            end else if (ex_mem_slot_addr[31:29] == dmw1_eff[31:29] && dmw1_eff[0]) begin
-                ex_mem_addr_eff = {dmw1_eff[27:25], ex_mem_slot_addr[28:0]};
-            end
-        end
-    end
-
-    // Only the memory slot carries the translated address.
-    assign ex_mem0_in.data.mem_addr  = ex_slot0_mem ? ex_mem_addr_eff : 32'd0;
-    assign ex_mem0_in.data.mem_cacheable = ex_slot0_mem ? ex_mem_cacheable_eff : 1'b0;
-    assign ex_mem1_in.data.mem_addr  = ex_slot0_mem ? 32'd0 : ex_mem_addr_eff;
-    assign ex_mem1_in.data.mem_cacheable = ex_slot0_mem ? 1'b0 : ex_mem_cacheable_eff;
+    // Only the memory slot carries the (raw) address.
+    assign ex_mem0_in.data.mem_addr  = ex_slot0_mem ? ex_mem_slot_addr : 32'd0;
+    assign ex_mem0_in.data.mem_cacheable = 1'b0;
+    assign ex_mem1_in.data.mem_addr  = ex_slot0_mem ? 32'd0 : ex_mem_slot_addr;
+    assign ex_mem1_in.data.mem_cacheable = 1'b0;
 
     pipeline_reg #($bits(ex_mem_ctrl_t)) reg_ex_mem0_ctrl (
         .clk, .reset, .stall(ex_mem_stall), .flush(1'b0),
@@ -979,6 +963,47 @@ module core import la32_common::*; #(
     wire mem_slot_is_slot0 = ex_mem0_out.ctrl.valid &&
         (ex_mem0_out.ctrl.mem_re || ex_mem0_out.ctrl.mem_we);
 
+    // ---- DMW translation at MEM (off the EX critical path) ----
+    // The RAW slot addresses were captured at EX; the translate compare
+    // and mux now run here on the registered values.  The WB word select
+    // touches only bits [3:2] (unaffected by the translation); difftest's
+    // MMIO injection keeps the translated address.
+    logic [31:0] crmd_eff, dmw0_eff, dmw1_eff;
+    // WB-stage bypass: a csrwr/csrxchg one instruction older is retiring
+    // this cycle — its write lands at the end of the cycle, too late for
+    // the current access, so the translation must use the pending value.
+    // (The instruction two older is already in the array; the instruction
+    // in MEM itself is the access being translated and must not be
+    // bypassed — its write takes effect a cycle later.)
+    assign crmd_eff  = (wb_csr_we && wb_csr_num == 14'h000) ? wb_csr_wdata : csr_crmd;
+    assign dmw0_eff  = (wb_csr_we && wb_csr_num == 14'h180) ? wb_csr_wdata : csr_dmw0;
+    assign dmw1_eff  = (wb_csr_we && wb_csr_num == 14'h181) ? wb_csr_wdata : csr_dmw1;
+
+    logic [31:0] mem_addr_eff0, mem_addr_eff1;
+    logic        mem_cacheable0, mem_cacheable1;
+    always_comb begin
+        mem_addr_eff0  = ex_mem0_out.data.mem_addr;
+        mem_cacheable0 = 1'b0;
+        if (!crmd_eff[3] && crmd_eff[4]) begin
+            if (ex_mem0_out.data.mem_addr[31:29] == dmw0_eff[31:29] && dmw0_eff[0]) begin
+                mem_addr_eff0  = {dmw0_eff[27:25], ex_mem0_out.data.mem_addr[28:0]};
+                mem_cacheable0 = 1'b1;
+            end else if (ex_mem0_out.data.mem_addr[31:29] == dmw1_eff[31:29] && dmw1_eff[0]) begin
+                mem_addr_eff0  = {dmw1_eff[27:25], ex_mem0_out.data.mem_addr[28:0]};
+            end
+        end
+        mem_addr_eff1  = ex_mem1_out.data.mem_addr;
+        mem_cacheable1 = 1'b0;
+        if (!crmd_eff[3] && crmd_eff[4]) begin
+            if (ex_mem1_out.data.mem_addr[31:29] == dmw0_eff[31:29] && dmw0_eff[0]) begin
+                mem_addr_eff1  = {dmw0_eff[27:25], ex_mem1_out.data.mem_addr[28:0]};
+                mem_cacheable1 = 1'b1;
+            end else if (ex_mem1_out.data.mem_addr[31:29] == dmw1_eff[31:29] && dmw1_eff[0]) begin
+                mem_addr_eff1  = {dmw1_eff[27:25], ex_mem1_out.data.mem_addr[28:0]};
+            end
+        end
+    end
+
     lsu lsu_unit (
         .clk, .reset,
         .valid_in(mem_slot_is_slot0 ? ex_mem0_out.ctrl.valid : ex_mem1_out.ctrl.valid),
@@ -986,9 +1011,9 @@ module core import la32_common::*; #(
         .mem_we(mem_slot_is_slot0 ? ex_mem0_out.ctrl.mem_we : ex_mem1_out.ctrl.mem_we),
         .mem_size(mem_slot_is_slot0 ? ex_mem0_out.data.mem_size : ex_mem1_out.data.mem_size),
         .mem_unsigned(mem_slot_is_slot0 ? ex_mem0_out.data.mem_unsigned : ex_mem1_out.data.mem_unsigned),
-        .addr(mem_slot_is_slot0 ? ex_mem0_out.data.mem_addr : ex_mem1_out.data.mem_addr),
+        .addr(mem_slot_is_slot0 ? mem_addr_eff0 : mem_addr_eff1),
         .wdata(mem_slot_is_slot0 ? ex_mem0_out.data.rs2_val : ex_mem1_out.data.rs2_val),
-        .cacheable(mem_slot_is_slot0 ? ex_mem0_out.data.mem_cacheable : ex_mem1_out.data.mem_cacheable),
+        .cacheable(mem_slot_is_slot0 ? mem_cacheable0 : mem_cacheable1),
         .rdata_out(lsu_rdata), .lsu_ready,
         .dreq, .dresp
     );
@@ -1021,7 +1046,7 @@ module core import la32_common::*; #(
     assign mem_wb0_in.data.instr     = ex_mem0_out.data.instr;
     assign mem_wb0_in.data.rd        = ex_mem0_out.data.rd;
     assign mem_wb0_in.data.final_res = mem0_final_res;
-    assign mem_wb0_in.data.mem_addr  = ex_mem0_out.data.mem_addr;
+    assign mem_wb0_in.data.mem_addr  = mem_addr_eff0;
     assign mem_wb0_in.data.csr_wdata = ex_mem0_out.data.csr_wdata;
 
     assign mem_wb1_in.ctrl.valid     = mem_valid1;
@@ -1039,7 +1064,7 @@ module core import la32_common::*; #(
     assign mem_wb1_in.data.instr     = ex_mem1_out.data.instr;
     assign mem_wb1_in.data.rd        = ex_mem1_out.data.rd;
     assign mem_wb1_in.data.final_res = mem1_final_res;
-    assign mem_wb1_in.data.mem_addr  = ex_mem1_out.data.mem_addr;
+    assign mem_wb1_in.data.mem_addr  = mem_addr_eff1;
     assign mem_wb1_in.data.csr_wdata = ex_mem1_out.data.csr_wdata;
 
     pipeline_reg #($bits(mem_wb_ctrl_t)) reg_mem_wb0_ctrl (
