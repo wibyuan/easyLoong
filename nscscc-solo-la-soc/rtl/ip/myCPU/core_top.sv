@@ -150,9 +150,17 @@ module core_top #(
     // async-SRAM path at a fixed 2-cycle access, the L1/L2 hierarchy is
     // bypassed entirely (all accesses are uncached pass-throughs).
     assign l2_mem_req = dreq;
-    assign dresp      = l2_mem_resp;
-    assign dresp.hit      = 1'b0;
-    assign dresp.hit_way  = 1'b0;
+    // Field-by-field response mux: a whole-struct assign followed by
+    // member assigns would multi-drive hit/hit_way (Vivado resolves the
+    // constant driver and silently drops the arbiter's, Verilator may
+    // resolve differently — a sim/synth mismatch).
+    assign dresp.addr_ok   = l2_mem_resp.addr_ok;
+    assign dresp.rdata_ok  = l2_mem_resp.rdata_ok;
+    assign dresp.data_ok   = l2_mem_resp.data_ok;
+    assign dresp.data_last = l2_mem_resp.data_last;
+    assign dresp.data      = l2_mem_resp.data;
+    assign dresp.hit       = 1'b0;
+    assign dresp.hit_way   = 1'b0;
     // No dcache to flush: cacop codes 0x01/0x09 complete instantly; the
     // icache's 0x00 invalidation keeps its own completion handshake.
     assign core_cacop_done = (core_cacop_req.valid && core_cacop_req.code[2:0] == 3'd0)
