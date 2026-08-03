@@ -248,7 +248,7 @@ set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 # placement into the region its critical logic already occupies.
 create_pblock pblock_core
 add_cells_to_pblock pblock_core [get_cells u_soc_top/u_cpu/u_core]
-resize_pblock pblock_core -add {SLICE_X20Y10:SLICE_X75Y65}
+resize_pblock pblock_core -add {SLICE_X20Y10:SLICE_X75Y60}
 
 # SRAM interface — driven directly from the cpu_clk domain by
 # axi_sram_direct (fixed 2-cycle read / 3-cycle write); the I/O delays must
@@ -284,3 +284,7 @@ set_output_delay -clock cpu_clk -max 0.3  [get_ports  ext_ram_oe_n]
 set_output_delay -clock cpu_clk -min -0.3 [get_ports  ext_ram_oe_n]
 set_output_delay -clock cpu_clk -max 0.3  [get_ports  ext_ram_we_n]
 set_output_delay -clock cpu_clk -min -0.3 [get_ports  ext_ram_we_n]
+
+create_pblock pblock_sram
+add_cells_to_pblock pblock_sram [get_cells u_soc_top/u_axi_sram_direct]
+resize_pblock pblock_sram -add {SLICE_X0Y18:SLICE_X35Y100}
