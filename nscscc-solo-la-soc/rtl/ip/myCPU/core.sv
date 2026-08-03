@@ -379,10 +379,16 @@ module core import la32_common::*; #(
          dec_is_pcadd_1);
     wire slot0_mem = id_valid0 && (dec_mem_re_0 || dec_mem_we_0);
     wire slot1_mem = id_valid1 && (dec_mem_re_1 || dec_mem_we_1);
-    // A branch/jump in slot0 is exclusive: slot1 is the fall-through path
-    // which the redirect (ID or EX) must not have executed.  The slot1
-    // instruction re-issues next cycle as slot0.
-    wire slot0_branch = id_valid0 && (dec_is_branch_0 || dec_is_jal_0 || dec_is_jalr_0);
+    // A branch/jump in slot0: unconditional jumps (B/JAL/JALR) and
+    // predicted-taken conditional branches are exclusive — slot1 is the
+    // fall-through, a wrong path the redirect must not have executed.
+    // A predicted-not-taken conditional branch lets slot1 issue: the
+    // fall-through IS the predicted path; a mispredict is handled by the
+    // EX flush (id_ex_flush kills both slots, the queue is discarded,
+    // and the fall-through's EX->MEM transfer is suppressed below).
+    wire slot0_branch = id_valid0 &&
+        ((dec_is_branch_0 && dec_br_type_0 == BR_NONE) || dec_is_jal_0 || dec_is_jalr_0 ||
+         (dec_is_branch_0 && dec_br_type_0 != BR_NONE && id_predict_taken));
     wire slot1_branch = id_valid1 && (dec_is_branch_1 || dec_is_jal_1 || dec_is_jalr_1);
     logic slot1_issue_raw;
     // slot1 reading slot0's load result: the data is not available at EX
@@ -889,7 +895,12 @@ module core import la32_common::*; #(
     assign ex_mem0_in.data.mem_unsigned = id_ex0_out.data.mem_unsigned;
     assign ex_mem0_in.data.csr_wdata = csr_wdata;
 
-    assign ex_mem1_in.ctrl.valid     = ex_valid1;
+    // A mispredict flush (EX branch redirect) suppresses slot1's EX->MEM
+    // transfer: the branch is slot0-only, so a slot1 instruction issued
+    // beside it is the fall-through (wrong path) and must not reach MEM
+    // — id_ex_flush kills the ID->EX entries but ex_mem would otherwise
+    // capture the fall-through's copy and retire it.
+    assign ex_mem1_in.ctrl.valid     = ex_valid1 && !(ex_jump_flush && !ex_mem_stall);
     assign ex_mem1_in.ctrl.rf_we     = id_ex1_out.ctrl.rf_we & ex_valid1;
     assign ex_mem1_in.ctrl.mem_re    = id_ex1_out.ctrl.mem_re & ex_valid1;
     assign ex_mem1_in.ctrl.mem_we    = id_ex1_out.ctrl.mem_we & ex_valid1;
