@@ -4,6 +4,7 @@
 
 static difftest_core_state_t dut_state;
 static difftest_commit_t    dut_commit;
+static difftest_commit_t    dut_commit1;
 static difftest_trap_t      dut_trap;
 static difftest_cache_state_t dut_cache;
 static difftest_branch_state_t dut_branch;
@@ -12,6 +13,7 @@ static uint64_t             sim_cycle = 0;
 
 uint32_t* difftest_state_buf()   { return (uint32_t*)&dut_state; }
 difftest_commit_t* difftest_get_commit() { return &dut_commit; }
+difftest_commit_t* difftest_get_commit1() { return &dut_commit1; }
 difftest_trap_t* difftest_get_trap()     { return &dut_trap; }
 difftest_cache_state_t* difftest_get_cache_state() { return &dut_cache; }
 difftest_branch_state_t* difftest_get_branch_state() { return &dut_branch; }
@@ -54,6 +56,21 @@ void v_difftest_InstrCommit(
     dut_commit.wdata    = wdata;
     dut_commit.mem_addr = mem_addr;
     dut_commit.mem_re   = mem_re;
+}
+
+void v_difftest_InstrCommit1(
+    int valid, int pc, int instr,
+    int wen, int wdest, int wdata,
+    int mem_addr, int mem_re
+) {
+    dut_commit1.valid    = valid;
+    dut_commit1.pc       = pc;
+    dut_commit1.instr    = instr;
+    dut_commit1.wen      = wen;
+    dut_commit1.wdest    = wdest;
+    dut_commit1.wdata    = wdata;
+    dut_commit1.mem_addr = mem_addr;
+    dut_commit1.mem_re   = mem_re;
 }
 
 void v_difftest_CSRState(

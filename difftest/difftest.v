@@ -52,6 +52,30 @@ module DifftestInstrCommit (
     end
 endmodule
 
+// Second retire slot for the 2-wide core: slot0 commits first in program
+// order, slot1 second.  The C++ side steps NEMU by (valid0 + valid1)
+// instructions per cycle, so slot1 alone is never valid.
+module DifftestInstrCommit1 (
+    input  logic        clock,
+    input  logic        valid,
+    input  logic [31:0] pc,
+    input  logic [31:0] instr,
+    input  logic        wen,
+    input  logic [4:0]  wdest,
+    input  logic [31:0] wdata,
+    input  logic [31:0] mem_addr,
+    input  logic        mem_re
+);
+    import "DPI-C" function void v_difftest_InstrCommit1(
+        input int valid, input int pc, input int instr,
+        input int wen, input int wdest, input int wdata,
+        input int mem_addr, input int mem_re
+    );
+    always @(posedge clock) begin
+        v_difftest_InstrCommit1(valid, pc, instr, wen, wdest, wdata, mem_addr, mem_re);
+    end
+endmodule
+
 module DifftestCSRState (
     input  logic        clock,
     input  logic [31:0] crmd, prmd, euen, ecfg,

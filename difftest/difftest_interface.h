@@ -89,6 +89,7 @@ struct difftest_stall_state_t {
 
 uint32_t* difftest_state_buf();
 difftest_commit_t* difftest_get_commit();
+difftest_commit_t* difftest_get_commit1();
 difftest_trap_t* difftest_get_trap();
 difftest_cache_state_t* difftest_get_cache_state();
 difftest_branch_state_t* difftest_get_branch_state();

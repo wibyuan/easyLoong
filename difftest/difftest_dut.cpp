@@ -290,29 +290,42 @@ void DifftestEngine::step() {
         exit(1);
     }
 
-    difftest_commit_t *cmt = difftest_get_commit();
+    difftest_commit_t *cmt  = difftest_get_commit();
+    difftest_commit_t *cmt1 = difftest_get_commit1();
 
     do_first_instr_commit();
 
-    if (!cmt->valid) return;
+    if (!cmt->valid && !cmt1->valid) return;
 
-    uint32_t pc = cmt->pc;
+    uint32_t n = 0;
+    if (cmt->valid) {
+        state_.record_inst(cmt->pc, cmt->instr, cmt->wen, cmt->wdest, cmt->wdata);
+        if (cmt->mem_re && is_mmio_addr(cmt->mem_addr)) {
+            uint32_t val = cmt->wdata;
+            proxy_.memcpy(cmt->mem_addr, &val, sizeof(val), DIFFTEST_TO_REF);
+        }
+        n++;
+    }
+    if (cmt1->valid) {
+        state_.record_inst(cmt1->pc, cmt1->instr, cmt1->wen, cmt1->wdest, cmt1->wdata);
+        if (cmt1->mem_re && is_mmio_addr(cmt1->mem_addr)) {
+            uint32_t val = cmt1->wdata;
+            proxy_.memcpy(cmt1->mem_addr, &val, sizeof(val), DIFFTEST_TO_REF);
+        }
+        n++;
+    }
+
+    uint32_t pc = cmt->valid ? cmt->pc : cmt1->pc;
     last_commit_pc_ = pc;
-    last_commit_instr_ = cmt->instr;
+    last_commit_instr_ = cmt->valid ? cmt->instr : cmt1->instr;
     last_commit_valid_ = true;
     last_commit_ = ticks_;
 
     *difftest_cycle_ptr() += 1;
 
-    state_.record_inst(cmt->pc, cmt->instr, cmt->wen, cmt->wdest, cmt->wdata);
-    state_.record_group(pc, 1);
+    state_.record_group(pc, n);
 
-    if (cmt->mem_re && is_mmio_addr(cmt->mem_addr)) {
-        uint32_t val = cmt->wdata;
-        proxy_.memcpy(cmt->mem_addr, &val, sizeof(val), DIFFTEST_TO_REF);
-    }
-
-    proxy_.exec(1);
+    proxy_.exec(n);
 
     uint32_t ref_buf[DIFFTEST_REG_SIZE / 4];
     proxy_.regcpy((void*)ref_buf, DIFFTEST_TO_DUT, true);
@@ -328,7 +341,7 @@ void DifftestEngine::step() {
         exit(1);
     }
 
-    instr_count_++;
+    instr_count_ += n;
     if (instr_count_ % 1000000 == 0) {
         fprintf(stdout, "[difftest] %lu instructions passed\n", instr_count_);
     }
