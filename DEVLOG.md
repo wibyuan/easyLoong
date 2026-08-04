@@ -1284,7 +1284,9 @@ T 网路由 2.62（replica X3Y63 → IOB AA15，Pblock 放置已实测无效，-
 
 **90MHz 冒烟 CI**：`submit-90mhz` 已推 GitLab（xci 字段级改频：CLKOUT0 DIVIDE 9→10，VCO 900MHz/10=90MHz，
 sys_clk 25MHz 不变；沿用 4c705db 75MHz 冒烟先例，docker 无头改频无解记录见 75MHz 调查），周期 11.11ns
-下 SRAM T 族 slack ≈ +0.6，等待 CI 结果。
+下 SRAM T 族 slack ≈ +0.6。**CI 已通过（2026-08-04 晚）**：Matrix 140ms / Stream 89ms / Cryptonight 345ms /
+Mixed 6ms。**策略结论：100MHz 若需牺牲 IPC（如 fetch 寄存器 -9-10%），有效吞吐≈90MHz，与 90MHz 方案无差别
+——100MHz 冲刺必须零 IPC。**
 
 **建议续接动作**：看 `$strobe` 输出定位锁存/推进竞争 → 修复 → gate + 全量 difftest + IPC
 归因（对比基线 mixed 0.5829 / cryptonight 0.7436）→ synth 实测。若 fetch 寄存器也无法
