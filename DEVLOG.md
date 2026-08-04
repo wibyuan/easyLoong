@@ -1309,40 +1309,33 @@ Mixed 6ms。**策略结论：100MHz 若需牺牲 IPC（如 fetch 寄存器 -9-10
 13 级（CARRY4×2 + RAMD64E×1）、路由主导。这就是第四轮 fetch 寄存器想砍而未砍断的族——impl 上它把终点从 FQ
 挪到输出寄存器，链本身（pc → LUTRAM → FSM → 响应）13 级依旧。
 
-### 零 IPC 收口第二轮（2026-08-05 凌晨，impl -0.304 → -0.148，`6d89422`）
+### 100MHz 闭环（2026-08-05，impl -0.304 → +0.024，`0c02d48`）——纯净隔离实验方法论
 
-**关键结构发现（族 A 的断法）**：FQ 寄存器只在 `!fq_stall_all`（其 CE）时采纳 nfq 网络，
-而 `!fq_stall_all` 蕴含 `iresp.data_ok` —— 因此 nfq 选择/数据里的 `data_ok` 项全部冗余。
-据此把吸收侧改成 **adopt-context（仅状态）信号**：`fetch_valid0_abs = state==REQ || (WAIT_DATA && pc==captured_pc)`
-（WAIT_DATA 的 pc 比较保留，浅；数据_ok 项由 CE 蕴含），`if_instr0_abs = iresp.data`（WAIT_DATA 关键字转发时
-data_ok 蕴含 icache 的 refill 地址守卫，等价于 pc==captured_pc），`c0_abs = fq_valid[0]`（入队即消费，
-entry 0 的保留项恒为 0，mux 从 5 选 1 降为 4 选 1）。**整条 0-cycle 响应链（pc→tag LUTRAM→比较→FSM→data_ok）
-从 fq_pc/fq_instr 寄存器的 D 路径消失**（族 A 44 条全部消失）。flush-keep 分支保留真实 data_ok 信号
-（其深度 ~6.5ns，不临界）。
-
-**族 B（BP/ID 重定向链）的断法**：把族 A 的教训反向用——吸收侧已经脱离响应地板，
-于是把**目标加法器挪到吸收侧**（第三轮 attempt ③ 的想法，当时因写侧叠在 0-cycle 地板上失败）：
-每个 FQ entry 携带吸收时预计算的 `fq_target`（B/BL imm26<<2 与条件分支 imm16<<2，其余为 0 无引用），
-ID/BP 重定向、EX 的 `target_pc`、keep 分支的 `pc==id_jump_pc` 比较全部改读寄存的 `fq_target[0]`；
-`predict_taken` 直接读 `instr[25]`（imm 符号位）替代深层 imm 译码。读侧重定向链从 ~10ns 降至 ~4-5ns。
-
-**SRAM CE 引脚族**：`ram_ce_out_r → bank 选择 AND → OBUF`（寄存器与 IOB 之间多一跳 LUT，叠加 IOB 偏斜），
-两输入均为边沿寄存，故把 AND 移入**每 bank 一个 CE 寄存器**（波形完全一致，模式同 T 选择寄存化）。
+**教训（最重要）**：前面 FQ 各中间态（-0.498/-0.376/-0.455）与最终 -0.148 全是**改动堆叠**的结果，
+从未在纯净基线上单独测量过任何一项——数据被污染。用户指出后按隔离实验重做：
+**`exp/icache-1k-isolated`（05a3339 基线 + 仅 icache 256→64 sets）单独 impl = +0.024**——
+比"FQ 全部改动 + 1KB"的 -0.148 好 0.17。**FQ 吸收侧 adopt-context 化 + 目标预计算 + CE 寄存化
+整组（`6d89422`）是净负收益，已 revert（存档 `shame/fq-absorb-target`），master 只留 1KB**。
 
 **icache 256 → 64 sets（8KB → 1KB）**（用户建议）：pc 索引位扇出到 ~600 个 RAMD64E（4 级链）是最大布线
-消费者；64 sets 降到 ~150 个单级 LUTRAM。基准 IPC 不变（matrix +0.07%、stream +0.1%、mixed +1.6%、
-cryptonight 0），simple -2.8%（纯 boot 冒烟测试）。NEMU `ICACHE_INDEX_BITS` 8→6 与 DUT CPUCFG.0x11 对齐
-（difftest 比较读值）。
+消费者；64 sets 降到 ~150 个单级 LUTRAM。隔离实测：SRAM 地址引脚族（-0.304 顶部）MET，**impl -0.304 → +0.024**。
+基准 IPC 不变（matrix +0.07%、stream +0.1%、mixed +1.6%、cryptonight 0），simple -2.8%（纯 boot 冒烟测试）。
+NEMU `ICACHE_INDEX_BITS` 8→6 与 DUT CPUCFG.0x11 对齐（difftest 比较读值）。
 
-**impl WNS 轨迹（中间态均未通过 commit gate，未上 master）**：族 A 单独 -0.498（BP 加法器族浮出）、
-A+B -0.376（CE 引脚族浮出）、A+B+CE -0.455（pc_stall_fetch 族被布局打散，fetch_unit 被挪到 X67-73）、
-**全部改动 + 1KB icache -0.148（布线压力释放，布局收紧，通过）**。教训：icache 的 LUTRAM 扇出是全局布线
-压力源，缩小它比继续砍单条路径更有效。
+**后续失败实验（记录）**：SRAM 地址/数据引脚按引脚拆分 + `(* IOB = "TRUE" *)` 打包——IOB 打包把偏斜
+问题转嫁到 D 侧（IOB 时钟早 4.5ns，`ram_addr_out` 组合锥太深，D 路径被早沿吃掉），全栈 impl -0.501，未提交。
 
-**当前剩余族（全部 ≤ -0.15，分布平坦）**：SRAM 地址引脚族（-0.148，2 条，`ram_addr_out_r → OBUF → 引脚`，
-IOB 偏斜 + OBUF 地板）、reg_id_ex0_data → reg_ex_mem0（-0.085，10 条）、数据引脚族（~-0.06）。
+**FQ 改动组的结构与教训（`shame/fq-absorb-target`，供后续参考）**：
+- 族 A 断法：FQ 只在 `!fq_stall_all`（其 CE）时采纳 nfq，`!fq_stall_all` 蕴含 `iresp.data_ok` ——
+  吸收侧选择/数据改读状态基信号（`fetch_valid*_abs`/`iresp.data`），0-cycle 响应链离开 fq 寄存器 D 路径；
+- 族 B 断法：FQ entry 携带吸收时预计算的目标（ID/BP/EX/keep 改读寄存的 `fq_target[0]`）；
+- SRAM CE 每 bank 寄存化（引脚路径去掉 bank-AND 的 LUT 跳）。
 
-报告归档：`run_vivado/reports/20260804-230744-adc7651-dirty/`（随 `6d89422` 提交）。
+**当前剩余族（+0.024，全 MET）**：SRAM 地址引脚族（+0.024 顶部，`ram_addr_out_r → OBUF → 引脚`，IOB 偏斜 +
+OBUF 地板）、其余数据/内部族在 0 附近。100MHz 时序闭环达成（WNS ≥ 0）。
+
+报告归档：`run_vivado/reports/20260804-234404-05a3339-dirty/`（随 `0c02d48` 提交）；FQ 实验组归档在
+`shame/fq-absorb-target`（`run_vivado/reports/20260804-230744-adc7651-dirty/`）。
 
 ### 报告归档（三次失败的 synth 报告）
 
