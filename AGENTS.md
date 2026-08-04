@@ -87,6 +87,26 @@ family set, not against the single reported top.  This deviation
 family "short in the other report so it can be ignored") burned many
 rounds during the 100MHz push.
 
+### Cut one family, not ten fingers (HARD RULE)
+
+A timing change must structurally ELIMINATE one path family from the
+critical-path set — the family no longer appears in the reports — not
+shave a few logic levels off several families.  Shaving every family a
+little leaves all of them alive, and the WNS merely oscillates as one
+shallow family surfaces another ~10ns path.  Structural elimination
+(e.g. deleting a whole mechanism: the write-buffer coverage search from
+the accept chain, the PLRU/way-selection dimension via direct-mapped
+icache) removes a family from the set permanently, and each eliminated
+family shrinks the routing/placement pressure for the rest.  Evaluate a
+change by whether its target family disappears from the critical-path
+list, never by whether WNS moved a few tenths of a ns — and fix the
+families one at a time, committing each elimination before starting the
+next.  Shaving attempts (e.g. deferring the PLRU write by one cycle,
+dropping the line-level search while the word-level search stays,
+registering the cacop request while the rf->ALU head remains) all
+failed during the 100MHz push; every success was a structural
+elimination.
+
 ## Build / Test
 
 - `make test-<case>` (simple / fibonacci / matrix / stream / cryptonight /
