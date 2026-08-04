@@ -1325,6 +1325,14 @@ NEMU `ICACHE_INDEX_BITS` 8→6 与 DUT CPUCFG.0x11 对齐（difftest 比较读�
 **后续失败实验（记录）**：SRAM 地址/数据引脚按引脚拆分 + `(* IOB = "TRUE" *)` 打包——IOB 打包把偏斜
 问题转嫁到 D 侧（IOB 时钟早 4.5ns，`ram_addr_out` 组合锥太深，D 路径被早沿吃掉），全栈 impl -0.501，未提交。
 
+**合并立即数地址恢复（2026-08-05，证伪）**：按「时序闭环后的 IPC 恢复计划」实现了 addi+依赖访存同拍对
+的 `a0+(imm0+imm1)` 单加法器合并（ID 级 merged_imm + 门禁放行 + EX1 合并路径），全量 difftest 6/6 通过但
+**IPC 与基线完全一致（mixed 0.5926 / cryptonight 0.7438，零变化）**。原因：**编译产物里 addi 后接访存的
+相邻对 = 0 个**（crypto.mif 分析：515 条 addi.w，addi 后接 mem 的对为 0）——gcc 调度器把 addi 提前或直接
+用偏移寻址，同拍依赖对根本不存在。已回退。**教训：恢复计划必须先验证模式存在（二进制分析/相邻对计数）
+再实现，不要先写 RTL**。`ac35c43` 的 IPC 代价（mixed -10.4%/cryptonight -6.7%）当前不可恢复：
+组合旁路回归会被 +0.024 余量否决，其余子类无常数可合并，代价接受。
+
 **FQ 改动组的结构与教训（`shame/fq-absorb-target`，供后续参考）**：
 - 族 A 断法：FQ 只在 `!fq_stall_all`（其 CE）时采纳 nfq，`!fq_stall_all` 蕴含 `iresp.data_ok` ——
   吸收侧选择/数据改读状态基信号（`fetch_valid*_abs`/`iresp.data`），0-cycle 响应链离开 fq 寄存器 D 路径；
