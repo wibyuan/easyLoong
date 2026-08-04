@@ -1176,6 +1176,39 @@ cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依
 
 ---
 
+## 2026-08-04（续三）：系统视图 + 断一指（Synth +0.499 / Impl -0.489）
+
+### 教训（全部沉淀为 AGENTS.md 硬规则）
+
+1. **系统视图**：synth/impl 报告是同一网表同批路径家族的不同排序——不得把 synth top 与 impl top 当无关家族分开处理；每次改动的 top 变化序列（谁浮出、谁消失）揭示整个家族集。
+2. **断一指**：改动必须让一个家族从路径集中**结构性消失**（不再出现在报告），而不是在多个家族上各切几级（"伤十指"）。实证：**微调 0 成功 vs 结构消除 5 成功**（记录在 AGENTS.md）。
+3. 其他沉淀：commit gate（WNS 变好才 commit）、报告归档进 git、禁波形分析、edit/apply_patch 纪律、每个 commit 自验证。
+
+### 已断家族（7 个，全部结构性消除，IPC 全程零损失）
+
+| 家族 | 断法 | 效果（累计 synth WNS） |
+|------|------|------|
+| r_addr 复位折叠伪路径 | 删突发死代码（`462a0af`） | -0.092 → +0.050 |
+| icache miss 捕获 CE 链 | 捕获条件去掉 next_state 项（`81174be`） | +0.050 → +0.102 |
+| 接受链（m_eway/wb_q CE/r_addr） | AR 预览 + 行捕获移位 + c0_cmp（`37bcfd4`） | +0.102 → +0.187 |
+| 行级搜索捕获 | WB_DEPTH 8→4（`7b32af3`） | +0.187 → +0.296 |
+| cacop 路径 + 命中环（PLRU/way） | cacop 请求寄存化 + icache 直接映射（`e7fbea8`） | +0.296 → **+0.499**；impl -0.868 → **-0.489** |
+
+### 剩余两族（下一轮）
+
+1. **pc_reg 预测**（synth top，+0.499，22 级 9.29ns）：fq_instr → ID 解码（6 级）→ bp 目标加法器 CARRY4×8（7 级）→ 到达比较（3 级）→ flush（1 级）→ next_pc mux（5 级）。零 IPC 断法未找到（加法器/到达比较必须本拍；寄存化 = 重定向晚 1 拍 = IPC）。
+2. **SRAM 引脚输出**（impl top，-0.489）：ram_write_active_r → OBUFT → 引脚。数据 6.75ns（OBUFT 3.3 固有）+ 时钟偏斜 -3.347（布局结果）。布局实验两次无效（-0.818/-1.093）；skew 是当前布局的产物，结构修正 synth 后 impl 会随布局重排变化。
+
+### 75MHz CI 尝试（未完成，记录调查结论）
+
+- 目标：提交 75MHz 试 CI 管线（75MHz 周期 13.33ns 必然通过）。
+- PLL 实况（sim_netlist 权威）：MMCM，CLKIN 50MHz，MULT_F=18（VCO 900MHz），CLKOUT0 DIVIDE 9→100MHz（cpu_clk），CLKOUT1 DIVIDE 36→25MHz（sys_clk）。75MHz = CLKOUT0 DIVIDE 12。
+- **Vivado 2019.2 batch 无改 IP 命令**：`write_ip`/`open_ip` 不存在（GUI 会话命令）、`CONFIG.MMCM_CLKOUT0_DIVIDE_F` 为 disabled 参数（自动推导）、`CONFIG.CLKOUT0_REQUESTED_OUT_FREQ` 在 read_ip 下只读、open_project 下不存在、`export_ip` 语法不可用。**无头 docker 下"通过 Vivado 读写 xci"的可行方法未找到**（`create_ip` 重新生成是候选但未完成——端口名等配置需与现 xci 对齐）。
+- git 先例：`submit-75mhz` 分支（`650e481` "sync 75MHz PLL XCI to CI path"——xci 字段级改动，旧配置 MULT 33 时代）——**不能直接套用**（当前 MULT 18）。
+- 临时脚本留在 `scripts/pll_*.tcl`（未提交）：`pll_75mhz.tcl`（read_ip+set_property+write_ip 尝试）、`pll_query*.tcl`/`pll_dump.tcl`（参数/配置查询）。
+
+---
+
 ## Vivado 操作手册（交接必备）
 
 ### 流程入口
