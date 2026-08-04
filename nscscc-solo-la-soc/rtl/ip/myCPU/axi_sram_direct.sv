@@ -62,6 +62,13 @@ module axi_sram_direct #(
     output logic        bvalid,
     input  logic        bready,
 
+    // ---- AR preview (from the arbiter): the pending read's address one
+    // cycle before the accept, so the write-buffer full-cover flag is
+    // precomputed into a register and arready never combinationally
+    // depends on the 8-entry coverage search ----
+    input  logic        ar_preview_valid,
+    input  logic [31:0] ar_preview_addr,
+
     // ---- async SRAM pins ----
     output logic [19:0] base_ram_addr,
     output logic [3:0]  base_ram_be_n,
@@ -161,43 +168,65 @@ module axi_sram_direct #(
     // Per-byte coverage and the newest-store data for a read address.
     // The search walks the FIFO from the newest entry (tail-1) down to the
     // oldest (head); a newer store to the same byte wins.
+    // The search runs on the arbiter's preview address in R_IDLE (one
+    // cycle before the accept) so the full-cover flag is a register by
+    // the time arready is evaluated; the accept-time captures (wb_*_r)
+    // always re-run the search on araddr, so they see the fresh state —
+    // a stale preview only biases the full-forward-vs-SRAM decision, and
+    // both paths produce correct data.
+    logic [31:0] search_addr;
+    assign search_addr = (rd_cnt == 2'd1) ? r_addr
+                        : (ar_preview_valid ? ar_preview_addr : araddr);
+
     logic [3:0]  wb_cover_ar;
     logic [31:0] wb_fwd_ar;
+    logic        wb_full_pre_r;
+    always_ff @(posedge aclk) begin
+        if (!aresetn)
+            wb_full_pre_r <= 1'b0;
+        else if (ar_preview_valid)
+            wb_full_pre_r <= (wb_cover_ar == 4'hf);
+    end
     // Line-based coverage for the read RESPONSE: the 16-byte line's
-    // per-byte coverage and forwarded data are captured at the read
-    // accept, so the 8-entry search's combinational depth is off the
-    // response path; burst beats select their word's slice via the
-    // registered r_addr[3:2].  Exactness: no store is accepted while a
-    // read is in flight, and a store drained between accept and response
-    // leaves the same value in the SRAM (the drained write completes
-    // before the dequeue).
+    // per-byte coverage and forwarded data.  Captured at rd_cnt==1 (from
+    // the registered r_addr) for the rd_cnt==2 SRAM-merge response —
+    // entirely off the accept path.  The fully-forwarded response at
+    // rd_cnt==1 uses the word-level captures below.  All requests here
+    // are single-beat (the LSU and the icache issue arlen==0 only), so
+    // the response's word always equals the accepted word.
     logic [15:0]  wb_cover_line;
     logic [127:0] wb_fwd_line;
     logic [15:0]  wb_cover_line_r;
     logic [127:0] wb_fwd_line_r;
-    // The four per-word slice-full checks are precomputed at the accept so
-    // the response path's wb_full_r is a 4:1 mux instead of a combinational
-    // slice-select + 4-bit equality (a CARRY4 on the CE/read-done path).
-    logic [3:0]   wb_full_w_r;
+    // Word-level coverage (the accepted word), captured at the accept for
+    // the fully-forwarded response at rd_cnt==1.  Its D-side is the
+    // shallow 4-byte word search, not the 16-byte line priority chain.
+    logic [3:0]  wb_cover_w_r;
+    logic [31:0] wb_fwd_w_r;
+    logic        wb_full_w_r;
     always_ff @(posedge aclk) begin
         if (!aresetn) begin
+            wb_cover_w_r    <= 4'd0;
+            wb_fwd_w_r      <= 32'd0;
+            wb_full_w_r     <= 1'b0;
             wb_cover_line_r <= 16'd0;
             wb_fwd_line_r   <= 128'd0;
-            wb_full_w_r     <= 4'd0;
-        end else if (ar_go && ar_sram) begin
-            wb_cover_line_r <= wb_cover_line;
-            wb_fwd_line_r   <= wb_fwd_line;
-            wb_full_w_r[0]  <= (wb_cover_line[3:0]   == 4'hf);
-            wb_full_w_r[1]  <= (wb_cover_line[7:4]   == 4'hf);
-            wb_full_w_r[2]  <= (wb_cover_line[11:8]  == 4'hf);
-            wb_full_w_r[3]  <= (wb_cover_line[15:12] == 4'hf);
+        end else begin
+            if (ar_go && ar_sram) begin
+                wb_cover_w_r <= wb_cover_ar;
+                wb_fwd_w_r   <= wb_fwd_ar;
+                wb_full_w_r  <= (wb_cover_ar == 4'hf);
+            end
+            if (rd_cnt == 2'd1) begin
+                wb_cover_line_r <= wb_cover_line;
+                wb_fwd_line_r   <= wb_fwd_line;
+            end
         end
     end
     wire [1:0]  r_word = r_addr[3:2];
     wire [3:0]  wb_cover_r = wb_cover_line_r[r_word*4 +: 4];
     wire [31:0] wb_fwd_r   = wb_fwd_line_r[r_word*32 +: 32];
     wire wb_full_ar = (wb_cover_ar == 4'hf);
-    wire wb_full_r  = wb_full_w_r[r_word];
     wire [31:0] wb_cover_r_byte = {{8{wb_cover_r[3]}}, {8{wb_cover_r[2]}},
                                    {8{wb_cover_r[1]}}, {8{wb_cover_r[0]}}};
 
@@ -211,14 +240,14 @@ module axi_sram_direct #(
             idx = wb_tail - 1 - i[WB_BITS-1:0];
             if (i[WB_BITS:0] < wb_count && wb_q[idx].valid) begin
                 // ---- AR address (word coverage for the accept) ----
-                if (wb_q[idx].addr[31:2] == araddr[31:2]) begin
+                if (wb_q[idx].addr[31:2] == search_addr[31:2]) begin
                     if (wb_q[idx].be[0] && !wb_cover_ar[0]) begin wb_cover_ar[0] = 1'b1; wb_fwd_ar[7:0] = wb_q[idx].data[7:0]; end
                     if (wb_q[idx].be[1] && !wb_cover_ar[1]) begin wb_cover_ar[1] = 1'b1; wb_fwd_ar[15:8] = wb_q[idx].data[15:8]; end
                     if (wb_q[idx].be[2] && !wb_cover_ar[2]) begin wb_cover_ar[2] = 1'b1; wb_fwd_ar[23:16] = wb_q[idx].data[23:16]; end
                     if (wb_q[idx].be[3] && !wb_cover_ar[3]) begin wb_cover_ar[3] = 1'b1; wb_fwd_ar[31:24] = wb_q[idx].data[31:24]; end
                 end
                 // ---- AR address (line coverage for the response) ----
-                if (wb_q[idx].addr[31:4] == araddr[31:4]) begin
+                if (wb_q[idx].addr[31:4] == search_addr[31:4]) begin
                     if (wb_q[idx].addr[3:2] == 2'd0) begin
                         if (wb_q[idx].be[0] && !wb_cover_line[0])  begin wb_cover_line[0]  = 1'b1; wb_fwd_line[7:0]   = wb_q[idx].data[7:0];   end
                         if (wb_q[idx].be[1] && !wb_cover_line[1])  begin wb_cover_line[1]  = 1'b1; wb_fwd_line[15:8]  = wb_q[idx].data[15:8];  end
@@ -252,7 +281,7 @@ module axi_sram_direct #(
     // A fully-forwarded read needs no SRAM pins and is accepted even while
     // the drain owns them; a partial/SRAM read yields to the drain.
     assign arready = idle_ar
-        ? (ar_sram ? (wb_full_ar || (wr_cnt == 2'd0)) : mmio_arready) : 1'b0;
+        ? (ar_sram ? (wb_full_pre_r || (wr_cnt == 2'd0)) : mmio_arready) : 1'b0;
     assign awready = (idle_ar && !ar_take)
                      ? (aw_sram ? !wb_full : (mmio_awready && mmio_wready)) : 1'b0;
     assign wready  = (idle_ar && !ar_take)
@@ -293,7 +322,7 @@ module axi_sram_direct #(
     // Forwarded read responds at rd_cnt==1 (no SRAM access); a partial or
     // non-forwarded read responds at rd_cnt==2 with the SRAM data merged
     // with the buffered bytes.
-    wire sram_fwd_resp = (rd_cnt == 2'd1) && wb_full_r && !r_mmio;
+    wire sram_fwd_resp = (rd_cnt == 2'd1) && wb_full_w_r && !r_mmio;
     wire sram_rd_resp  = (rd_cnt == 2'd2) && !r_mmio;
     wire sram_bresp    = wb_push_b && !w_mmio;
 
@@ -302,7 +331,7 @@ module axi_sram_direct #(
     assign rid    = r_mmio ? mmio_rid[3:0] : r_id;
     assign rresp  = r_mmio ? mmio_rresp  : 2'b00;
     assign rdata  = r_mmio ? mmio_rdata
-                 : (sram_fwd_resp ? wb_fwd_r
+                 : (sram_fwd_resp ? wb_fwd_w_r
                     : ((r_bank ? ext_ram_data : base_ram_data) & ~wb_cover_r_byte)
                       | (wb_fwd_r & wb_cover_r_byte));
 
@@ -327,7 +356,7 @@ module axi_sram_direct #(
         ram_wdata_out   = 32'd0;
         ram_write_active = 1'b0;
         bank_out        = 1'b0;
-        if (rd_cnt != 2'd0 && !(rd_cnt == 2'd1 && wb_full_r)) begin
+        if (rd_cnt != 2'd0 && !(rd_cnt == 2'd1 && wb_full_w_r)) begin
             // SRAM read in flight (a fully-forwarded read needs no pins and
             // must NOT override the drain's in-progress write: asserting
             // the read address/OE mid-write glitches the WE pulse and
@@ -510,7 +539,7 @@ module axi_sram_direct #(
                 r_id   <= arid;
                 r_bank <= araddr[22];
             end else if (rd_cnt == 2'd1) begin
-                if (wb_full_r) begin
+                if (wb_full_w_r) begin
                     // fully forwarded: respond now, no SRAM access
                     if (rready) begin
                         rd_cnt <= 2'd0;

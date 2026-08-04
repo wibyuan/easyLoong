@@ -295,6 +295,12 @@ module core import la32_common::*; #(
     assign fq_stall_all = pipeline_stall || load_use_hazard || !iresp.data_ok;
     wire c0 = fq_valid[0] && !fq_stall_all && !if_id_flush;
     wire c1 = fq_valid[1] && slot1_issue && !fq_stall_all && !if_id_flush;
+    // Compaction-consumption versions without the if_id_flush term: the
+    // nfq network is only adopted when !if_id_flush (the flush branch
+    // overrides it), so the deep flush logic (branch-target adder, EX
+    // redirect chain) stays off the compaction-select path.
+    wire c0_cmp = fq_valid[0] && !fq_stall_all;
+    wire c1_cmp = fq_valid[1] && slot1_issue_raw && !fq_stall_all;
 
     // Free slots after consumption, and how many fetch outputs are taken.
     wire [2:0] rem_cnt = {1'b0, fq_valid[0] && !c0}
@@ -317,7 +323,7 @@ module core import la32_common::*; #(
     logic [FQ_DEPTH-1:0]   nfq_valid;
     logic [31:0] nfq_pc [0:FQ_DEPTH-1];
     logic [31:0] nfq_instr [0:FQ_DEPTH-1];
-    wire fq_kill_slot1 = c0 && bp_do_jump;
+    wire fq_kill_slot1 = c0_cmp && bp_do_jump;
     always_comb begin
         automatic int rc = 0;
         for (int i = 0; i < FQ_DEPTH; i++) begin
@@ -325,10 +331,10 @@ module core import la32_common::*; #(
             nfq_pc[i]    = 32'd0;
             nfq_instr[i] = 32'd0;
         end
-        if (fq_valid[0] && !c0) begin
+        if (fq_valid[0] && !c0_cmp) begin
             nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[0]; nfq_instr[rc] = fq_instr[0]; rc++;
         end
-        if (fq_valid[1] && !c1 && !fq_kill_slot1) begin
+        if (fq_valid[1] && !c1_cmp && !fq_kill_slot1) begin
             nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[1]; nfq_instr[rc] = fq_instr[1]; rc++;
         end
         if (fq_valid[2] && !fq_kill_slot1) begin

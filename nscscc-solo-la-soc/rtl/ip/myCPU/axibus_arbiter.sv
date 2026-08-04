@@ -45,7 +45,14 @@ module axibus_arbiter import la32_common::*; (
     input  logic [3:0]  bid,
     input  logic [1:0]  bresp,
     input  logic        bvalid,
-    output logic        bready
+    output logic        bready,
+
+    // ---- AR preview: the pending read's address one cycle before the
+    // accept (R_IDLE), letting the sram-direct precompute the
+    // write-buffer full-cover flag into a register so arready never
+    // combinationally depends on the 8-entry coverage search ----
+    output logic        ar_preview_valid,
+    output logic [31:0] ar_preview_addr
 );
 
     enum logic [2:0] {
@@ -84,6 +91,8 @@ module axibus_arbiter import la32_common::*; (
         arprot  = 3'd0;
         arvalid = 1'b0;
         rready  = 1'b0;
+        ar_preview_valid = 1'b0;
+        ar_preview_addr  = 32'd0;
 
         r_iresp_addr_ok  = 1'b0;
         r_iresp_data_ok  = 1'b0;
@@ -96,6 +105,13 @@ module axibus_arbiter import la32_common::*; (
         // ----- Read channel FSM -----
         case (rstate)
             R_IDLE: begin
+                // Preview the pending read's address for the sram-direct's
+                // coverage precompute; the accept (R_ARB/R_IREQ/R_DREQ)
+                // always follows exactly one cycle later with the same
+                // address (both requesters hold their request until the
+                // accept), and the selection mux mirrors R_ARB's.
+                ar_preview_valid = ireq.valid || (dreq.valid && dreq.strobe == 4'd0);
+                ar_preview_addr  = (dreq.valid && dreq.strobe == 4'd0) ? dreq.addr : ireq.addr;
                 if (ireq.valid && (dreq.valid && dreq.strobe == 4'd0)) begin
                     rnext = R_ARB;
                 end else if (ireq.valid) begin

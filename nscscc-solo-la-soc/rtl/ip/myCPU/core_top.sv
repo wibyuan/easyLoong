@@ -67,7 +67,10 @@ module core_top #(
     output [3:0]    debug0_wb_rf_wen,
     output [4:0]    debug0_wb_rf_wnum,
     output [31:0]   debug0_wb_rf_wdata,
-    output [31:0]   debug0_wb_inst
+    output [31:0]   debug0_wb_inst,
+
+    output          ar_preview_valid,
+    output [31:0]   ar_preview_addr
 );
 
     import la32_common::*;
@@ -220,7 +223,8 @@ module core_top #(
         .awid,     .awaddr,   .awlen,   .awsize, .awburst,
         .awlock,   .awcache,  .awprot,  .awvalid, .awready,
         .wid,      .wdata_out(wdata), .wstrb,   .wlast,   .wvalid, .wready,
-        .bid,      .bresp,    .bvalid,  .bready
+        .bid,      .bresp,    .bvalid,  .bready,
+        .ar_preview_valid, .ar_preview_addr
     );
 
     assign ws_valid = 1'b0;

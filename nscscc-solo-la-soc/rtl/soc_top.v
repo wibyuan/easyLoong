@@ -166,6 +166,8 @@ wire        cpu_awvalid;
 wire        cpu_awready;
 wire [3 :0] cpu_wid    ;
 wire [31:0] cpu_wdata  ;
+wire        cpu_ar_preview_valid;
+wire [31:0] cpu_ar_preview_addr;
 wire [3 :0] cpu_wstrb  ;
 wire        cpu_wlast  ;
 wire        cpu_wvalid ;
@@ -1155,6 +1157,9 @@ core_top u_cpu(
     .bvalid    (cpu_bvalid    ),
     .bready    (cpu_bready    ),
 
+    .ar_preview_valid   (cpu_ar_preview_valid   ),
+    .ar_preview_addr    (cpu_ar_preview_addr    ),
+
     //debug interface
     .break_point        (1'b0               ),
     .infor_flag         (1'b0               ),
@@ -1251,6 +1256,8 @@ axi_sram_direct u_axi_sram_direct (
     .bresp            ( cpu_bresp         ),
     .bvalid           ( cpu_bvalid        ),
     .bready           ( cpu_bready        ),
+    .ar_preview_valid ( cpu_ar_preview_valid ),
+    .ar_preview_addr  ( cpu_ar_preview_addr  ),
     // async SRAM pins
     .base_ram_addr    ( base_ram_addr     ),
     .base_ram_be_n    ( base_ram_be_n     ),
