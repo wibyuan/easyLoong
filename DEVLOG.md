@@ -1126,8 +1126,19 @@ cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依
 
 **曾尝试但已回退的 IPC 牺牲**（不生效，仅记录）：`9de09b2` 纯门禁（无注册旁路）同代价但静态时序无收益，`e9db3c3` 回退；dresp 响应整体注册 matrix -19.9%/stream -16.5%/cryptonight -4.8% 换 +0.36ns，放弃。回收方向：addi/subi+dep-mem 同拍对用合并立即数地址（零串行）。
 
+### 时序闭环后的 IPC 恢复计划（100MHz WNS≥0 后第一优先）
+
+`ac35c43` 的 IPC 代价（mixed -10.4%、cryptonight -6.7%）**不是必要成本**——当时选择"先注册旁路保时序、恢复后置"。时序闭环后按以下方案回收：
+
+**合并立即数地址（零 IPC 代价、零串行）**：对 `addi/subi`（slot0，b=imm）+ 依赖访存（slot1，rs1=rd0）的同拍对，地址 = alu_res0 + imm1 = a0 + (imm0+imm1)——**ID 级预计算 merged_imm = imm0+imm1（常数），ALU1 用 a=forward_a0、b=merged_imm 单加法器并行算出地址**，无串行链。实施点：
+1. ID：合并条件（slot0=ADD/SUB-imm && slot1=mem && rs1_1==rd0）+ merged_imm；
+2. EX：alu_a1 的合并路径选择 forward_a0、alu_b1 选 merged_imm；
+3. 门禁放行该子类（`slot1_dep_alu0` 去掉可合并项）；
+4. 验证：difftest 6/6 + IPC 对比（预期收回 mixed/cryptonight 的主要损失）。
+
+备用：收窄门禁（只拦 slot1 的 ADD/SUB/SLT/SLTU 依赖，逻辑操作依赖放行）。
+
 ### 交接要点（下一步方向）
 
 1. **分支重定向注册化重做**（最高价值）：在 npc 输出打一拍（fetch 重定向 +1，误预测惩罚 +1），打断 20 级组合链。首轮失败疑为"fetch +1 与流水线实时冲刷不一致导致 if_id N 拍捕获的错误路径存活"——**用 `unittest/UNITTEST-WORKFLOW.md` 的单元测试方法提取失败现场（difftest #45：t0 值错 + idle_pc 卡 0x1c001080）逐个验证冲刷窗口**，不要像首轮那样失配即回退。
 2. **工作流硬规则**：任何 RTL 改动必须先过门禁（simple+matrix+cryptonight，`/tmp/opencode/gate_diff.sh`，失败即 exit 1）才能启动 Vivado；**禁止 `grep "mismatch" && docker` 链**（grep 匹配失败文本退出码是 0 会放行）；每次改动的验证计划先写后做。
-3. 已确认的 IPC 代价（需接受或后续回收）：`ac35c43` 的门禁 mixed -10.4%、cryptonight -6.7%（回收方向：addi/subi+dep-mem 对用合并立即数地址，零串行）。

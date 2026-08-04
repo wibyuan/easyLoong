@@ -4,7 +4,9 @@
 
 > **⚠ 当前 master 状态（2026-08-04，100MHz 冲刺交接）**：master 为 **no-dcache + axi_sram_direct 直通 SRAM**（LSU 直连，2 拍读/3 拍写 + 8 项写缓冲 + store-to-load 转发），PLL 已重生成 cpu_clk=100MHz/sys_clk=25MHz。difftest 6/6 + 数据比对全过；100MHz 默认策略下 **Synthesis WNS -1.230 / Implementation WNS -2.333**（分支重定向链为唯一瓶颈族）。
 >
-> **⚠ 当前 master 的 IPC 牺牲（必须知晓）**：提交 `ac35c43`（打破串行双加法器静态路径的槽1旁路注册化 + 同拍依赖对门禁）以 IPC 换取时序。**相对该提交之前的基线**（simple 0.1627 / matrix 0.4476 / stream 0.4951 / mixed 0.6503 / cryptonight 0.7974）：**mixed 0.6503→0.5829（-10.4%）、cryptonight 0.7974→0.7436（-6.7%）**，simple -0.55%、matrix/stream 约 0。当前 master 的实测 IPC：simple 0.1618 / matrix 0.4475 / stream 0.4951 / mixed 0.5829 / cryptonight 0.7436。**下述第 4 节性能表为两级 dcache 时代的记录，与当前状态不符**；完整记录与回收方向见 [DEVLOG.md](DEVLOG.md)「2026-08-04: 100MHz 冲刺阶段记录」。
+> **⚠ 当前 master 的 IPC 牺牲（必须知晓）**：提交 `ac35c43`（打破串行双加法器静态路径的槽1旁路注册化 + 同拍依赖对门禁）以 IPC 换取时序。**相对该提交之前的基线**（simple 0.1627 / matrix 0.4476 / stream 0.4951 / mixed 0.6503 / cryptonight 0.7974）：**mixed 0.6503→0.5829（-10.4%）、cryptonight 0.7974→0.7436（-6.7%）**，simple -0.55%、matrix/stream 约 0。当前 master 的实测 IPC：simple 0.1618 / matrix 0.4475 / stream 0.4951 / mixed 0.5829 / cryptonight 0.7436。**下述第 4 节性能表为两级 dcache 时代的记录，与当前状态不符**。
+>
+> **🔧 时序闭环后的 IPC 恢复（100MHz WNS≥0 后第一优先）**：`ac35c43` 的 IPC 代价不是必要成本，恢复方案已定——**合并立即数地址**（`addi/subi`+依赖访存对用 `a0+(imm0+imm1)` 单加法器并行算地址，零串行零 IPC），预期收回 mixed/cryptonight 主要损失。完整计划见 [DEVLOG.md](DEVLOG.md)「时序闭环后的 IPC 恢复计划」；本次冲刺完整记录见[同文件](DEVLOG.md)「2026-08-04: 100MHz 冲刺阶段记录」。
 
 
 ## 致谢
