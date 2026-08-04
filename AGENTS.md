@@ -107,6 +107,34 @@ registering the cacop request while the rf->ALU head remains) all
 failed during the 100MHz push; every success was a structural
 elimination.
 
+The empirical record of the 100MHz push (2026-08) — a future AI should
+weigh any proposed change against this before writing RTL:
+
+Shaving attempts, ALL FAILED:
+- deferring the PLRU write by one cycle (would raise the miss rate:
+  the stale victim choice can evict the just-hit way — IPC cost)
+- dropping the line-level search while the word-level search stayed
+  (synth +0.187 -> -0.535)
+- moving the line-capture to rd_cnt==1 alone (+0.092... -0.849)
+- registering the cacop request alone (+0.296 -> +0.002, twice)
+- the c0_cmp compaction tweak alone (+0.102 -> -0.454)
+- floorplan nudges for the SRAM pin-output path (-0.489 -> -0.818,
+  -> -1.093 — the IOB output stage and clock skew are fixed; the
+  family is not eliminable by placement)
+
+Structural eliminations, ALL SUCCEEDED:
+- removing the dead burst advance (-0.092 -> +0.050)
+- taking the FSM next-state off the icache miss-capture CE
+  (+0.050 -> +0.102)
+- the accept-chain restructure: AR preview + rd_cnt==1 line capture +
+  compaction select without the if_id_flush term (+0.102 -> +0.187)
+- WB_DEPTH 8 -> 4 (+0.187 -> +0.296)
+- direct-mapped icache (the PLRU/way-selection dimension deleted) +
+  the registered cacop request (synth +0.296 -> +0.499, impl
+  -0.868 -> -0.489)
+
+Score: 0 shaving successes vs 5 structural eliminations.
+
 ## Build / Test
 
 - `make test-<case>` (simple / fibonacci / matrix / stream / cryptonight /
