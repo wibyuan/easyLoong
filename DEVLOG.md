@@ -1193,12 +1193,14 @@ raddr mux 最初把 `f_valid`（fill 进行中）切到 `f_idx`（fill 写判定
 
 ---
 
-## 2026-08-04（续四）：pc_reg 族三次零 IPC 断法全部失败 + fetch 寄存器方案调试中
+## 2026-08-04（续四）：pc_reg 族三次零 IPC 断法全部失败 + fetch 寄存器终局（impl 判定失败）
 
-> 交接状态：四次尝试均未落地 master（WNS 未变好或未通过 difftest）。master 保持基线
+> 交接状态：四次尝试均未落地 master。master 保持基线
 > （synth +0.499 / impl -0.489，`e7fbea8`）。失败代码与报告全部存档在
-> **`shame/fq-predecode-ring`** 分支（`aa35b2d` 预译码+环式、`3bdab80` entry-target）。
-> 第四次（fetch 输出寄存器）工作区未 commit，正在调试启动 bug。
+> **`shame/fq-predecode-ring`** 分支（`aa35b2d` 预译码+环式、`3bdab80` entry-target）
+> 与 **`shame/fetch-register`** 分支（`ce1fdc7`，第四轮）。
+> **2026-08-04 晚新规矩（AGENTS.md）：一切时序改动以 `run_vivado.sh impl` 实测为准，
+> synth WNS 只是方向性过滤器。**
 
 ### 四次尝试记录（全部 difftest 6/6、IPC 零损失，除第四次未通过）
 
@@ -1207,7 +1209,7 @@ raddr mux 最初把 `f_valid`（fill 进行中）切到 `f_idx`（fill 写判定
 | ① 预译码入队（imm/br 字段吸收时寄存，发射侧读寄存器） | shift 队列 + 写侧 decode | **+0.328**（< +0.499） | pc_reg 族头被断（22→14 级），但写侧 `pc→icache→decode→nfq→FQ reg` 浮出 9.46ns |
 | ② 环式 FQ（条目不动，head/count 指针，吸收写用寄存器选择） | 指针写 + head mux 读 | **-0.704** | 写侧变浅（~7ns）✓，但读侧 head 4:1 mux + 三个 pc+imm 加法器被综合合并为 LUT 加法器（无 CARRY4）压到重定向链 → 10.49ns（81% 布线） |
 | ③ entry 携带 target（pc+imm 吸收时预计算入队，发射侧读寄存器） | 环式 + 写侧加法器 | **-1.493** | 读侧加法器删除 ✓，但写侧加法器叠在 0-cycle 响应地板上 → 22 级 11.28ns（CARRY4×7） |
-| ④ fetch 输出寄存器（响应锁存 1 拍 + 三态缓冲握手，已通告 IPC ~1-2%） | 吸收/发射全从寄存器出发 | 未综合（difftest 未过） | 启动 #0 mismatch：WAIT_DATA 关键字响应后 pc 错误推进 +4，000 未进 FQ（见下） |
+| ④ fetch 输出寄存器（响应锁存 1 拍 + 三态缓冲握手，已通告 IPC ~1-2%） | 吸收/发射全从寄存器出发 | synth +1.276 / **impl -0.512（比基线差，放弃）** | 实测 IPC 代价 9-10%（远超通告）；difftest 修通（4 个 bug）后 impl 判定失败（见下） |
 
 ### 结构结论（三次失败共同验证，已存 shame 分支 commit 说明）
 
@@ -1237,6 +1239,52 @@ FQ 首次吸收 {004, 008} 而非 {000}——WAIT_DATA 关键字响应（000）�
   与 pc 边沿采样的真实时序（怀疑锁存/推进同一拍竞争，或 `if_valid0_c && !if_valid0_r`
   锁存条件与 `pc_stall` 的交互）。
 - 调试显示位置：`fetch_unit.sv`（FETCH $strobe）、`icache.sv`（ICACHE）、`core.sv`（FQ）。
+
+### 第四次终局（2026-08-04 晚）：difftest 修通但 impl 判定失败，已放弃
+
+**调试修复链**（difftest 从 #0 → 6/6 全过）：
+1. **FQ 吸收门控 bug**：`fq_stall_all`（含 `!iresp.data_ok`）把注册输出的吸收挡掉——响应寄存后
+   data_ok 已撤，首次输出被丢弃 → FQ 无条件采纳 nfq（头保持语义不变）。
+2. **fetch 缓冲重定向不清**：重定向（EX/ID/BP）同拍到达的响应被锁存，+1 拍后绕过 flush 执行
+   （错路 {084,088} 提交，第 3 个 cacop 把 icache 打进 S_CACOP_ST 死循环）→ 重定向转向时清空缓冲。
+3. **cacop 请求寄存器优先级**：`cacop_in_ex` 重注册掩盖 done 清除 → icache 交替 S_IDLE/S_CACOP_ST
+   饿死取指 → done 清除优先。
+4. **CSR 读路径 1 拍滞后**：`csr_rdata_r` 自由运行读的是上一拍 csr_num（csrxchg 读 CRMD=8 当 DMW0=0 用，
+   内核 DMW 建立被破坏）→ EX 结果直接用组合 `csr_rdata`（含 in-flight 写转发）。
+
+**IPC 实测（同构建同产物对比基线）**：simple 0.1659→0.1784（+7.5% 异常）、matrix 0.4479→0.4383（-2.1%）、
+stream 0.4951→0.4512（**-8.9%**）、mixed 0.5834→0.5241（**-10.2%**）、cryptonight 0.7436→0.6754（**-9.2%**）。
+**远超市先通告的 1-2%**——每次 miss/重定向恢复指令进 FQ 晚 1 拍（响应→寄存器→吸收的固有 +1），
+stream/mixed/cryptonight 的 refill 与分支密集使其放大到 9-10%。
+
+**impl 判定（新规矩：以 impl WNS 为准）**：synth +1.276（比基线 +0.499 高），但 **impl -0.512（比基线 -0.489 更差）**。
+已放弃，代码与报告存档 `shame/fetch-register`（`ce1fdc7`，报告 `run_vivado/reports/20260804-204100-f603da1-dirty/`）。
+**教训沉淀为 AGENTS.md 硬规则：synth WNS 是幻象，布局布线可推翻（+1.276 synth 不保证更好的 impl）；
+一切时序改动以 `run_vivado.sh impl` 实测为准。**
+
+### 基线 impl 家族枚举（141 条违例端点的分布，2026-08-04 晚实测）
+
+`report_timing -max_paths 400`（master 网表）显示 **impl 违例家族与 synth 完全不同**：
+
+| 家族 | 路径数 | 说明 |
+|------|--------|------|
+| pc_reg → D | 136 | next_pc 路径——**impl 上违例端点最多**（fetch 寄存器在 synth 上"消失"但 impl 依旧 195） |
+| fq_instr_reg → CE/D | 93 | FQ 吸收/压缩逻辑 D 侧 |
+| data_out_reg → D/CE | 72 | 流水线寄存器 |
+| write_active/bank_out → 数据 T | 59 | SRAM T 族（WNS 顶部 -0.489） |
+| ram_addr_out_r → 地址引脚 | 26 | SRAM 地址输出族 |
+| regs_reg（寄存器堆） | 10 | regfile 写路径 |
+| WE/OE/CE 引脚 | 4 | 控制引脚 |
+
+**SRAM T 族（-0.489）地板构成**（`ram_write_active_r` → T-replica LUT → 32 个 IOB 的 OBUFT T）：
+IOB 时钟偏斜 -3.35（DCD -4.543，BUFG X0Y16 与左缘 IOB 的物理时钟树）+ OBUFT T→O 3.30（固有）+
+T 网路由 2.62（replica X3Y63 → IOB AA15，Pblock 放置已实测无效，-0.489→-0.818→-1.093）+ 输出延迟 0.3
+（xdc 初始值，git 历史 `664673b` 起从未改动，仅 `5515524` 把时钟引用从 sys_clk 重挂到 cpu_clk）。
+`ext_ram_data` 的三态（`bank_out_r && ram_write_active_r` 驱动 wdata，否则高阻）是双向总线读方向所必需，不能去掉。
+
+**90MHz 冒烟 CI**：`submit-90mhz` 已推 GitLab（xci 字段级改频：CLKOUT0 DIVIDE 9→10，VCO 900MHz/10=90MHz，
+sys_clk 25MHz 不变；沿用 4c705db 75MHz 冒烟先例，docker 无头改频无解记录见 75MHz 调查），周期 11.11ns
+下 SRAM T 族 slack ≈ +0.6，等待 CI 结果。
 
 **建议续接动作**：看 `$strobe` 输出定位锁存/推进竞争 → 修复 → gate + 全量 difftest + IPC
 归因（对比基线 mixed 0.5829 / cryptonight 0.7436）→ synth 实测。若 fetch 寄存器也无法
