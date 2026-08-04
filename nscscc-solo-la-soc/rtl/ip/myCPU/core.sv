@@ -966,12 +966,33 @@ module core import la32_common::*; #(
     assign ex0_result = is_non_alu0 ? non_alu_result0 : ex0_alu_result;
 
     // ---- CACOP (slot0 only) ----
+    // The request is registered at the EX output so the
+    // rf->forward->ALU->cacop->icache-tag-write chain ends at this
+    // register instead of reaching the icache's tag WE combinationally
+    // (the icache then processes the request one cycle later; cacop is
+    // rare, so the extra EX hold cycle costs no measurable IPC).
     logic cacop_not_ready;
     logic cacop_in_ex;
     assign cacop_in_ex = id_ex0_out.ctrl.is_cacop && id_ex0_out.ctrl.valid;
-    assign cacop_req.valid = cacop_in_ex && !flush_pending_r;
-    assign cacop_req.code  = id_ex0_out.data.instr[4:0];
-    assign cacop_req.addr  = ex0_result;
+    cacop_req_t cacop_req_r;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            cacop_req_r.valid <= 1'b0;
+            cacop_req_r.code  <= 5'd0;
+            cacop_req_r.addr  <= 32'd0;
+        end else begin
+            if (cacop_in_ex && !flush_pending_r) begin
+                cacop_req_r.valid <= 1'b1;
+                cacop_req_r.code  <= id_ex0_out.data.instr[4:0];
+                cacop_req_r.addr  <= ex0_result;
+            end else if (cacop_done) begin
+                cacop_req_r.valid <= 1'b0;
+            end
+        end
+    end
+    assign cacop_req.valid = cacop_req_r.valid;
+    assign cacop_req.code  = cacop_req_r.code;
+    assign cacop_req.addr  = cacop_req_r.addr;
     assign cacop_not_ready = cacop_in_ex && !cacop_done;
 
     // ---- EX1 (ALU / address only) ----

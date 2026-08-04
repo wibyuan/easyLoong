@@ -43,75 +43,64 @@ module icache import la32_common::*; (
 
     // ==================== Data LUTRAM (combinational read) ====================
     logic        data_wr_ena;
-    logic        data_wr_way;
     index_t      data_wr_addr;
     logic [1:0]  data_wr_wo;
     logic [31:0] data_wr_data;
 
-    logic [31:0] data_rd_out [0:1][0:3];
+    logic [31:0] data_rd_out [0:0][0:3];
 
     generate
-        for (genvar gw = 0; gw < 2; gw++) begin : g_data_way
-            for (genvar gb = 0; gb < 4; gb++) begin : g_data_word
-                logic wen;
-                assign wen = data_wr_ena && (data_wr_way == 1'(gw)) && (data_wr_wo == 2'(gb));
+        for (genvar gb = 0; gb < 4; gb++) begin : g_data_word
+            logic wen;
+            assign wen = data_wr_ena && (data_wr_wo == 2'(gb));
 
-                // 0-cycle hit: the instruction must be valid in the same
-                // cycle as data_ok (the fetch unit captures it at the
-                // IF/ID edge), so the data read is combinational
-                // (READ_LATENCY = 0 -> distributed RAM).
-                ram_sdpram #(
-                    .ADDR_WIDTH(INDEX_WIDTH),
-                    .DATA_WIDTH(32),
-                    .BYTE_WIDTH(8),
-                    .READ_LATENCY(0)
-                ) u_data_ram (
-                    .clk,
-                    .raddr(req_idx),
-                    .waddr(data_wr_addr),
-                    .en(wen),
-                    .strobe(4'hf),
-                    .wdata(data_wr_data),
-                    .rdata(data_rd_out[gw][gb])
-                );
-            end
-        end
-    endgenerate
-
-    // ==================== Tag LUTRAM (combinational read) ====================
-    logic [1:0]         tag_wr_ena;
-    index_t             tag_wr_addr;
-    logic [TAG_WIDTH:0] tag_wr_data [0:1];
-
-    logic [TAG_WIDTH:0] tag_rd_data [0:1];
-
-    generate
-        for (genvar gw = 0; gw < 2; gw++) begin : g_tag_way
+            // 0-cycle hit: the instruction must be valid in the same
+            // cycle as data_ok (the fetch unit captures it at the
+            // IF/ID edge), so the data read is combinational
+            // (READ_LATENCY = 0 -> distributed RAM).
             ram_sdpram #(
                 .ADDR_WIDTH(INDEX_WIDTH),
-                .DATA_WIDTH(TAG_WIDTH + 1),
-                .BYTE_WIDTH(TAG_WIDTH + 1),
+                .DATA_WIDTH(32),
+                .BYTE_WIDTH(8),
                 .READ_LATENCY(0)
-            ) u_tag_ram (
+            ) u_data_ram (
                 .clk,
                 .raddr(req_idx),
-                .waddr(tag_wr_addr),
-                .en(tag_wr_ena[gw]),
-                .strobe(1'b1),
-                .wdata(tag_wr_data[gw]),
-                .rdata(tag_rd_data[gw])
+                .waddr(data_wr_addr),
+                .en(wen),
+                .strobe(4'hf),
+                .wdata(data_wr_data),
+                .rdata(data_rd_out[0][gb])
             );
         end
     endgenerate
 
-    logic [TAG_WIDTH:0] req_tag_data [0:1];
-    always_comb begin
-        req_tag_data[0] = tag_rd_data[0];
-        req_tag_data[1] = tag_rd_data[1];
-    end
+    // ==================== Tag LUTRAM (combinational read) ====================
+    // Direct-mapped: a single way, no replacement policy, no way select —
+    // the hit-decision path is a single tag compare.
+    logic                tag_wr_ena;
+    index_t              tag_wr_addr;
+    logic [TAG_WIDTH:0]  tag_wr_data;
 
-    // ==================== PLRU (distributed RAM) ====================
-    (* ram_style = "distributed" *) logic [NR_SETS-1:0] plru;
+    logic [TAG_WIDTH:0]  tag_rd_data;
+
+    ram_sdpram #(
+        .ADDR_WIDTH(INDEX_WIDTH),
+        .DATA_WIDTH(TAG_WIDTH + 1),
+        .BYTE_WIDTH(TAG_WIDTH + 1),
+        .READ_LATENCY(0)
+    ) u_tag_ram (
+        .clk,
+        .raddr(req_idx),
+        .waddr(tag_wr_addr),
+        .en(tag_wr_ena),
+        .strobe(1'b1),
+        .wdata(tag_wr_data),
+        .rdata(tag_rd_data)
+    );
+
+    logic [TAG_WIDTH:0] req_tag_data;
+    assign req_tag_data = tag_rd_data;
 
     // ==================== State ====================
     enum logic [2:0] {
@@ -127,14 +116,10 @@ module icache import la32_common::*; (
 
     // ==================== Combinational hit detection ====================
     logic req_hit;
-    logic req_hit_way;
 
     always_comb begin
-        automatic logic h0, h1;
-        h0 = req_tag_data[0][0] && (req_tag_data[0][TAG_WIDTH:1] == req_tag);
-        h1 = req_tag_data[1][0] && (req_tag_data[1][TAG_WIDTH:1] == req_tag);
-        req_hit = (state == S_IDLE) && (h0 || h1);
-        req_hit_way = h0 ? 1'b0 : 1'b1;
+        req_hit = (state == S_IDLE) && req_tag_data[0]
+                  && (req_tag_data[TAG_WIDTH:1] == req_tag);
     end
 
     // ==================== Ghost hit prevention ====================
@@ -143,16 +128,10 @@ module icache import la32_common::*; (
     wire        ghost;
     assign ghost = just_hit && (cpu_req.addr == last_hit_addr);
 
-    // ==================== PLRU victim ====================
-    function automatic logic victim_way(input index_t i);
-        return ~plru[i];
-    endfunction
-
     // ==================== Miss context ====================
     woffset_t   m_wo;
     index_t     m_idx;
     tag_t       m_tag;
-    logic       m_eway;
 
     // ==================== Refill registers ====================
     logic [1:0] rf_cnt;
@@ -180,23 +159,20 @@ module icache import la32_common::*; (
         mem_req_next.addr  = 32'd0;
 
         data_wr_ena  = 1'b0;
-        data_wr_way  = 1'b0;
         data_wr_addr = '0;
         data_wr_wo   = 2'd0;
         data_wr_data = 32'd0;
 
-        tag_wr_ena     = 2'b00;
+        tag_wr_ena     = 1'b0;
         tag_wr_addr    = '0;
-        tag_wr_data[0] = '0;
-        tag_wr_data[1] = '0;
+        tag_wr_data    = '0;
 
         case (state)
 
             S_INIT: begin
-                tag_wr_ena     = 2'b11;
+                tag_wr_ena     = 1'b1;
                 tag_wr_addr    = init_addr;
-                tag_wr_data[0] = '0;
-                tag_wr_data[1] = '0;
+                tag_wr_data    = '0;
                 if (init_addr == NR_SETS - 1)
                     next_state = S_IDLE;
             end
@@ -207,11 +183,11 @@ module icache import la32_common::*; (
                 end else if (req_hit) begin
                     cpu_resp.addr_ok = 1'b1;
                     cpu_resp.data_ok = 1'b1;
-                    cpu_resp.data    = data_rd_out[req_hit_way][req_wo];
+                    cpu_resp.data    = data_rd_out[0][req_wo];
                     // 2-wide fetch: a second instruction when it stays
                     // within the 16B line (wo != 3).
                     if (req_wo != 2'd3) begin
-                        cpu_resp.data1  = data_rd_out[req_hit_way][req_wo + 2'd1];
+                        cpu_resp.data1  = data_rd_out[0][req_wo + 2'd1];
                         cpu_resp.valid1 = 1'b1;
                     end
                 end else if (cpu_req.valid && !ghost) begin
@@ -260,14 +236,13 @@ module icache import la32_common::*; (
 
             S_REFILL_WRITE: begin
                 data_wr_ena  = 1'b1;
-                data_wr_way  = m_eway;
                 data_wr_addr = m_idx;
                 data_wr_wo   = rf_cnt;
                 data_wr_data = rf_buf[rf_cnt];
                 if (rf_cnt == 2'd0) begin
-                    tag_wr_ena[m_eway]  = 1'b1;
-                    tag_wr_addr         = m_idx;
-                    tag_wr_data[m_eway] = {m_tag, 1'b1};
+                    tag_wr_ena     = 1'b1;
+                    tag_wr_addr    = m_idx;
+                    tag_wr_data    = {m_tag, 1'b1};
                 end
                 next_state = (rf_cnt == 2'd3)
                     ? S_IDLE
@@ -275,9 +250,9 @@ module icache import la32_common::*; (
             end
 
             S_CACOP_ST: begin
-                tag_wr_ena[cacop_req.addr[0]]   = 1'b1;
-                tag_wr_addr                      = cacop_req.addr[INDEX_WIDTH+3:4];
-                tag_wr_data[cacop_req.addr[0]]   = '0;
+                tag_wr_ena  = 1'b1;
+                tag_wr_addr = cacop_req.addr[INDEX_WIDTH+3:4];
+                tag_wr_data = '0;
                 cacop_done = 1'b1;
                 next_state = S_IDLE;
             end
@@ -291,7 +266,6 @@ module icache import la32_common::*; (
         if (reset) begin
             state       <= S_INIT;
             just_hit    <= 1'b0;
-            plru        <= '0;
             rf_fmask    <= 4'd0;
             rf_cnt      <= 2'd0;
             rf_kw_sent  <= 1'b0;
@@ -304,25 +278,18 @@ module icache import la32_common::*; (
             if (inv_all) begin
                 state <= S_INIT;
                 init_addr <= '0;
-                plru      <= '0;
             end
 
             if (state == S_INIT) begin
                 if (init_addr != NR_SETS - 1)
                     init_addr <= init_addr + 1;
-                else begin
+                else
                     init_addr <= '0;
-                    plru      <= '0;
-                end
             end
 
             just_hit <= cpu_resp.data_ok;
             if (cpu_resp.data_ok)
                 last_hit_addr <= cpu_req.addr;
-
-            if (state == S_IDLE && req_hit) begin
-                plru[req_idx] <= req_hit_way;
-            end
 
             // Capture the miss context at the S_IDLE decision.  The
             // next_state == S_MISS term is written out directly (in
@@ -334,7 +301,6 @@ module icache import la32_common::*; (
                 m_wo   <= req_wo;
                 m_idx  <= req_idx;
                 m_tag  <= req_tag;
-                m_eway <= victim_way(req_idx);
             end
 
             if (state == S_MISS && next_state == S_REFILL_REQ) begin
@@ -353,9 +319,6 @@ module icache import la32_common::*; (
 
             if (state == S_REFILL_WRITE) begin
                 rf_cnt <= rf_cnt + 1;
-                if (rf_cnt == 2'd3) begin
-                    plru[m_idx] <= m_eway;
-                end
             end
         end
     end
