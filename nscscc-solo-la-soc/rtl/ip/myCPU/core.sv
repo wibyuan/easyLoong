@@ -174,6 +174,7 @@ module core import la32_common::*; #(
     logic id_jump_req;
     logic ex_stage_busy;
     logic ex_jump_flush_hazard;
+    logic load_use_hazard;
 
     // ==================== FETCH QUEUE (2-wide) ====================
     // 3-entry shift queue between fetch and ID.  ID reads the queue head
@@ -199,15 +200,26 @@ module core import la32_common::*; #(
 
     logic bp_do_jump;
     logic [31:0] bp_jump_pc;
-    assign ex_jump_flush_hazard = ex_jump_flush && !id_ex0_out.ctrl.is_jal;
+    // JAL/BL and the unconditional B already redirected at ID (id_jump_req):
+    // their EX-time flush is redundant and must not kill the target-path
+    // instructions the ID redirect just delivered into the fetch queue.
+    assign ex_jump_flush_hazard = ex_jump_flush &&
+        !id_ex0_out.ctrl.is_jal &&
+        !(id_ex0_out.ctrl.is_branch && id_ex0_out.data.br_type == BR_NONE);
 
     fetch_unit if_stage (
         .clk, .reset,
         .pc_stall(pc_stall_fetch), .pc_current(pc),
         .wb_jump_req(1'b0), .wb_jump_pc(32'd0),
         .do_ex_flush(do_ex_flush), .ex_jump_pc,
-        .do_id_jump(id_jump_req && !id_ex_stall), .id_jump_pc,
-        .bp_do_jump(bp_do_jump), .bp_jump_pc(bp_jump_pc),
+        // The ID/bp redirects must wait for the load_use hazard exactly like
+        // the queue flush they pair with: redirecting the fetch while the
+        // wrong-path queue entries are held (load_use blocks if_id_flush,
+        // Bug 7) leaves the branch's fall-through alive behind a fetch that
+        // already turned to the target — the branch then re-fires from EX
+        // and the target is fetched twice.
+        .do_id_jump(id_jump_req && !id_ex_stall && !load_use_hazard), .id_jump_pc,
+        .bp_do_jump(bp_do_jump && !load_use_hazard), .bp_jump_pc(bp_jump_pc),
         .ireq, .iresp,
         .fetch_absorb2(fetch_absorb2),
         .next_pc(next_pc_reg),
@@ -291,8 +303,34 @@ module core import la32_common::*; #(
     end
 
     always_ff @(posedge clk) begin
-        if (reset || if_id_flush) begin
+        if (reset) begin
             fq_valid <= 3'd0;
+        end else if (if_id_flush) begin
+            // A redirect whose target the fetch is already delivering
+            // (pc == id_jump_pc): the in-flight fetch output IS the target
+            // and must survive the flush, so it is absorbed as the new
+            // queue head (its +4 partner too when a 2-wide pair was
+            // delivered) while every wrong-path entry is dropped.  When the
+            // fetch is elsewhere the flush discards everything and the
+            // redirect re-fetches the target.  The keep is suppressed when
+            // an EX-stage redirect (branch mispredict) overrides this cycle:
+            // its target wins the fetch mux, and the id_jump's target
+            // (which the keep would absorb) is that override's wrong path.
+            if (id_jump_req && !do_ex_flush && (pc == id_jump_pc) && fetch_valid0) begin
+                fq_valid[0] <= 1'b1;
+                fq_pc[0]    <= fetch_pc0;
+                fq_instr[0] <= fetch_instr0;
+                if (fetch_absorb2) begin
+                    fq_valid[1] <= 1'b1;
+                    fq_pc[1]    <= fetch_pc1;
+                    fq_instr[1] <= fetch_instr1;
+                end else begin
+                    fq_valid[1] <= 1'b0;
+                end
+                fq_valid[2] <= 1'b0;
+            end else begin
+                fq_valid <= 3'd0;
+            end
         end else if (!fq_stall_all) begin
             fq_valid  <= nfq_valid;
             fq_pc[0]  <= nfq_pc[0];    fq_pc[1]  <= nfq_pc[1];    fq_pc[2]  <= nfq_pc[2];
@@ -441,8 +479,12 @@ module core import la32_common::*; #(
         end
     end
 
-    // ----- JAL/BL redirect (slot0 only) -----
-    assign id_jump_req = dec_is_jal_0 && id_valid0;
+    // ----- JAL/BL/B redirect (slot0 only) -----
+    // Unconditional jumps (JAL/BL via is_jal, B via BR_NONE) redirect at ID:
+    // the target is known without operands, so the fetch turns at the ID
+    // stage and the EX-time redirect is suppressed (ex_jump_flush_hazard).
+    assign id_jump_req = (dec_is_jal_0 || (dec_is_branch_0 && dec_br_type_0 == BR_NONE))
+        && id_valid0;
     assign id_jump_pc  = if_id_out.data.pc + dec_imm_0;
 
     logic id_predict_taken;
@@ -1186,7 +1228,6 @@ module core import la32_common::*; #(
     endgenerate
 
     // ==================== HAZARD ====================
-    logic load_use_hazard;
 
     assign ex_stage_busy = csr_read_stall || mul_first_cycle;
 
@@ -1202,7 +1243,11 @@ module core import la32_common::*; #(
     // stalled on the empty queue ahead; the accumulating queue must not
     // advance past the target it just discarded.
     logic pc_stall_fetch;
-    assign pc_stall_fetch = pc_stall || (fq_space == 3'd0 && fetch_valid0) || if_id_flush;
+    // When an id_jump redirect keeps the in-flight target (the fetch is
+    // already at the target and the FQ absorbed its output), the fetch must
+    // advance past it instead of holding and re-delivering a duplicate.
+    assign pc_stall_fetch = pc_stall || (fq_space == 3'd0 && fetch_valid0) ||
+        (if_id_flush && !(id_jump_req && !do_ex_flush && (pc == id_jump_pc) && fetch_valid0));
 
     hazard_unit hazard_ctrl (
         .if_not_ready(!iresp.data_ok),

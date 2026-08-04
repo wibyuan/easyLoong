@@ -72,12 +72,14 @@ module hazard_unit (
         // holds the branch in ID (its ID->EX entry was already flushed), the
         // queue head still contains the branch — flushing it destroys the
         // instruction while the fetch continues down the predicted path.
-        // Also mirror the fetch_unit's pc_current != jump_target redirect
-        // suppression: when the fetch is already at the target, the if_id
-        // capture in flight IS the target and must survive.
+        // The fetch_unit mirrors the redirect with a pc_current != jump_target
+        // suppression, so the in-flight capture is the target when the fetch
+        // is already there; the fetch queue absorbs that in-flight target as
+        // the new head (see the FQ flush path in core.sv) instead of being
+        // discarded — the wrong-path entries behind the branch are dropped.
         if_id_flush  = wb_jump_req || ( !(lsu_not_ready || cacop_not_ready || ex_not_ready) &&
                        ((jump_flush && !jump_flush_keep_capture) ||
-                        (id_jump_req && (pc_current != id_jump_pc) && !id_ex_stall && !load_use_hazard) ||
+                        (id_jump_req && !id_ex_stall && !load_use_hazard) ||
                         (bp_do_jump && (pc_current != bp_jump_pc) && !id_ex_stall && !load_use_hazard)) );
     end
 
