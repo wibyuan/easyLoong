@@ -207,11 +207,51 @@ module core import la32_common::*; #(
         !id_ex0_out.ctrl.is_jal &&
         !(id_ex0_out.ctrl.is_branch && id_ex0_out.data.br_type == BR_NONE);
 
+    // EX redirect registration: the redirect (fetch turn + queue flush)
+    // takes effect one cycle after the EX stage computes it, breaking the
+    // EX->fetch->pc combinational chain (the 100MHz critical path).  The
+    // fetch side uses the cycle snapshot (do_ex_flush_r/ex_jump_pc_r); the
+    // hazard-side flush is a sticky pending latch so a stall that blocks
+    // the flush at the wrong cycle cannot lose it once the branch leaves EX.
+    //
+    // The registered fetch turn must come from the FLUSHING branch only:
+    // during the flush window the wrong-path instructions issued into EX
+    // (the fall-through of the mispredicted branch — a conditional branch
+    // re-fires its own flush) must neither retire (ex_mem gate) nor redirect
+    // the fetch (do_ex_flush_r capture).  flush_pc_r identifies the flushing
+    // branch (captured when the pending latch is first set); the JAL/BL/B
+    // (already redirected at ID) never capture the turn at all.
+    logic [31:0] ex_jump_pc_r;
+    logic        do_ex_flush_r;
+    logic        flush_pending_r;
+    logic [31:0] flush_pc_r;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            ex_jump_pc_r    <= 32'd0;
+            do_ex_flush_r   <= 1'b0;
+            flush_pending_r <= 1'b0;
+            flush_pc_r      <= 32'd0;
+        end else begin
+            ex_jump_pc_r  <= ex_jump_pc;
+            if (ex_jump_flush_hazard && !flush_pending_r)
+                flush_pc_r <= id_ex0_out.data.pc;
+            if (ex_jump_flush_hazard &&
+                (!flush_pending_r || (id_ex0_out.data.pc == flush_pc_r)))
+                do_ex_flush_r <= do_ex_flush;
+            else
+                do_ex_flush_r <= 1'b0;
+            if (ex_jump_flush_hazard)
+                flush_pending_r <= 1'b1;
+            else if (if_id_flush)
+                flush_pending_r <= 1'b0;
+        end
+    end
+
     fetch_unit if_stage (
         .clk, .reset,
         .pc_stall(pc_stall_fetch), .pc_current(pc),
         .wb_jump_req(1'b0), .wb_jump_pc(32'd0),
-        .do_ex_flush(do_ex_flush), .ex_jump_pc,
+        .do_ex_flush(do_ex_flush_r), .ex_jump_pc(ex_jump_pc_r),
         // The ID/bp redirects must wait for the load_use hazard exactly like
         // the queue flush they pair with: redirecting the fetch while the
         // wrong-path queue entries are held (load_use blocks if_id_flush,
@@ -316,7 +356,7 @@ module core import la32_common::*; #(
             // an EX-stage redirect (branch mispredict) overrides this cycle:
             // its target wins the fetch mux, and the id_jump's target
             // (which the keep would absorb) is that override's wrong path.
-            if (id_jump_req && !do_ex_flush && (pc == id_jump_pc) && fetch_valid0) begin
+            if (id_jump_req && !do_ex_flush_r && (pc == id_jump_pc) && fetch_valid0) begin
                 fq_valid[0] <= 1'b1;
                 fq_pc[0]    <= fetch_pc0;
                 fq_instr[0] <= fetch_instr0;
@@ -761,7 +801,7 @@ module core import la32_common::*; #(
         !mul_in_progress;
 
     always_ff @(posedge clk) begin
-        if (reset || (ex_jump_flush && !ex_mem_stall))
+        if (reset || flush_pending_r || (ex_jump_flush && !ex_mem_stall))
             mul_in_progress <= 1'b0;
         else if (mul_in_progress)
             mul_in_progress <= 1'b0;
@@ -923,7 +963,7 @@ module core import la32_common::*; #(
     logic cacop_not_ready;
     logic cacop_in_ex;
     assign cacop_in_ex = id_ex0_out.ctrl.is_cacop && id_ex0_out.ctrl.valid;
-    assign cacop_req.valid = cacop_in_ex;
+    assign cacop_req.valid = cacop_in_ex && !flush_pending_r;
     assign cacop_req.code  = id_ex0_out.data.instr[4:0];
     assign cacop_req.addr  = ex0_result;
     assign cacop_not_ready = cacop_in_ex && !cacop_done;
@@ -943,7 +983,16 @@ module core import la32_common::*; #(
     assign ex_valid0 = id_ex0_out.ctrl.valid;
     assign ex_valid1 = id_ex1_out.ctrl.valid;
 
-    assign ex_mem0_in.ctrl.valid     = ex_valid0;
+    // With the registered EX redirect the wrong-path instructions execute
+    // in EX for one extra cycle (issued before the redirect takes effect):
+    // the EX->MEM captures are suppressed for the whole flush window
+    // (flush_pending_r), and slot1 additionally for the same-cycle pair
+    // (the branch's dual-issued sibling, ex_jump_flush).  The slot0 gate
+    // lets only the flushing branch itself through when a stall held it in
+    // EX into the flush window (its pc matches flush_pc_r); a wrong-path
+    // conditional branch re-firing its own flush in the window is blocked.
+    assign ex_mem0_in.ctrl.valid     = ex_valid0 && !(flush_pending_r &&
+        !(ex_jump_flush_hazard && (id_ex0_out.data.pc == flush_pc_r)));
     assign ex_mem0_in.ctrl.rf_we     = id_ex0_out.ctrl.rf_we & ex_valid0;
     assign ex_mem0_in.ctrl.mem_re    = id_ex0_out.ctrl.mem_re & ex_valid0;
     assign ex_mem0_in.ctrl.mem_we    = id_ex0_out.ctrl.mem_we & ex_valid0;
@@ -964,7 +1013,7 @@ module core import la32_common::*; #(
     // beside it is the fall-through (wrong path) and must not reach MEM
     // — id_ex_flush kills the ID->EX entries but ex_mem would otherwise
     // capture the fall-through's copy and retire it.
-    assign ex_mem1_in.ctrl.valid     = ex_valid1 && !(ex_jump_flush && !ex_mem_stall);
+    assign ex_mem1_in.ctrl.valid     = ex_valid1 && !(flush_pending_r || (ex_jump_flush && !ex_mem_stall));
     assign ex_mem1_in.ctrl.rf_we     = id_ex1_out.ctrl.rf_we & ex_valid1;
     assign ex_mem1_in.ctrl.mem_re    = id_ex1_out.ctrl.mem_re & ex_valid1;
     assign ex_mem1_in.ctrl.mem_we    = id_ex1_out.ctrl.mem_we & ex_valid1;
@@ -1247,7 +1296,7 @@ module core import la32_common::*; #(
     // already at the target and the FQ absorbed its output), the fetch must
     // advance past it instead of holding and re-delivering a duplicate.
     assign pc_stall_fetch = pc_stall || (fq_space == 3'd0 && fetch_valid0) ||
-        (if_id_flush && !(id_jump_req && !do_ex_flush && (pc == id_jump_pc) && fetch_valid0));
+        (if_id_flush && !(id_jump_req && !do_ex_flush_r && (pc == id_jump_pc) && fetch_valid0));
 
     hazard_unit hazard_ctrl (
         .if_not_ready(!iresp.data_ok),
@@ -1264,7 +1313,7 @@ module core import la32_common::*; #(
         .if_id_flush, .id_ex_flush,
         .load_use_hazard,
         .pipeline_stall,
-        .jump_flush(ex_jump_flush_hazard),
+        .jump_flush(flush_pending_r),
         .id_jump_req(id_jump_req),
         .bp_do_jump(bp_do_jump),
         .wb_jump_req(1'b0),

@@ -64,8 +64,16 @@ module hazard_unit (
         id_ex_stall  = pipeline_stall;
         ex_mem_stall = pipeline_stall;
 
+        // The legacy single-issue "kill the ID->EX entry on a fetch stall"
+        // term (if_not_ready && !id_jump_req && !bp_do_jump) is gone: with
+        // the fetch queue the ID->EX entries that already left the queue
+        // must NOT be rolled back — an ex_mem-stalled stage would then lose
+        // the instruction entirely (observed: the unconditional B and JIRL
+        // killed while their EX->MEM capture was held by a store write).
+        // The Bug-7 re-issue gate (id_ex0_in.ctrl.valid, core.sv) already
+        // prevents re-decoding a held queue head.
         id_ex_flush  = wb_jump_req || ( !(lsu_not_ready || cacop_not_ready || ex_not_ready) &&
-                       (jump_flush || load_use_hazard || (if_not_ready && !id_jump_req && !bp_do_jump)) );
+                       (jump_flush || load_use_hazard) );
 
         // id_jump/bp redirects flush the wrong-path queue head, but must
         // not kill the branch instruction itself: when the load_use hazard
