@@ -1190,6 +1190,10 @@ scripts/vivado/run_vivado.sh impl     # create + 综合 + 实现 + 时序报告
 - 报告输出：`run_vivado/project/{synth,impl}_timing_summary.rpt`、
   `{synth,impl}_critical_paths.rpt`、`synth_util_hier.rpt`。
 - WNS 读取：报告首行数据表的第 1 列。
+- **报告归档（硬性）**：每次 `synth/impl` 运行后 `run_vivado.sh` 自动把上述
+  报告归档到 `run_vivado/reports/<时间戳>-<commit>/`。**必须随运行 commit**
+  （与 RTL 改动同 commit，或基线运行单独 docs commit）。`run_vivado/project/`
+  每次被覆盖，**WNS 对比一律引用归档报告**，不得凭记忆或 `/tmp` 日志。
 
 ### 硬性注意事项
 

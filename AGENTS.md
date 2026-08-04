@@ -31,6 +31,16 @@ never run implementation while synthesis WNS is below the margin gate
 (step 4 of the 100MHz flow: WNS > 2ns before impl).  Failed attempts are
 kept only on a `shame/`-prefixed branch as lessons, never on master.
 
+### Timing-report archival (HARD RULE)
+
+Every `run_vivado.sh {synth|impl}` run archives its timing/utilization
+reports under `run_vivado/reports/<timestamp>-<commit>/` (done
+automatically by the script — `run_vivado/project/` is overwritten on
+every run).  Commit the archived reports with the run's RTL change (or
+as a standalone docs commit for a baseline).  WNS comparisons must
+reference the archived reports, never memory or `/tmp` logs: the report
+for every commit in the 100MHz push must be reproducible from git.
+
 ## Build / Test
 
 - `make test-<case>` (simple / fibonacci / matrix / stream / cryptonight /

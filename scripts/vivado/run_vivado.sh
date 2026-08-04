@@ -41,6 +41,23 @@ run_impl() {
     $DOCKER_RUN "source /opt/Xilinx/Vivado/2019.2/settings64.sh && vivado -mode batch -source /workspace/scripts/vivado/impl.tcl"
 }
 
+# Archive the run's timing/utilization reports under
+# run_vivado/reports/<timestamp>-<commit>/ so every run's WNS evidence is
+# preserved in the repo (the reports under run_vivado/project/ are
+# overwritten by the next run).  Call this after every synth/impl run.
+archive_reports() {
+    local out="${ROOT}/run_vivado/reports/$(date +%Y%m%d-%H%M%S)-$(git -C "${ROOT}" rev-parse --short HEAD 2>/dev/null || echo nogit)$(git -C "${ROOT}" status --porcelain 2>/dev/null | grep -qv '^??' && echo -dirty || true)"
+    mkdir -p "${out}"
+    local f
+    for f in synth_timing_summary.rpt synth_critical_paths.rpt synth_util_hier.rpt \
+             impl_timing_summary.rpt impl_critical_paths.rpt impl_utilization.rpt; do
+        if [ -f "${ROOT}/run_vivado/project/${f}" ]; then
+            cp "${ROOT}/run_vivado/project/${f}" "${out}/"
+        fi
+    done
+    echo "reports archived: ${out}"
+}
+
 case "${1:-}" in
     create)
         clean_pll_products
@@ -51,6 +68,7 @@ case "${1:-}" in
         run_create
         run_synth
         echo "SYNTH WNS: $(grep -E '^\s+-?[0-9.]+' "${ROOT}/run_vivado/project/synth_timing_summary.rpt" | head -1 | awk '{print $1}')"
+        archive_reports
         ;;
     impl)
         clean_pll_products
@@ -59,6 +77,7 @@ case "${1:-}" in
         run_impl
         echo "SYNTH WNS: $(grep -E '^\s+-?[0-9.]+' "${ROOT}/run_vivado/project/synth_timing_summary.rpt" | head -1 | awk '{print $1}')"
         echo "IMPL  WNS: $(grep -E '^\s+-?[0-9.]+' "${ROOT}/run_vivado/project/impl_timing_summary.rpt" | head -1 | awk '{print $1}')"
+        archive_reports
         ;;
     *)
         echo "usage: $0 {create|synth|impl}"
