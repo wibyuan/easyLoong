@@ -1292,6 +1292,23 @@ Mixed 6ms。**策略结论：100MHz 若需牺牲 IPC（如 fetch 寄存器 -9-10
 归因（对比基线 mixed 0.5829 / cryptonight 0.7436）→ synth 实测。若 fetch 寄存器也无法
 收口（WNS 仍差），下一步考虑接受现状并转向 impl 侧 SRAM 引脚族（或先验 PLL 降频路线）。
 
+### 零 IPC 收口第一轮（2026-08-04 深夜，impl -0.489 → -0.304）
+
+以 impl 为准、零 IPC 为约束（90MHz 已过 CI，牺牲 IPC 的 100MHz 无意义），两个结构改动：
+
+| 提交 | 内容 | impl WNS | 说明 |
+|------|------|----------|------|
+| `0533137` | 接受侧覆盖搜索改读**寄存的预览地址**（`ar_preview_addr_r`） | -0.455 | 接受恒在预览后 1 拍、同一请求（arbiter FSM 保持），地址值完全相同——LSU/arbiter 组合 mux 链出搜索路径（原 -0.339 族：ex_mem1 → mux → 搜索 → 引脚寄存器） |
+| `c3f51fb` | 数据总线三态选择**提前一拍预计算**（`base/ext_ram_sel_r <= bank_out && ram_write_active`） | **-0.304** | 32 个 IOB 的 OBUFT T 不再读组合 AND（及其大扇出），改读单个寄存器；总线晚一拍驱动但仍在寄存写窗口内（WE 第 2 拍脉冲、数据覆盖到 WE 下降沿，tSD/tDH 余量充足）。**借鉴 Wubian111/Wubian_la32r_cpu MemoryIO.v（写选择/WE 寄存化驱动数据总线），已加 README 致谢** |
+
+**SRAM T 族（-0.489 顶部）从 impl 违例集彻底消失**——IOB 偏斜/OBUFT 地板被"选择寄存化"绕开（T 路径起点变成寄存器）。
+两次改动的门禁 IPC 均与基线完全一致（simple 0.1659 / matrix 0.4479 / cryptonight 0.7436，零 IPC 实测确认）。
+
+**新顶部 = pc_reg 族（-0.304，44 条）——0-cycle icache 响应链**：
+`pc_reg[4]（fo=84）→ 1.3ns 路由 → icache tag LUTRAM（索引位）→ 命中比较 → icache FSM → fetch FSM → 槽1译码 → fq_pc[0]`，
+13 级（CARRY4×2 + RAMD64E×1）、路由主导。这就是第四轮 fetch 寄存器想砍而未砍断的族——impl 上它把终点从 FQ
+挪到输出寄存器，链本身（pc → LUTRAM → FSM → 响应）13 级依旧。
+
 ### 报告归档（三次失败的 synth 报告）
 
 | 归档目录 | 内容 |
