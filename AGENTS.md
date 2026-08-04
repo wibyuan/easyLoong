@@ -26,10 +26,15 @@ synthesis run: gate (`scripts/gate_diff.sh simple matrix cryptonight`) +
 full difftest + IPC proof first, then `run_vivado.sh synth`, and only if
 the reported WNS improved over the previous run is the change committed.
 If WNS did not improve (or regressed), the change is NOT committed — go
-back to critical-path analysis.  Never commit first and verify later;
-never run implementation while synthesis WNS is below the margin gate
-(step 4 of the 100MHz flow: WNS > 2ns before impl).  Failed attempts are
-kept only on a `shame/`-prefixed branch as lessons, never on master.
+back to critical-path analysis.  Never commit first and verify later.
+**The acceptance standard is the IMPLEMENTATION WNS: the synth WNS is
+only a directional filter — the impl WNS decides whether a change is
+kept, and a change that improves synth but regresses impl is reverted**
+(user decision 2026-08-04: synth WNS is a mirage the routing/placement
+can overturn, e.g. +1.276 synth did not guarantee a better impl; every
+timing change must be measured by `run_vivado.sh impl`).  Failed
+attempts are kept only on a `shame/`-prefixed branch as lessons, never
+on master.
 
 ### Timing-report archival (HARD RULE)
 
