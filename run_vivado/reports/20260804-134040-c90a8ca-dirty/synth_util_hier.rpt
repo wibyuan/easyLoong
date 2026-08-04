@@ -1,0 +1,147 @@
+Copyright 1986-2019 Xilinx, Inc. All Rights Reserved.
+----------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2019.2 (lin64) Build 2708876 Wed Nov  6 21:39:14 MST 2019
+| Date         : Tue Aug  4 05:40:37 2026
+| Host         : d48de6f8bdfc running 64-bit Ubuntu 18.04.6 LTS
+| Command      : report_utilization -hierarchical -file /workspace/run_vivado/project/synth_util_hier.rpt
+| Design       : thinpad_top
+| Device       : 7a200tfbg676-2
+| Design State : Synthesized
+----------------------------------------------------------------------------------------------------------
+
+Utilization Design Information
+
+Table of Contents
+-----------------
+1. Utilization by Hierarchy
+
+1. Utilization by Hierarchy
+---------------------------
+
++-------------------------------------------------+---------------------------------+------------+------------+---------+------+------+--------+--------+--------------+
+|                     Instance                    |              Module             | Total LUTs | Logic LUTs | LUTRAMs | SRLs |  FFs | RAMB36 | RAMB18 | DSP48 Blocks |
++-------------------------------------------------+---------------------------------+------------+------------+---------+------+------+--------+--------+--------------+
+| thinpad_top                                     |                           (top) |      13124 |      10684 |    2440 |    0 | 5463 |      0 |      0 |            3 |
+|   (thinpad_top)                                 |                           (top) |          8 |          0 |       8 |    0 |    0 |      0 |      0 |            0 |
+|   u_soc_top                                     |                         soc_top |      13116 |      10684 |    2432 |    0 | 5463 |      0 |      0 |            3 |
+|     (u_soc_top)                                 |                         soc_top |         52 |         52 |       0 |    0 |    0 |      0 |      0 |            0 |
+|     pll_clk.u_clk_pll                           |                         clk_pll |          1 |          1 |       0 |    0 |    0 |      0 |      0 |            0 |
+|       inst                                      |         clk_pll_clk_pll_clk_wiz |          1 |          1 |       0 |    0 |    0 |      0 |      0 |            0 |
+|     pll_clk.u_rst_cpu                           |                        rst_sync |          2 |          2 |       0 |    0 |    2 |      0 |      0 |            0 |
+|     pll_clk.u_rst_sys                           |                      rst_sync_0 |          1 |          1 |       0 |    0 |    2 |      0 |      0 |            0 |
+|     u_AxiCrossbar_2x8                           |                 AxiCrossbar_2x8 |        153 |        153 |       0 |    0 |  103 |      0 |      0 |            0 |
+|       (u_AxiCrossbar_2x8)                       |                 AxiCrossbar_2x8 |          4 |          4 |       0 |    0 |   16 |      0 |      0 |            0 |
+|       axi4ReadOnlyArbiter_4                     |             Axi4ReadOnlyArbiter |          2 |          2 |       0 |    0 |    2 |      0 |      0 |            0 |
+|         cmdArbiter                              |              StreamArbiter_7_34 |          2 |          2 |       0 |    0 |    2 |      0 |      0 |            0 |
+|       axi4ReadOnlyArbiter_5                     |          Axi4ReadOnlyArbiter_19 |          6 |          6 |       0 |    0 |    2 |      0 |      0 |            0 |
+|         cmdArbiter                              |              StreamArbiter_7_33 |          6 |          6 |       0 |    0 |    2 |      0 |      0 |            0 |
+|       axi4ReadOnlyArbiter_6                     |          Axi4ReadOnlyArbiter_20 |          1 |          1 |       0 |    0 |    2 |      0 |      0 |            0 |
+|         cmdArbiter                              |              StreamArbiter_7_32 |          1 |          1 |       0 |    0 |    2 |      0 |      0 |            0 |
+|       axi4ReadOnlyArbiter_7                     |          Axi4ReadOnlyArbiter_21 |          1 |          1 |       0 |    0 |    2 |      0 |      0 |            0 |
+|         cmdArbiter                              |              StreamArbiter_7_31 |          1 |          1 |       0 |    0 |    2 |      0 |      0 |            0 |
+|       axi4WriteOnlyArbiter_4                    |            Axi4WriteOnlyArbiter |         12 |         12 |       0 |    0 |    9 |      0 |      0 |            0 |
+|         cmdArbiter                              |              StreamArbiter_7_28 |          6 |          6 |       0 |    0 |    3 |      0 |      0 |            0 |
+|         cmdRouteFork_translated_fifo            |       StreamFifoLowLatency_3_29 |          6 |          6 |       0 |    0 |    6 |      0 |      0 |            0 |
+|           fifo                                  |                 StreamFifo_3_30 |          6 |          6 |       0 |    0 |    6 |      0 |      0 |            0 |
+|       axi4WriteOnlyArbiter_5                    |          Axi4WriteOnlyArbiter_1 |         13 |         13 |       0 |    0 |    9 |      0 |      0 |            0 |
+|         cmdArbiter                              |              StreamArbiter_7_25 |          7 |          7 |       0 |    0 |    3 |      0 |      0 |            0 |
+|         cmdRouteFork_translated_fifo            |       StreamFifoLowLatency_3_26 |          6 |          6 |       0 |    0 |    6 |      0 |      0 |            0 |
+|           fifo                                  |                 StreamFifo_3_27 |          6 |          6 |       0 |    0 |    6 |      0 |      0 |            0 |
+|       axi4WriteOnlyArbiter_6                    |          Axi4WriteOnlyArbiter_2 |         12 |         12 |       0 |    0 |    9 |      0 |      0 |            0 |
+|         cmdArbiter                              |              StreamArbiter_7_22 |          6 |          6 |       0 |    0 |    3 |      0 |      0 |            0 |
+|         cmdRouteFork_translated_fifo            |       StreamFifoLowLatency_3_23 |          6 |          6 |       0 |    0 |    6 |      0 |      0 |            0 |
+|           fifo                                  |                 StreamFifo_3_24 |          6 |          6 |       0 |    0 |    6 |      0 |      0 |            0 |
+|       axi4WriteOnlyArbiter_7                    |          Axi4WriteOnlyArbiter_3 |         12 |         12 |       0 |    0 |    9 |      0 |      0 |            0 |
+|         cmdArbiter                              |                 StreamArbiter_7 |          6 |          6 |       0 |    0 |    3 |      0 |      0 |            0 |
+|         cmdRouteFork_translated_fifo            |          StreamFifoLowLatency_3 |          6 |          6 |       0 |    0 |    6 |      0 |      0 |            0 |
+|           fifo                                  |                    StreamFifo_3 |          6 |          6 |       0 |    0 |    6 |      0 |      0 |            0 |
+|       axiIn_0_readOnly_decoder                  |             Axi4ReadOnlyDecoder |         54 |         54 |       0 |    0 |   25 |      0 |      0 |            0 |
+|         (axiIn_0_readOnly_decoder)              |             Axi4ReadOnlyDecoder |         35 |         35 |       0 |    0 |   12 |      0 |      0 |            0 |
+|         errorSlave                              |        Axi4ReadOnlyErrorSlave_1 |         19 |         19 |       0 |    0 |   13 |      0 |      0 |            0 |
+|       axiIn_0_writeOnly_decoder                 |            Axi4WriteOnlyDecoder |         36 |         36 |       0 |    0 |   18 |      0 |      0 |            0 |
+|         (axiIn_0_writeOnly_decoder)             |            Axi4WriteOnlyDecoder |         23 |         23 |       0 |    0 |   16 |      0 |      0 |            0 |
+|         errorSlave                              |       Axi4WriteOnlyErrorSlave_1 |         13 |         13 |       0 |    0 |    2 |      0 |      0 |            0 |
+|     u_Axi_CDC                                   |                         Axi_CDC |        260 |        148 |     112 |    0 |  293 |      0 |      0 |            0 |
+|       arFifo                                    |                  StreamFifoCC_3 |         62 |         30 |      32 |    0 |   71 |      0 |      0 |            0 |
+|         (arFifo)                                |                  StreamFifoCC_3 |         57 |         25 |      32 |    0 |   59 |      0 |      0 |            0 |
+|         popToPushGray_buffercc                  |                   BufferCC_9_17 |          1 |          1 |       0 |    0 |    6 |      0 |      0 |            0 |
+|         pushToPopGray_buffercc                  |                  BufferCC_11_18 |          4 |          4 |       0 |    0 |    6 |      0 |      0 |            0 |
+|       awFifo                                    |                    StreamFifoCC |         73 |         49 |      24 |    0 |   62 |      0 |      0 |            0 |
+|         (awFifo)                                |                    StreamFifoCC |         67 |         43 |      24 |    0 |   48 |      0 |      0 |            0 |
+|         bufferCC_12                             |                     BufferCC_10 |          0 |          0 |       0 |    0 |    2 |      0 |      0 |            0 |
+|         popToPushGray_buffercc                  |                      BufferCC_9 |          1 |          1 |       0 |    0 |    6 |      0 |      0 |            0 |
+|         pushToPopGray_buffercc                  |                     BufferCC_11 |          5 |          5 |       0 |    0 |    6 |      0 |      0 |            0 |
+|       bFifo                                     |                  StreamFifoCC_2 |         16 |         16 |       0 |    0 |   26 |      0 |      0 |            0 |
+|         (bFifo)                                 |                  StreamFifoCC_2 |          9 |          9 |       0 |    0 |   12 |      0 |      0 |            0 |
+|         bufferCC_12                             |                      BufferCC_5 |          0 |          0 |       0 |    0 |    2 |      0 |      0 |            0 |
+|         popToPushGray_buffercc                  |                      BufferCC_4 |          3 |          3 |       0 |    0 |    6 |      0 |      0 |            0 |
+|         pushToPopGray_buffercc                  |                      BufferCC_6 |          4 |          4 |       0 |    0 |    6 |      0 |      0 |            0 |
+|       rFifo                                     |                  StreamFifoCC_4 |         43 |         15 |      28 |    0 |   65 |      0 |      0 |            0 |
+|         (rFifo)                                 |                  StreamFifoCC_4 |         38 |         10 |      28 |    0 |   49 |      0 |      0 |            0 |
+|         popToPushGray_buffercc                  |                        BufferCC |          3 |          3 |       0 |    0 |    8 |      0 |      0 |            0 |
+|         pushToPopGray_buffercc                  |                      BufferCC_1 |          2 |          2 |       0 |    0 |    8 |      0 |      0 |            0 |
+|       wFifo                                     |                  StreamFifoCC_1 |         66 |         38 |      28 |    0 |   69 |      0 |      0 |            0 |
+|         (wFifo)                                 |                  StreamFifoCC_1 |         61 |         33 |      28 |    0 |   53 |      0 |      0 |            0 |
+|         popToPushGray_buffercc                  |                      BufferCC_7 |          3 |          3 |       0 |    0 |    8 |      0 |      0 |            0 |
+|         pushToPopGray_buffercc                  |                      BufferCC_8 |          2 |          2 |       0 |    0 |    8 |      0 |      0 |            0 |
+|     u_axi_sram_direct                           |                 axi_sram_direct |       2209 |       2209 |       0 |    0 |  853 |      0 |      0 |            0 |
+|     u_axi_uart_controller                       |             axi_uart_controller |        668 |        652 |      16 |    0 |  456 |      0 |      0 |            0 |
+|       AA_axi2apb_bridge_cpu                     |                  axi2apb_bridge |        239 |        239 |       0 |    0 |  120 |      0 |      0 |            0 |
+|       uart0                                     |                        UART_TOP |        429 |        413 |      16 |    0 |  336 |      0 |      0 |            0 |
+|         regs                                    |                       uart_regs |        429 |        413 |      16 |    0 |  336 |      0 |      0 |            0 |
+|           (regs)                                |                       uart_regs |        118 |        118 |       0 |    0 |  154 |      0 |      0 |            0 |
+|           i_uart_sync_flops                     |                 uart_sync_flops |          3 |          3 |       0 |    0 |    2 |      0 |      0 |            0 |
+|           receiver                              |                   uart_receiver |        226 |        218 |       8 |    0 |  124 |      0 |      0 |            0 |
+|             (receiver)                          |                   uart_receiver |         63 |         63 |       0 |    0 |   54 |      0 |      0 |            0 |
+|             fifo_rx                             |                      uart_rfifo |        163 |        155 |       8 |    0 |   70 |      0 |      0 |            0 |
+|               (fifo_rx)                         |                      uart_rfifo |        144 |        144 |       0 |    0 |   62 |      0 |      0 |            0 |
+|               rfifo                             |                      raminfr_16 |         19 |         11 |       8 |    0 |    8 |      0 |      0 |            0 |
+|           transmitter                           |                uart_transmitter |         82 |         74 |       8 |    0 |   56 |      0 |      0 |            0 |
+|             (transmitter)                       |                uart_transmitter |         42 |         42 |       0 |    0 |   35 |      0 |      0 |            0 |
+|             fifo_tx                             |                      uart_tfifo |         40 |         32 |       8 |    0 |   21 |      0 |      0 |            0 |
+|               (fifo_tx)                         |                      uart_tfifo |         23 |         23 |       0 |    0 |   13 |      0 |      0 |            0 |
+|               tfifo                             |                         raminfr |         17 |          9 |       8 |    0 |    8 |      0 |      0 |            0 |
+|     u_confreg                                   |                         confreg |        194 |        194 |       0 |    0 |  244 |      0 |      0 |            0 |
+|       (u_confreg)                               |                         confreg |        178 |        178 |       0 |    0 |  220 |      0 |      0 |            0 |
+|       u_digitaltube_controller                  |          digitaltube_controller |         16 |         16 |       0 |    0 |   24 |      0 |      0 |            0 |
+|     u_cpu                                       |                        core_top |       9576 |       7272 |    2304 |    0 | 3510 |      0 |      0 |            3 |
+|       u_arbiter                                 |                  axibus_arbiter |        170 |        170 |       0 |    0 |   46 |      0 |      0 |            0 |
+|       u_core                                    |                            core |       5953 |       5953 |       0 |    0 | 3075 |      0 |      0 |            3 |
+|         (u_core)                                |                            core |        236 |        236 |       0 |    0 |  527 |      0 |      0 |            3 |
+|         alu_unit0                               |                             alu |          4 |          4 |       0 |    0 |    0 |      0 |      0 |            0 |
+|         alu_unit1                               |                           alu_9 |         30 |         30 |       0 |    0 |    0 |      0 |      0 |            0 |
+|         bcu_unit0                               |                             bcu |          0 |          0 |       0 |    0 |    0 |      0 |      0 |            0 |
+|         bp_unit                                 |                branch_predictor |         50 |         50 |       0 |    0 |    0 |      0 |      0 |            0 |
+|         csr_rf                                  |                     csr_regfile |        256 |        256 |       0 |    0 |  832 |      0 |      0 |            0 |
+|         hazard_ctrl                             |                     hazard_unit |          0 |          0 |       0 |    0 |    0 |      0 |      0 |            0 |
+|         if_stage                                |                      fetch_unit |         58 |         58 |       0 |    0 |   67 |      0 |      0 |            0 |
+|         lsu_unit                                |                             lsu |          0 |          0 |       0 |    0 |    1 |      0 |      0 |            0 |
+|         npc_unit0                               |                             npc |          3 |          3 |       0 |    0 |    0 |      0 |      0 |            0 |
+|         reg_ex_mem0_ctrl                        |    pipeline_reg__parameterized1 |        433 |        433 |       0 |    0 |    6 |      0 |      0 |            0 |
+|         reg_ex_mem0_data                        |    pipeline_reg__parameterized2 |         76 |         76 |       0 |    0 |  150 |      0 |      0 |            0 |
+|         reg_ex_mem1_ctrl                        | pipeline_reg__parameterized1_10 |         67 |         67 |       0 |    0 |    4 |      0 |      0 |            0 |
+|         reg_ex_mem1_data                        | pipeline_reg__parameterized2_11 |         73 |         73 |       0 |    0 |  104 |      0 |      0 |            0 |
+|         reg_id_ex0_ctrl                         |                    pipeline_reg |        683 |        683 |       0 |    0 |   15 |      0 |      0 |            0 |
+|         reg_id_ex0_data                         |    pipeline_reg__parameterized0 |        692 |        692 |       0 |    0 |  182 |      0 |      0 |            0 |
+|         reg_id_ex1_ctrl                         |                 pipeline_reg_12 |         76 |         76 |       0 |    0 |    4 |      0 |      0 |            0 |
+|         reg_id_ex1_data                         | pipeline_reg__parameterized0_13 |        554 |        554 |       0 |    0 |   65 |      0 |      0 |            0 |
+|         reg_mem_wb0_ctrl                        |    pipeline_reg__parameterized3 |        294 |        294 |       0 |    0 |    4 |      0 |      0 |            0 |
+|         reg_mem_wb0_data                        |    pipeline_reg__parameterized4 |        104 |        104 |       0 |    0 |   83 |      0 |      0 |            0 |
+|         reg_mem_wb1_ctrl                        | pipeline_reg__parameterized3_14 |        104 |        104 |       0 |    0 |    2 |      0 |      0 |            0 |
+|         reg_mem_wb1_data                        | pipeline_reg__parameterized4_15 |       1064 |       1064 |       0 |    0 |   37 |      0 |      0 |            0 |
+|         rf_unit                                 |                         regfile |       1147 |       1147 |       0 |    0 |  992 |      0 |      0 |            0 |
+|       u_icache                                  |                          icache |       3453 |       1149 |    2304 |    0 |  389 |      0 |      0 |            0 |
+|         (u_icache)                              |                          icache |        444 |        412 |      32 |    0 |  389 |      0 |      0 |            0 |
+|         g_data_way[0].g_data_word[0].u_data_ram |                      ram_sdpram |        291 |         35 |     256 |    0 |    0 |      0 |      0 |            0 |
+|         g_data_way[0].g_data_word[1].u_data_ram |                    ram_sdpram_1 |        291 |         35 |     256 |    0 |    0 |      0 |      0 |            0 |
+|         g_data_way[0].g_data_word[2].u_data_ram |                    ram_sdpram_2 |        308 |         52 |     256 |    0 |    0 |      0 |      0 |            0 |
+|         g_data_way[0].g_data_word[3].u_data_ram |                    ram_sdpram_3 |        302 |         46 |     256 |    0 |    0 |      0 |      0 |            0 |
+|         g_data_way[1].g_data_word[0].u_data_ram |                    ram_sdpram_4 |        258 |          2 |     256 |    0 |    0 |      0 |      0 |            0 |
+|         g_data_way[1].g_data_word[1].u_data_ram |                    ram_sdpram_5 |        258 |          2 |     256 |    0 |    0 |      0 |      0 |            0 |
+|         g_data_way[1].g_data_word[2].u_data_ram |                    ram_sdpram_6 |        258 |          2 |     256 |    0 |    0 |      0 |      0 |            0 |
+|         g_data_way[1].g_data_word[3].u_data_ram |                    ram_sdpram_7 |        367 |        111 |     256 |    0 |    0 |      0 |      0 |            0 |
+|         g_tag_way[0].u_tag_ram                  |      ram_sdpram__parameterized0 |        421 |        309 |     112 |    0 |    0 |      0 |      0 |            0 |
+|         g_tag_way[1].u_tag_ram                  |    ram_sdpram__parameterized0_8 |        255 |        143 |     112 |    0 |    0 |      0 |      0 |            0 |
++-------------------------------------------------+---------------------------------+------------+------------+---------+------+------+--------+--------+--------------+
+
+
