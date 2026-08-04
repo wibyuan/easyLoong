@@ -1070,3 +1070,50 @@ cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依
 4. Efficiency Detector + StepCounter（进入/退出条件）
 
 双 LSU 分支（`dev/ilp-2wide`）已存档：difftest 6/6 全过但仅 matrix +1.9%（其余 0%），且尚未上板验证，**性价比低，不回用**。
+
+## 2026-08-04: 100MHz 冲刺阶段记录（Impl WNS -2.333，交接状态）
+
+### 目标与流程
+
+100MHz（cpu_clk 10ns，PLL CLKOUT0=100MHz/sys_clk=25MHz，xci 由 docker Vivado 重生成）通过 Implementation 且 WNS ≥ 0。流程：difftest IPC 基线 → 修复关键路径 → 全量 difftest + IPC 证明 → Synthesis 余量 → Implementation（40 分钟熔断）。
+
+**difftest 基线（当前 master，no-dcache + axi_sram_direct）**：simple 0.1627 / matrix 0.4476 / stream 0.4951 / mixed 0.6503 / cryptonight 0.7974。
+
+### 已提交的有效优化（按提交顺序，WNS 为累计效果）
+
+| 提交 | 内容 | 效果（synth/impl） |
+|------|------|------|
+| `12bed5b`/`e9f4c9e` | PLL 重生成 100MHz（docker Vivado 操作 xci） | 时钟基座 |
+| `5515524` | XDC：显式 generated clock（cpu_clk=10ns/sys_clk=40ns）+ SRAM I/O delay 挂真实时钟域 | 修复假松弛 |
+| `9434138` | core_top dresp 多驱动 bug 修复 | 消除 sim/synth 不一致隐患 |
+| `e4acbdd` | SRAM 引脚驱动寄存器化 | 消除 19 级到 OBUFT 的头号瓶颈 |
+| `d3bc3fb` | DMW 翻译 EX→MEM（WB 旁路语义修正） | 零 IPC |
+| `2bdb2f3` | 槽1旁路直取 alu_res0 | 零 IPC |
+| `1addd52` | regfile 写旁路冗余删除 | 零 IPC |
+| `ac35c43` | 槽内旁路值注册化 + 同拍依赖对门禁 | 打破串行双加法器静态路径；**IPC 代价 mixed -10.4%、cryptonight -6.7%** |
+| `741ded2` | 写缓冲整行覆盖注册 | 响应路径脱离 8 项搜索；impl +0.9ns |
+| `d32b5db`/`d16e09f` | Pblock 布局约束（core X20-75×Y10-60 + sram X0-35×Y18-100）+ bcu 符号位预判 | impl -4.496→-2.333（Pblock 贡献约 +1.0ns） |
+
+**WNS 轨迹**：impl -4.496（起点）→ -3.695（Pblock）→ -3.364（注册旁路+门禁）→ -3.007（dresp 注册实验，未采纳）→ -2.462（整行覆盖注册）→ -2.278（Pblock 微调）→ **-2.333**（bcu 显式化，impl 噪声内）。当前 synth -1.230。
+
+### 尝试并回退的实验（含原因）
+
+- **dresp 响应整体注册**：+0.36ns 但 matrix -19.9%——性价比极差，未采纳
+- **槽1依赖门禁（无注册旁路）**：静态时序不认逻辑门控，纯 IPC 损失（对照实验证实 impl 仅 +0.16ns）
+- **pc_stall 取指侧注册**：破坏 icache miss 取指配对
+- **EX 重定向注册（首轮）**：fetch 侧 +1 与流水线实时冲刷不一致，difftest #45 失配——**未查明根因即回退（教训！）**
+- **更紧 Pblock**（X15-65×Y10-65）：密度过高反变差
+- **转发搜索逐拍注册**：突发读每拍地址变化，1 拍滞后必然错
+- **fetch next_pc 显式两级**：综合归一化无变化；优先级写反版失配 #3
+- **bcu ltu 最后一级**：synth -1.242（综合重合并 mux）
+- **npc 无条件/分支分流**：synth -1.475（逻辑 +0.33 超路由 -0.24）
+
+### 当前关键路径
+
+**JIRL 重定向链**（rf → forward → bcu ltu 3-4 CARRY4 → br_taken → npc jalr 加法器 3 CARRY4 → ex_jump_pc → fetch pc+4 → pc_reg），20 级 6-7 CARRY4，route 占 69%（数据网 0.24-1.43ns ×13），impl -2.333 的 200 条最差路径全部同族。
+
+### 交接要点（下一步方向）
+
+1. **分支重定向注册化重做**（最高价值）：在 npc 输出打一拍（fetch 重定向 +1，误预测惩罚 +1），打断 20 级组合链。首轮失败疑为"fetch +1 与流水线实时冲刷不一致导致 if_id N 拍捕获的错误路径存活"——**用 `unittest/UNITTEST-WORKFLOW.md` 的单元测试方法提取失败现场（difftest #45：t0 值错 + idle_pc 卡 0x1c001080）逐个验证冲刷窗口**，不要像首轮那样失配即回退。
+2. **工作流硬规则**：任何 RTL 改动必须先过门禁（simple+matrix+cryptonight，`/tmp/opencode/gate_diff.sh`，失败即 exit 1）才能启动 Vivado；**禁止 `grep "mismatch" && docker` 链**（grep 匹配失败文本退出码是 0 会放行）；每次改动的验证计划先写后做。
+3. 已确认的 IPC 代价（需接受或后续回收）：`ac35c43` 的门禁 mixed -10.4%、cryptonight -6.7%（回收方向：addi/subi+dep-mem 对用合并立即数地址，零串行）。

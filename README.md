@@ -2,6 +2,11 @@
 
 基于 XC7A200T-2FBG676C FPGA 的 LoongArch 32-bit (LA32R) 精简版 CPU 实现。
 
+> **⚠ 当前 master 状态（2026-08-04，100MHz 冲刺交接）**：master 为 **no-dcache + axi_sram_direct 直通 SRAM**（LSU 直连，2 拍读/3 拍写 + 8 项写缓冲 + store-to-load 转发），PLL 已重生成 cpu_clk=100MHz/sys_clk=25MHz。difftest 6/6 + 数据比对全过；100MHz 默认策略下 **Synthesis WNS -1.230 / Implementation WNS -2.333**（分支重定向链为唯一瓶颈族）。完整进度、已提交优化、失败实验与下一步方向见 [DEVLOG.md](DEVLOG.md)「2026-08-04: 100MHz 冲刺阶段记录」；CI 时序记录见[第 9 节](#9-gitlab-ci)。注意：下述第 4 节性能表仍为两级 dcache 时代的记录，与当前 no-dcache 状态不符，仅作历史参考。
+
+
+基于 XC7A200T-2FBG676C FPGA 的 LoongArch 32-bit (LA32R) 精简版 CPU 实现。
+
 ## 致谢
 
 本项目引用了以下开源仓库：
