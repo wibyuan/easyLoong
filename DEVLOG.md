@@ -1176,6 +1176,67 @@ cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依
 
 ---
 
+## 2026-08-04（续四）：pc_reg 族三次零 IPC 断法全部失败 + fetch 寄存器方案调试中
+
+> 交接状态：四次尝试均未落地 master（WNS 未变好或未通过 difftest）。master 保持基线
+> （synth +0.499 / impl -0.489，`e7fbea8`）。失败代码与报告全部存档在
+> **`shame/fq-predecode-ring`** 分支（`aa35b2d` 预译码+环式、`3bdab80` entry-target）。
+> 第四次（fetch 输出寄存器）工作区未 commit，正在调试启动 bug。
+
+### 四次尝试记录（全部 difftest 6/6、IPC 零损失，除第四次未通过）
+
+| 尝试 | 结构 | synth WNS | 失败点 |
+|------|------|-----------|--------|
+| ① 预译码入队（imm/br 字段吸收时寄存，发射侧读寄存器） | shift 队列 + 写侧 decode | **+0.328**（< +0.499） | pc_reg 族头被断（22→14 级），但写侧 `pc→icache→decode→nfq→FQ reg` 浮出 9.46ns |
+| ② 环式 FQ（条目不动，head/count 指针，吸收写用寄存器选择） | 指针写 + head mux 读 | **-0.704** | 写侧变浅（~7ns）✓，但读侧 head 4:1 mux + 三个 pc+imm 加法器被综合合并为 LUT 加法器（无 CARRY4）压到重定向链 → 10.49ns（81% 布线） |
+| ③ entry 携带 target（pc+imm 吸收时预计算入队，发射侧读寄存器） | 环式 + 写侧加法器 | **-1.493** | 读侧加法器删除 ✓，但写侧加法器叠在 0-cycle 响应地板上 → 22 级 11.28ns（CARRY4×7） |
+| ④ fetch 输出寄存器（响应锁存 1 拍 + 三态缓冲握手，已通告 IPC ~1-2%） | 吸收/发射全从寄存器出发 | 未综合（difftest 未过） | 启动 #0 mismatch：WAIT_DATA 关键字响应后 pc 错误推进 +4，000 未进 FQ（见下） |
+
+### 结构结论（三次失败共同验证，已存 shame 分支 commit 说明）
+
+**FQ 两侧各有硬地板，任何零 IPC 挪动都在另一侧见顶**：
+
+- 吸收侧：`pc→icache 0-cycle 响应`（~4.5ns：LUTRAM 读 + 命中比较 + FSM + 响应 mux）是地板，**任何写侧逻辑（预译码 1.2、加法器 1.7）叠上即破 10ns**（实测 9.46 / 11.28）。
+- 发射侧：`重定向链→pc_reg`（bp 目标→到达比较→flush→next_pc）加 **任何 mux（head 4:1）或 LUT 化加法器** 即 ~10.5ns（环式读侧实测）。
+
+**唯一能同时压短两侧的结构 = fetch 输出寄存器**（响应在寄存器截止，吸收/发射全从 FF 出发）：
+代价 = 每次重定向/miss 恢复 +1 拍（~1-2% IPC，已通告；稳态吞吐不变，FQ 3 深吸收 2/拍）。
+
+### 第四次（fetch 寄存器）实现与调试状态
+
+**实现**（工作区，未 commit）：
+- `fetch_unit.sv`：输出三态缓冲（锁存新响应 / 部分吸收 slot1→slot0 移位 / 全吸收清空），
+  `f0_ok`/`f1_ok` 握手输入（core 提供），`ireq` 仅在缓冲空时发请求，`next_pc` 按吸收条数推进。
+- `core.sv`：预译码（shift 队列版）+ `.f0_ok/.f1_ok` 连接。
+- `common.sv`：`fq_bp_t`。
+
+**启动 bug 现象**（difftest #0 mismatch）：0x1c000000 的 lu12i 未提交，DUT 提交 0x1c000004 后卡死。
+FQ 首次吸收 {004, 008} 而非 {000}——WAIT_DATA 关键字响应（000）锁存后，pc 在下一拍错误推进 +4。
+
+**调试线索**：
+- icache/mem 侧正常（S_INIT 256 拍 → miss → refill 逐字，关键字前向工作）。
+- `$display` 在 `always_comb` 里每拍多次求值（显示中间值）**不可靠**——已改 `$strobe`
+  （时间步末稳定值），**下一步看 `$strobe` 输出**确认：WAIT_DATA 响应拍 `next_pc` 组合
+  与 pc 边沿采样的真实时序（怀疑锁存/推进同一拍竞争，或 `if_valid0_c && !if_valid0_r`
+  锁存条件与 `pc_stall` 的交互）。
+- 调试显示位置：`fetch_unit.sv`（FETCH $strobe）、`icache.sv`（ICACHE）、`core.sv`（FQ）。
+
+**建议续接动作**：看 `$strobe` 输出定位锁存/推进竞争 → 修复 → gate + 全量 difftest + IPC
+归因（对比基线 mixed 0.5829 / cryptonight 0.7436）→ synth 实测。若 fetch 寄存器也无法
+收口（WNS 仍差），下一步考虑接受现状并转向 impl 侧 SRAM 引脚族（或先验 PLL 降频路线）。
+
+### 报告归档（三次失败的 synth 报告）
+
+| 归档目录 | 内容 |
+|----------|------|
+| `run_vivado/reports/20260804-172631-b04b00b-dirty/` | ① 预译码+shift：WNS 0.328，写侧 9.46ns（pc→icache→decode→nfq） |
+| `run_vivado/reports/20260804-182319-b04b00b-dirty/` | ② 环式：WNS -0.704，读侧 10.49ns（head mux + LUT 加法器，81% 布线） |
+| `run_vivado/reports/20260804-185539-b04b00b-dirty/` | ③ entry-target：WNS -1.493，写侧 11.28ns（响应+decode+加法器 CARRY4×7） |
+
+均已 commit 进 `shame/fq-predecode-ring`。
+
+---
+
 ## 2026-08-04（续三）：系统视图 + 断一指（Synth +0.499 / Impl -0.489）
 
 ### 教训（全部沉淀为 AGENTS.md 硬规则）
