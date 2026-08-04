@@ -423,8 +423,27 @@ module axi_sram_direct #(
         end
     end
 
-    assign base_ram_data = (bank_out_r == 1'b0 && ram_write_active_r) ? ram_wdata_out_r : 32'hz;
-    assign ext_ram_data  = (bank_out_r == 1'b1 && ram_write_active_r) ? ram_wdata_out_r : 32'hz;
+    // The data-bus tri-state select is precomputed one cycle ahead: the
+    // bank/write-active AND of the drive mux is captured here so the 32
+    // IOB tri-state enables (OBUFT T) read a single register instead of
+    // the combinational AND (and its bank_out/write_active fanouts) — the
+    // T path to the IOBs then starts at a register (pattern per
+    // Wubian111/Wubian_la32r_cpu MemoryIO.v).  The bus is driven one cycle
+    // later than the raw AND, still fully inside the registered write
+    // window (WE pulses in the drain's cycle 2, data on the bus through
+    // the WE's falling edge), so the SRAM's tSD/tDH margins hold.
+    logic base_ram_sel_r, ext_ram_sel_r;
+    always_ff @(posedge aclk) begin
+        if (!aresetn) begin
+            base_ram_sel_r <= 1'b0;
+            ext_ram_sel_r  <= 1'b0;
+        end else begin
+            base_ram_sel_r <= (bank_out == 1'b0 && ram_write_active);
+            ext_ram_sel_r  <= (bank_out == 1'b1 && ram_write_active);
+        end
+    end
+    assign base_ram_data = base_ram_sel_r ? ram_wdata_out_r : 32'hz;
+    assign ext_ram_data  = ext_ram_sel_r  ? ram_wdata_out_r : 32'hz;
 
     // ==================== Registered pin drive ====================
     // The SRAM pins are captured from the combo drive muxes at every edge

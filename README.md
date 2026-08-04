@@ -19,6 +19,7 @@
 
 - [loongsonlab/la32r-nemu](https://gitee.com/loongsonlab/la32r-nemu) — LoongArch32-Reduced NEMU 参考模型
 - [loongson-edu/nscscc-solo-la-soc](https://gitee.com/loongson-edu/nscscc-solo-la-soc) — NSCSCC 龙芯杯 SoC 仿真与上板框架
+- [Wubian111/Wubian_la32r_cpu](https://github.com/Wubian111/Wubian_la32r_cpu) — 借鉴其 SRAM 数据总线三态选择提前寄存（`MemoryIO.v`：写选择/WE 寄存化驱动数据总线）的做法
 - [Tan-YiFan/rvcpu](https://github.com/Tan-YiFan/rvcpu) — 借鉴其 AXI INCR Burst refill 架构与组合逻辑命中检测等 cache 设计思想。已作为 git submodule 纳入 `rvcpu/` 目录便于学习参考
 - [KyleMao2023/LoongArch](https://github.com/KyleMao2023/LoongArch)（Synapse-X4，2025 龙芯杯个人赛二等奖）— 四发射乱序（Tomasulo + ROB + 局部历史/BTB/RAS 分支预测）参考实现，其「无 dcache + WriteBuffer + 固定 2 拍直连异步 SRAM」思路直接启发了本项目 2026-08-04 的直连方案。已作为 git submodule 纳入 `synapse-x4/` 目录（仅学习参考，不参与构建/提交）
 
