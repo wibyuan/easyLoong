@@ -15,6 +15,11 @@ The hardware top is `rtl/soc_top.v`; shared buses, UART, RAM wrappers, PLL, and 
 
 ## Long-Running Tool Tasks (Vivado/Docker)
 
+- **MANDATORY: before any synthesis/implementation/timing/PLL work, read
+  `../DEVLOG.md` → 「Vivado 操作手册（交接必备）」 and use the sanctioned
+  pipeline `../scripts/vivado/run_vivado.sh {create|synth|impl}` (default
+  strategy only).** RTL changes must pass the gate first:
+  `../scripts/gate_diff.sh simple matrix cryptonight`.
 - Run Vivado builds **foreground-blocking**: `docker run --rm -v ...:/workspace vivado:2019.2 bash -c "source /opt/Xilinx/Vivado/2019.2/settings64.sh && vivado -mode batch -source flow/xxx.tcl" 2>&1 | tee /tmp/opencode/run.log`. The command returns when Vivado exits; set a generous timeout instead of backgrounding or polling.
 - NEVER poll with `pgrep -f vivado` (or any `-f` pattern the calling shell also contains): the pattern matches the polling shell itself, the loop never exits, and a finished run looks hung. Check container status with `docker ps` instead.
 - Read results from the log/report files immediately after the run; do not re-run the same command.
