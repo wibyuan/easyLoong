@@ -1199,6 +1199,8 @@ cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依
 1. **pc_reg 预测**（synth top，+0.499，22 级 9.29ns）：fq_instr → ID 解码（6 级）→ bp 目标加法器 CARRY4×8（7 级）→ 到达比较（3 级）→ flush（1 级）→ next_pc mux（5 级）。零 IPC 断法未找到（加法器/到达比较必须本拍；寄存化 = 重定向晚 1 拍 = IPC）。
 2. **SRAM 引脚输出**（impl top，-0.489）：ram_write_active_r → OBUFT → 引脚。数据 6.75ns（OBUFT 3.3 固有）+ 时钟偏斜 -3.347（布局结果）。布局实验两次无效（-0.818/-1.093）；skew 是当前布局的产物，结构修正 synth 后 impl 会随布局重排变化。
 
+**关键路径报告归档位置**：每次 `run_vivado.sh {synth|impl}` 的时序/关键路径报告自动归档在 `run_vivado/reports/<时间戳>-<commit>/`（含 `{synth,impl}_critical_paths.rpt`、`{synth,impl}_timing_summary.rpt`、`synth_util_hier.rpt`）。**当前状态（e7fbea8，synth +0.499 / impl -0.489）的对应归档：`run_vivado/reports/20260804-152939-1c9c813-dirty/`**。历次运行归档（含失败实验）：`20260804-131219-be0b957`（删突发基线 +0.050）、`20260804-140820-37bcfd4`（接受链重构 +0.187）、`20260804-142110-867ad82-dirty`（WB_DEPTH=4 +0.296）、`20260804-144207-7b32af3`（impl -0.868 基线）、`20260804-142751-7b32af3-dirty`/`20260804-143426-7b32af3-dirty`（cacop 实验）、`20260804-132531-81174be-dirty`/`20260804-134040-c90a8ca-dirty`/`20260804-134646-c90a8ca-dirty`/`20260804-141512-867ad82-dirty`（失败的微调实验）、`20260804-145920-20d3d5c-dirty`/`20260804-153828-7a124a4-dirty`/`20260804-154537-7a124a4-dirty`（失败的布局实验）。
+
 ### 75MHz CI 尝试（未完成，记录调查结论）
 
 - 目标：提交 75MHz 试 CI 管线（75MHz 周期 13.33ns 必然通过）。
