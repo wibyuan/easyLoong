@@ -176,20 +176,29 @@ module axi_sram_direct #(
     logic [127:0] wb_fwd_line;
     logic [15:0]  wb_cover_line_r;
     logic [127:0] wb_fwd_line_r;
+    // The four per-word slice-full checks are precomputed at the accept so
+    // the response path's wb_full_r is a 4:1 mux instead of a combinational
+    // slice-select + 4-bit equality (a CARRY4 on the CE/read-done path).
+    logic [3:0]   wb_full_w_r;
     always_ff @(posedge aclk) begin
         if (!aresetn) begin
             wb_cover_line_r <= 16'd0;
             wb_fwd_line_r   <= 128'd0;
+            wb_full_w_r     <= 4'd0;
         end else if (ar_go && ar_sram) begin
             wb_cover_line_r <= wb_cover_line;
             wb_fwd_line_r   <= wb_fwd_line;
+            wb_full_w_r[0]  <= (wb_cover_line[3:0]   == 4'hf);
+            wb_full_w_r[1]  <= (wb_cover_line[7:4]   == 4'hf);
+            wb_full_w_r[2]  <= (wb_cover_line[11:8]  == 4'hf);
+            wb_full_w_r[3]  <= (wb_cover_line[15:12] == 4'hf);
         end
     end
     wire [1:0]  r_word = r_addr[3:2];
     wire [3:0]  wb_cover_r = wb_cover_line_r[r_word*4 +: 4];
     wire [31:0] wb_fwd_r   = wb_fwd_line_r[r_word*32 +: 32];
     wire wb_full_ar = (wb_cover_ar == 4'hf);
-    wire wb_full_r  = (wb_cover_r  == 4'hf);
+    wire wb_full_r  = wb_full_w_r[r_word];
     wire [31:0] wb_cover_r_byte = {{8{wb_cover_r[3]}}, {8{wb_cover_r[2]}},
                                    {8{wb_cover_r[1]}}, {8{wb_cover_r[0]}}};
 
