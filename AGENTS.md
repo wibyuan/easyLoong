@@ -75,13 +75,17 @@ the impl report also exists in the synth netlist (just not ranked
 first), and vice versa.  NEVER treat the synth top and the impl top as
 unrelated families to be fixed one at a time: cutting the synth top
 leaves the impl top untouched, and "fixing" one family merely lets
-another ~10ns family surface.  Before designing any change, merge the
-synth and impl critical-path reports and enumerate ALL path families;
-each family must be dealt with for the design to converge, and a change
-should be evaluated against the whole family set, not against the
-single reported top.  This deviation (treating the synth top and impl
-top as independent, and declaring a family "short in the other report
-so it can be ignored") burned many rounds during the 100MHz push.
+another ~10ns family surface.  Connect ALL runs as well: compare synth
+top across runs, impl top across runs, and synth vs impl — the sequence
+of which family surfaces after each change (and which disappears)
+reveals the whole family set.  Before designing any change, merge the
+synth and impl critical-path reports (of this run AND previous runs)
+and enumerate ALL path families; each family must be dealt with for the
+design to converge, and a change should be evaluated against the whole
+family set, not against the single reported top.  This deviation
+(treating the synth top and impl top as independent, and declaring a
+family "short in the other report so it can be ignored") burned many
+rounds during the 100MHz push.
 
 ## Build / Test
 
