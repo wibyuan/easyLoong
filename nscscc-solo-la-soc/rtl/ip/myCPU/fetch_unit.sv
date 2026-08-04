@@ -28,39 +28,8 @@ module fetch_unit import la32_common::*; (
     output logic        if_valid1,
     output logic [31:0] if_pc1,
     output logic [31:0] if_instr1,
-    output logic        if_pc_valid,
-    // Adopt-context equivalents (state-only): the FQ adopts the fetch
-    // outputs only while !fq_stall_all, which implies iresp.data_ok — so
-    // these replicate the response validity/data without carrying the
-    // 0-cycle icache chain (pc -> tag LUTRAM -> compare -> FSM -> data_ok)
-    // into the FQ absorb muxes.  The WAIT_DATA pc==captured_pc compare
-    // stays (it is a shallow local compare) so the semantics match
-    // if_valid0 exactly even for misaligned pcs.
-    output logic        if_valid0_abs,
-    output logic        if_valid1_abs,
-    output logic [31:0] if_pc0_abs,
-    output logic [31:0] if_instr0_abs,
-    // Precomputed redirect targets: the branch/jump target (pc + imm) is
-    // computed at absorb time and registered in the fetch queue, taking
-    // the target adder off the redirect chain (fq head -> decode -> target
-    // -> fetch next_pc -> pc_reg).  Only B/BL (imm26<<2) and the
-    // conditional branches (imm16<<2) ever redirect at ID/BP; JIRL targets
-    // are register-based (EX) and never read these.
-    output logic [31:0] fetch_target0,
-    output logic [31:0] fetch_target1
+    output logic        if_pc_valid
 );
-
-    function automatic logic [31:0] branch_target(input logic [31:0] pc,
-                                                  input logic [31:0] instr);
-        logic [31:0] imm;
-        casez (instr[31:26])
-            6'b010100, 6'b010101: imm = {{4{instr[9]}}, instr[9:0], instr[25:10], 2'd0};
-            6'b010110, 6'b010111, 6'b011000, 6'b011001, 6'b011010, 6'b011011:
-                imm = {{14{instr[25]}}, instr[25:10], 2'd0};
-            default: imm = 32'd0;
-        endcase
-        branch_target = pc + imm;
-    endfunction
 
     enum logic [1:0] {
         IDLE, REQ, WAIT_DATA
@@ -151,18 +120,6 @@ module fetch_unit import la32_common::*; (
     assign if_pc1 = pc_current + 32'd4;
     assign if_instr1 = iresp.data1;
     assign if_pc_valid = 1'b1;
-
-    // Adopt-context fetch outputs: the fetch queue (core.sv) adopts them
-    // only while !fq_stall_all, which implies iresp.data_ok — the data_ok
-    // terms are dropped so the 0-cycle icache response chain stays off the
-    // FQ register D path (the 100MHz impl top family).
-    assign if_valid0_abs = (state == REQ) ||
-                           (state == WAIT_DATA && pc_current == captured_pc);
-    assign if_valid1_abs = (state == REQ) && iresp.valid1;
-    assign if_pc0_abs = (state == REQ) ? pc_current : captured_pc;
-    assign if_instr0_abs = iresp.data;
-    assign fetch_target0 = branch_target(if_pc0_abs, if_instr0_abs);
-    assign fetch_target1 = branch_target(if_pc1, if_instr1);
 
     always_comb begin
         next_pc = pc_current + 32'd4;

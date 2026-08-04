@@ -186,16 +186,9 @@ module core import la32_common::*; #(
     logic [FQ_DEPTH-1:0]   fq_valid;
     logic [31:0] fq_pc [0:FQ_DEPTH-1];
     logic [31:0] fq_instr [0:FQ_DEPTH-1];
-    // Precomputed redirect target per entry (see fetch_unit fetch_target0):
-    // the ID/BP redirects read fq_target[0] instead of re-adding pc+imm at
-    // the queue head, keeping the target adder off the redirect chain.
-    logic [31:0] fq_target [0:FQ_DEPTH-1];
 
     logic fetch_valid0, fetch_valid1;
     logic [31:0] fetch_pc0, fetch_instr0, fetch_pc1, fetch_instr1;
-    logic fetch_valid0_abs, fetch_valid1_abs;
-    logic [31:0] fetch_pc0_abs, fetch_instr0_abs;
-    logic [31:0] fetch_target0, fetch_target1;
     logic fetch_absorb2;
     logic slot1_issue;
     logic fq_stall_all;
@@ -206,7 +199,8 @@ module core import la32_common::*; #(
     assign do_ex_flush = ex_jump_flush && !ex_mem_stall;
 
     logic bp_do_jump;
-    logic [31:0] bp_jump_pc;    // JAL/BL and the unconditional B already redirected at ID (id_jump_req):
+    logic [31:0] bp_jump_pc;
+    // JAL/BL and the unconditional B already redirected at ID (id_jump_req):
     // their EX-time flush is redundant and must not kill the target-path
     // instructions the ID redirect just delivered into the fetch queue.
     assign ex_jump_flush_hazard = ex_jump_flush &&
@@ -271,10 +265,7 @@ module core import la32_common::*; #(
         .next_pc(next_pc_reg),
         .if_pc_valid(),
         .if_valid0(fetch_valid0), .if_pc0(fetch_pc0), .if_instr0(fetch_instr0),
-        .if_valid1(fetch_valid1), .if_pc1(fetch_pc1), .if_instr1(fetch_instr1),
-        .if_valid0_abs(fetch_valid0_abs), .if_valid1_abs(fetch_valid1_abs),
-        .if_pc0_abs(fetch_pc0_abs), .if_instr0_abs(fetch_instr0_abs),
-        .fetch_target0(fetch_target0), .fetch_target1(fetch_target1)
+        .if_valid1(fetch_valid1), .if_pc1(fetch_pc1), .if_instr1(fetch_instr1)
     );
 
     logic [63:0] cyc;
@@ -304,29 +295,24 @@ module core import la32_common::*; #(
     assign fq_stall_all = pipeline_stall || load_use_hazard || !iresp.data_ok;
     wire c0 = fq_valid[0] && !fq_stall_all && !if_id_flush;
     wire c1 = fq_valid[1] && slot1_issue && !fq_stall_all && !if_id_flush;
-    // Adopt-context consumption: the FQ registers adopt the nfq network
-    // only while !fq_stall_all (their CE), which implies iresp.data_ok —
-    // the stall/data_ok terms are redundant inside the nfq selects and are
-    // dropped, taking the 0-cycle icache response chain (pc -> tag LUTRAM
-    // -> compare -> FSM -> data_ok, the impl top -0.304 family) off the
-    // fq_pc/fq_instr register D path.  Entry 0 is always consumed when the
-    // queue advances, so it has no retain term.
-    wire c1_abs = fq_valid[1] && slot1_issue_raw;
-    wire [2:0] rem_cnt_abs = {1'b0, fq_valid[1] && !c1_abs}
-                           + {2'b0, fq_valid[2]};
-    wire [2:0] fq_space_abs = 3'd3 - rem_cnt_abs;
-    wire f0_ok_abs = fetch_valid0_abs && (fq_space_abs >= 3'd1);
-    wire f1_ok_abs = fetch_valid1_abs && (fq_space_abs >= 3'd2);
+    // Compaction-consumption versions without the if_id_flush term: the
+    // nfq network is only adopted when !if_id_flush (the flush branch
+    // overrides it), so the deep flush logic (branch-target adder, EX
+    // redirect chain) stays off the compaction-select path.
+    wire c0_cmp = fq_valid[0] && !fq_stall_all;
+    wire c1_cmp = fq_valid[1] && slot1_issue_raw && !fq_stall_all;
 
     // Free slots after consumption, and how many fetch outputs are taken.
     wire [2:0] rem_cnt = {1'b0, fq_valid[0] && !c0}
                        + {1'b0, fq_valid[1] && !c1}
                        + {2'b0, fq_valid[2]};
     wire [2:0] fq_space = 3'd3 - rem_cnt;
+    wire f0_ok = fetch_valid0 && (fq_space >= 3'd1);
     // fetch_absorb2 gates both the fetch advance (+8) and the f1
     // absorption; when it is off the fetch advances +4 and re-fetches the
     // second word, so only f0 is taken (single-issue behavior).
     assign fetch_absorb2 = fetch_valid1 && (fq_space >= 3'd2);
+    wire f1_ok = fetch_absorb2;
 
     // Queue advance: remaining entries first, then absorbed fetch outputs.
     // When slot0 issues as a predicted-taken branch (bp_do_jump), the queue
@@ -337,31 +323,28 @@ module core import la32_common::*; #(
     logic [FQ_DEPTH-1:0]   nfq_valid;
     logic [31:0] nfq_pc [0:FQ_DEPTH-1];
     logic [31:0] nfq_instr [0:FQ_DEPTH-1];
-    logic [31:0] nfq_target [0:FQ_DEPTH-1];
-    wire fq_kill_slot1 = fq_valid[0] && bp_do_jump;
+    wire fq_kill_slot1 = c0_cmp && bp_do_jump;
     always_comb begin
         automatic int rc = 0;
         for (int i = 0; i < FQ_DEPTH; i++) begin
             nfq_valid[i] = 1'b0;
             nfq_pc[i]    = 32'd0;
             nfq_instr[i] = 32'd0;
-            nfq_target[i] = 32'd0;
         end
-        if (fq_valid[1] && !c1_abs && !fq_kill_slot1) begin
-            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[1]; nfq_instr[rc] = fq_instr[1];
-            nfq_target[rc] = fq_target[1]; rc++;
+        if (fq_valid[0] && !c0_cmp) begin
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[0]; nfq_instr[rc] = fq_instr[0]; rc++;
+        end
+        if (fq_valid[1] && !c1_cmp && !fq_kill_slot1) begin
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[1]; nfq_instr[rc] = fq_instr[1]; rc++;
         end
         if (fq_valid[2] && !fq_kill_slot1) begin
-            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[2]; nfq_instr[rc] = fq_instr[2];
-            nfq_target[rc] = fq_target[2]; rc++;
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fq_pc[2]; nfq_instr[rc] = fq_instr[2]; rc++;
         end
-        if (f0_ok_abs) begin
-            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fetch_pc0_abs; nfq_instr[rc] = fetch_instr0_abs;
-            nfq_target[rc] = fetch_target0; rc++;
+        if (f0_ok) begin
+            nfq_valid[rc] = 1'b1; nfq_pc[rc] = fetch_pc0; nfq_instr[rc] = fetch_instr0; rc++;
         end
-        if (f1_ok_abs) begin
+        if (f1_ok) begin
             nfq_valid[rc] = 1'b1; nfq_pc[rc] = fetch_pc1; nfq_instr[rc] = fetch_instr1;
-            nfq_target[rc] = fetch_target1;
         end
     end
 
@@ -383,12 +366,10 @@ module core import la32_common::*; #(
                 fq_valid[0] <= 1'b1;
                 fq_pc[0]    <= fetch_pc0;
                 fq_instr[0] <= fetch_instr0;
-                fq_target[0] <= fetch_target0;
                 if (fetch_absorb2) begin
                     fq_valid[1] <= 1'b1;
                     fq_pc[1]    <= fetch_pc1;
                     fq_instr[1] <= fetch_instr1;
-                    fq_target[1] <= fetch_target1;
                 end else begin
                     fq_valid[1] <= 1'b0;
                 end
@@ -400,7 +381,6 @@ module core import la32_common::*; #(
             fq_valid  <= nfq_valid;
             fq_pc[0]  <= nfq_pc[0];    fq_pc[1]  <= nfq_pc[1];    fq_pc[2]  <= nfq_pc[2];
             fq_instr[0] <= nfq_instr[0]; fq_instr[1] <= nfq_instr[1]; fq_instr[2] <= nfq_instr[2];
-            fq_target[0] <= nfq_target[0]; fq_target[1] <= nfq_target[1]; fq_target[2] <= nfq_target[2];
         end
     end
 
@@ -551,15 +531,14 @@ module core import la32_common::*; #(
     // stage and the EX-time redirect is suppressed (ex_jump_flush_hazard).
     assign id_jump_req = (dec_is_jal_0 || (dec_is_branch_0 && dec_br_type_0 == BR_NONE))
         && id_valid0;
-    // The ID redirect target comes from the entry's precomputed fq_target
-    // (registered at absorb) — the pc+imm adder is off the redirect chain.
-    assign id_jump_pc  = fq_target[0];
+    assign id_jump_pc  = if_id_out.data.pc + dec_imm_0;
 
     logic id_predict_taken;
     branch_predictor bp_unit (
         .clk, .reset,
-        .id_instr(if_id_out.data.instr),
-        .id_target(fq_target[0]),
+        .id_pc(if_id_out.data.pc),
+        .id_imm(dec_imm_0),
+        .id_br_type(dec_br_type_0),
         .id_is_cond_branch(dec_is_branch_0 & id_valid0 & (dec_br_type_0 != BR_NONE)),
         .id_valid(if_id_out.ctrl.valid),
         .id_stall(id_ex_stall),
@@ -628,7 +607,7 @@ module core import la32_common::*; #(
     assign id_ex0_in.data.rs2        = dec_rs2_0;
     assign id_ex0_in.data.rd         = dec_rd_0;
     assign id_ex0_in.data.imm        = dec_imm_0;
-    assign id_ex0_in.data.target_pc  = fq_target[0];
+    assign id_ex0_in.data.target_pc  = if_id_out.data.pc + dec_imm_0;
     assign id_ex0_in.data.pc_plus_4  = if_id_out.data.pc + 32'd4;
     assign id_ex0_in.data.alu_op     = dec_alu_op_0;
     assign id_ex0_in.data.br_type    = dec_br_type_0;
@@ -672,7 +651,7 @@ module core import la32_common::*; #(
     assign id_ex1_in.data.rs2        = dec_rs2_1;
     assign id_ex1_in.data.rd         = dec_rd_1;
     assign id_ex1_in.data.imm        = dec_imm_1;
-    assign id_ex1_in.data.target_pc  = fq_target[1];
+    assign id_ex1_in.data.target_pc  = if_id1_out.data.pc + dec_imm_1;
     assign id_ex1_in.data.pc_plus_4  = if_id1_out.data.pc + 32'd4;
     assign id_ex1_in.data.alu_op     = dec_alu_op_1;
     assign id_ex1_in.data.br_type    = dec_br_type_1;
