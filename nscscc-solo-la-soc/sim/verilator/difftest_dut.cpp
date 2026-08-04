@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/difftest/difftest_dut.cpp
+../../../difftest/difftest_dut.cpp

@@ -1,1 +1,1 @@
-/home/wibyu/easyLoong/difftest/difftest_interface.h
+../../../difftest/difftest_interface.h
