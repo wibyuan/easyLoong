@@ -250,6 +250,14 @@ create_pblock pblock_core
 add_cells_to_pblock pblock_core [get_cells u_soc_top/u_cpu/u_core]
 resize_pblock pblock_core -add {SLICE_X20Y10:SLICE_X75Y60}
 
+# The icache/arbiter sit on the core's refill path (the sram-direct's
+# read-done feeds the arbiter's state and the icache's tag write): keeping
+# them adjacent to the core's top edge shortens the cross-module route that
+# dominated the post-redirect-registration critical path.
+create_pblock pblock_cpu_side
+add_cells_to_pblock pblock_cpu_side [get_cells {u_soc_top/u_cpu/u_icache u_soc_top/u_cpu/u_arbiter}]
+resize_pblock pblock_cpu_side -add {SLICE_X35Y60:SLICE_X75Y100}
+
 # SRAM interface — driven directly from the cpu_clk domain by
 # axi_sram_direct (fixed 2-cycle read / 3-cycle write); the I/O delays must
 # be referenced to cpu_clk, not sys_clk (the old CDC path's domain).
