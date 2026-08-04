@@ -67,6 +67,22 @@ distracts from the code-level cause.
   before committing) and never claim a verification that was not run on
   the committed content.
 
+### Systematic critical-path view (HARD RULE)
+
+The synthesis and implementation reports of the SAME netlist show the
+same set of long path families in different order — a family that tops
+the impl report also exists in the synth netlist (just not ranked
+first), and vice versa.  NEVER treat the synth top and the impl top as
+unrelated families to be fixed one at a time: cutting the synth top
+leaves the impl top untouched, and "fixing" one family merely lets
+another ~10ns family surface.  Before designing any change, merge the
+synth and impl critical-path reports and enumerate ALL path families;
+each family must be dealt with for the design to converge, and a change
+should be evaluated against the whole family set, not against the
+single reported top.  This deviation (treating the synth top and impl
+top as independent, and declaring a family "short in the other report
+so it can be ignored") burned many rounds during the 100MHz push.
+
 ## Build / Test
 
 - `make test-<case>` (simple / fibonacci / matrix / stream / cryptonight /
