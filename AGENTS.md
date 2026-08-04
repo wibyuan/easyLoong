@@ -41,6 +41,16 @@ as a standalone docs commit for a baseline).  WNS comparisons must
 reference the archived reports, never memory or `/tmp` logs: the report
 for every commit in the 100MHz push must be reproducible from git.
 
+### No waveform analysis (HARD RULE)
+
+Functional/deadlock debugging must NOT use waveform analysis (VCD / FST /
+gtkwave dumps — including `+wave` traces).  Locate bugs only through the
+difftest output (Commit Instr Trace, register snapshots, NEMU-vs-DUT
+compare), static RTL analysis, and the `unittest/UNITTEST-WORKFLOW.md`
+single-test extraction flow.  Waveform digging was repeatedly used during
+the 100MHz push and never produced a root cause; it burns hours and
+distracts from the code-level cause.
+
 ## Build / Test
 
 - `make test-<case>` (simple / fibonacci / matrix / stream / cryptonight /

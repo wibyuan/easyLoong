@@ -1213,6 +1213,11 @@ scripts/vivado/run_vivado.sh impl     # create + 综合 + 实现 + 时序报告
    `scripts/`。
 6. **IPC 归因**：`make test-*` 每次重建 kernel（workload 数据可能变动），
    IPC 有运行间波动（如 mixed 0.5829~0.5882）——归因需同构建复跑。
+7. **禁止波形分析**：功能/死锁调试不得使用波形（VCD/FST/gtkwave，含
+   `+wave` trace）。只能通过 difftest 输出（Commit Instr Trace、寄存器快照、
+   NEMU vs DUT 对比）、静态 RTL 分析、以及 `unittest/UNITTEST-WORKFLOW.md`
+   的单测提取流程定位 bug。100MHz 冲刺期间反复用波形挖根因从未成功，
+   只烧时间。
 
 ### 未跟踪的实验文件（有意保留，勿随意删除）
 
