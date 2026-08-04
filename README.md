@@ -2,7 +2,7 @@
 
 基于 XC7A200T-2FBG676C FPGA 的 LoongArch 32-bit (LA32R) 精简版 CPU 实现。
 
-> **⚠ 当前 master 状态（2026-08-04，100MHz 冲刺交接）**：master 为 **no-dcache + axi_sram_direct 直通 SRAM**（LSU 直连，2 拍读/3 拍写 + 8 项写缓冲 + store-to-load 转发），PLL 已重生成 cpu_clk=100MHz/sys_clk=25MHz。difftest 6/6 + 数据比对全过；100MHz 默认策略下 **Synthesis WNS -1.230 / Implementation WNS -2.333**（分支重定向链为唯一瓶颈族）。
+> **⚠ 当前 master 状态（2026-08-04，100MHz 冲刺进行中）**：master 为 **no-dcache + axi_sram_direct 直通 SRAM**（LSU 直连，2 拍读/3 拍写 + 8 项写缓冲 + store-to-load 转发），PLL 已重生成 cpu_clk=100MHz/sys_clk=25MHz。difftest 6/6 + 数据比对全过。**分支重定向链（原唯一瓶颈族）已通过注册化打断**（B 改 ID 级重定向 + EX 重定向注册化 + 写缓冲覆盖预计算 + icache/arbiter Pblock）：**Synthesis WNS -0.092 / Implementation WNS -1.028**，当前瓶颈为跨模块组合链（core → sram-direct/arbiter/icache 布线），下一步切分方向（refill 路径 / store 路径）见 [DEVLOG.md](DEVLOG.md)「2026-08-04（续二）」。IPC 全程未牺牲（较交接基线 simple +2.6%、fib +3.6%、matrix/mixed +0.1%）。
 >
 > **⚠ 当前 master 的 IPC 牺牲（必须知晓）**：提交 `ac35c43`（打破串行双加法器静态路径的槽1旁路注册化 + 同拍依赖对门禁）以 IPC 换取时序。**相对该提交之前的基线**（simple 0.1627 / matrix 0.4476 / stream 0.4951 / mixed 0.6503 / cryptonight 0.7974）：**mixed 0.6503→0.5829（-10.4%）、cryptonight 0.7974→0.7436（-6.7%）**，simple -0.55%、matrix/stream 约 0。当前 master 的实测 IPC：simple 0.1618 / matrix 0.4475 / stream 0.4951 / mixed 0.5829 / cryptonight 0.7436。**下述第 4 节性能表为两级 dcache 时代的记录，与当前状态不符**。
 >

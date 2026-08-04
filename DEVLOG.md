@@ -1142,3 +1142,34 @@ cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依
 
 1. **分支重定向注册化重做**（最高价值）：在 npc 输出打一拍（fetch 重定向 +1，误预测惩罚 +1），打断 20 级组合链。首轮失败疑为"fetch +1 与流水线实时冲刷不一致导致 if_id N 拍捕获的错误路径存活"——**用 `unittest/UNITTEST-WORKFLOW.md` 的单元测试方法提取失败现场（difftest #45：t0 值错 + idle_pc 卡 0x1c001080）逐个验证冲刷窗口**，不要像首轮那样失配即回退。
 2. **工作流硬规则**：任何 RTL 改动必须先过门禁（simple+matrix+cryptonight，`/tmp/opencode/gate_diff.sh`，失败即 exit 1）才能启动 Vivado；**禁止 `grep "mismatch" && docker` 链**（grep 匹配失败文本退出码是 0 会放行）；每次改动的验证计划先写后做。
+
+---
+
+## 2026-08-04（续二）：分支重定向注册化落地（Impl WNS -2.333 → -1.028）
+
+### 已提交的优化（按提交顺序）
+
+| 提交 | 内容 | 效果（synth/impl） |
+|------|------|------|
+| `1d0c1a1` | B 无条件跳转改 ID 级重定向（+3 处冲刷窗口修复：FQ keep-target 吸收、keep vs EX-override、fetch 侧重定向等待 load_use）| IPC 全涨（simple +3.0%、fib +3.8%、matrix +0.2%、mixed +0.9%），6/6 |
+| `469254a` | EX 重定向注册化（do_ex_flush_r/ex_jump_pc_r + flush_pending_r + flush_pc_r + 3 处窗口修复 + if_not_ready 项移除）| synth -1.230 → -0.521；IPC 无损失（simple +2.6%、fib +3.6%、matrix/mixed +0.1%）|
+| `ff7aef1` | 写缓冲 per-word full-cover 预计算注册（wb_full_w_r）| synth -0.521 → -0.115（IPC 零代价）|
+| `32cc519` | icache/arbiter Pblock（X35-75×Y60-100）| synth -0.115 → -0.092（零 IPC；⚠ 与 pblock_core 在 Y60 边界重叠，需复核）|
+
+### 当前时序（100MHz，默认策略）
+
+- **Synth WNS -0.092**（关键路径：ex_mem ctrl → 写缓冲覆盖搜索 CARRY 链 → arready → arbiter → icache m_eway CE）
+- **Impl WNS -1.028**（关键路径：id_ex0 → ALU 加法器 → alu_res0_r → ex_mem → LSU → arbiter → sram-direct 读完成 → icache 标签 RAM WE；13 级、77% 布线）
+- 分支重定向链（原唯一瓶颈族）已彻底消失；现瓶颈为**跨模块组合链**（core → sram-direct/arbiter/icache 的布线）
+
+### 尝试并回退的实验
+
+- **icache mem_resp 注册化**（refill +1）：synth -0.092 → -0.066（+0.026），但 **impl -1.028 → -1.078（变差）**——它确实切断了 refill 路径，但网表变化导致布局噪声，浮出并列的 **store 路径**（LSU FSM → Axi_CDC wFifo，约 -1.05）。IPC 实测代价：matrix/stream/cryptonight ~0.02%、mixed -0.43%（在历史波动 0.5829~0.5882 范围内，归因待复跑确认）、simple（smoke）-2.0%。已回退。
+- **Pblock 布局**（icache/arbiter）：synth +0.023（零 IPC）——但属"绕过"而非"切分"，且与 pblock_core 重叠；**RTL 切分才是正路**（保留但待复核）。
+
+### 下一步（两条跨模块组合链，均可尝试）
+
+1. **refill 路径**（Impl -1.028）：读完成 → arbiter → icache 状态 → 标签写。切点 = icache 的 `mem_resp` 注册化（refill +1；miss 次数少：simple 894/stream ~数千，性能 IPC 实测代价 ~0.02%；mixed -0.43% 需复跑归因）。切后预期浮出 store 路径（见下）。
+2. **store 路径**（Impl -1.078 浮出）：LSU FSM → Axi_CDC wFifo。切点待分析（LSU 请求注册化 or CDC 写端口寄存器化；store 延迟的 IPC 代价需实测）。
+
+两条路径的 IPC 归因都需**同构建复跑**（排除 workload 重建波动）。
