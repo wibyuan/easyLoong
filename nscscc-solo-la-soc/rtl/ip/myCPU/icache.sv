@@ -324,8 +324,13 @@ module icache import la32_common::*; (
                 plru[req_idx] <= req_hit_way;
             end
 
+            // Capture the miss context at the S_IDLE decision.  The
+            // next_state == S_MISS term is written out directly (in
+            // S_IDLE it is exactly this condition minus the cacop
+            // branch), so the capture CE does not carry the FSM
+            // next-state combinational chain.
             if (state == S_IDLE && cpu_req.valid && !ghost && !req_hit
-                && next_state == S_MISS) begin
+                && !(cacop_req.valid && cacop_req.code[2:0] == 3'd0)) begin
                 m_wo   <= req_wo;
                 m_idx  <= req_idx;
                 m_tag  <= req_tag;
