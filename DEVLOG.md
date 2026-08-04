@@ -1384,6 +1384,52 @@ OBUF 地板）、其余数据/内部族在 0 附近。100MHz 时序闭环达成�
 
 ---
 
+## 时序护栏（100MHz +0.024 状态，IPC 优化前必读）
+
+当前 impl WNS +0.024（余量极薄）。以下是 400 条最差路径的家族清单（`run_vivado/reports/20260804-235629-530c80f-dirty/impl_wide_400.rpt`，
+2026-08-05 复跑确定性与归档一致）。**任何 IPC 优化在落 RTL 前必须对照此清单：凡会给下述路径加逻辑/加深级的改动，
+默认判死刑，除非有明确的结构性消除方案。**
+
+### A. SRAM 引脚族（余量 0.02~0.2ns，IOB 偏斜 + OBUF 地板，几乎不可动）
+
+| 路径 | 最差 slack | 结构 | 地板构成 |
+|------|-----------|------|---------|
+| `ram_addr_out_r` → base/ext `_addr` 引脚 | **+0.024**（全设计顶部） | 寄存器 Q → OBUF → 引脚，1 级 | IOB 偏斜 -3.28（DCD -4.543，BUFG X0Y16 与左缘 IOB 的物理时钟差）+ OBUF 3.3 固有 + 输出延迟 0.3（xdc 初值，勿动）+ 路由 2.7 |
+| `bank_out_r` → CE 引脚（经每 bank CE 寄存器 D） | +0.028 | bank_out_r → `base/ext_ram_ce_out_r` D → OBUF → 引脚 | 同上 + CE 寄存器 D 锥（`ram_ce_out_r \|\| bank_out_r`） |
+| `ram_wdata_out_r` → 数据引脚（OBUFT I） | +0.047~0.2 | 寄存器 → OBUFT I → 引脚（64 扇出） | 同上 + OBUFT I→O |
+| `ram_oe_out_r` → OE 引脚 | +0.053 | 寄存器 → OBUF → 引脚 | 同上 |
+| `base_ram_sel_r` → 数据总线 T 引脚 | +0.103~0.2 | T 选择寄存器 → OBUFT T（32 扇出） | 同上（c3f51fb 寄存化后） |
+
+**约束**：这些路径的驱动寄存器（`ram_addr_out_r`/`ram_wdata_out_r`/`bank_out_r`/`ram_oe_out_r`/`base/ext_ram_sel_r`）
+的 D 锥 = 写缓冲排空 FSM + 转发搜索 + bank 选择——**给这些 D 锥加任何逻辑（访存路径的 IPC 优化、搜索加深）
+直接消耗 0.02~0.2ns 的余量**。IOB 偏斜是物理的（左缘 IOB 时钟早 ~4.5ns），OBUF 3.3 是固有的，
+放置/寄存器化都绕不开（per-pin IOB 打包实验已失败：偏斜转嫁到 D 侧，见「100MHz 闭环」节）。
+**结论：数据/地址/控制引脚的驱动链保持现状，任何访存时序改动（如调整读/写拍数、drain 节奏）必须先验引脚族。**
+
+### B. 内部族（余量 ~0.66ns，改动需谨慎）
+
+| 路径族 | 数量 | 最差 slack | 结构 |
+|--------|------|-----------|------|
+| `fq_instr_reg[0]` → nfq → `fq_instr_reg[0]` D | ~200 条 | +0.686 | FQ 头译码（slot0 的 opcode/rs）→ slot1_issue_raw → c1_abs → nfq 压缩 mux 选择 → fq 寄存器 D。19 级（CARRY4×9，9.2ns），**全设计最深的逻辑路径** |
+| `fq_instr_reg[0]` → 写缓冲覆盖搜索（`wb_fwd_line_r` D） | 同族 | +0.69 | FQ 头 → 译码（mem_we）→ 发射 → id_ex → ex_mem → LSU 接受 → 覆盖搜索寄存器 |
+| `reg_id_ex0_data` → EX 级（`reg_ex_mem*` D） | ~50 条 | +0.695 | id_ex0 数据 → EX 运算/转发 mux → ex_mem 寄存器 |
+| `dmw0_eff_r` → MEM 侧 | 17 条 | +0.69 | DMW0 地址翻译（EX→MEM） |
+| `fq_instr_reg[0]` → ID 发射/冲刷（`reg_id_ex0_ctrl` D） | 部分同族 | +0.69 | FQ 头译码 → 发射约束/load_use → id_ex0 ctrl |
+
+**约束**：族 B 的余量 ~0.66ns 看起来厚，但 19 级/9.2ns 的结构意味着**任何在 ID 译码/发射约束/
+FQ 压缩选择上加逻辑的 IPC 改动（如发射约束放宽、依赖检查加深、FQ 结构调整）都会直接压向这个深度**。
+FQ 压缩选择（c1_abs/slot1_issue_raw）与 FQ 写侧是同一个逻辑锥——「吸收侧 adopt-context 化」实验
+（`shame/fq-absorb-target`）曾试图砍它但布局副作用反而更差，教训存档。
+
+### C. 历史教训（不要再踩）
+
+1. **隔离实验**：时序改动必须逐项隔离测量（2026-08-05 教训——FQ 改动组叠加数据污染，1KB 单独才是 +0.024）。
+2. **引脚地板**：IOB 偏斜 + OBUF 是物理地板；per-pin IOB 打包（`(* IOB = "TRUE" *)`）把偏斜转嫁到 D 侧（全栈 -0.501，未提交）。
+3. **xci**：工作区 100MHz 再生 vs master 提交 90MHz（CI 提交用 100MHz xci——`submit-100mhz-icache1k`）。
+4. **PLL 产物**：每次 Vivado 运行再生成 7 个产物，CI 提交前必须清理（`run_vivado.sh` 的 clean_pll_products 模式）。
+
+---
+
 ## Vivado 操作手册（交接必备）
 
 ### 流程入口
