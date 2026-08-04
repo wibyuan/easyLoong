@@ -4,7 +4,7 @@ set_property -dict {PACKAGE_PIN K21 IOSTANDARD LVCMOS33} [get_ports clk_50M]
 create_clock -period 20.000 -name clk_50M [get_ports clk_50M]
 
 # PLL generated clocks — explicit definitions for the two output domains
-# (thinpad_top/u_soc_top/pll_clk/clk_pll).  cpu_clk = CLKOUT0 (75MHz),
+# (thinpad_top/u_soc_top/pll_clk/clk_pll).  cpu_clk = CLKOUT0 (100MHz),
 # sys_clk = CLKOUT1 (25MHz); the divider values come from clk_pll.xci and
 # the derived frequencies are validated at synthesis.
 create_generated_clock -name cpu_clk [get_pins u_soc_top/pll_clk.u_clk_pll/inst/plle2_adv_inst/CLKOUT0]
