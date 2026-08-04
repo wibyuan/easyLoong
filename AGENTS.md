@@ -51,6 +51,22 @@ single-test extraction flow.  Waveform digging was repeatedly used during
 the 100MHz push and never produced a root cause; it burns hours and
 distracts from the code-level cause.
 
+### Edit and commit discipline (HARD RULE)
+
+- Edit RTL only with the edit/apply_patch tools.  NEVER script string
+  rewrites over source files (python heredocs etc.) — they silently
+  rewrite line endings (CRLF -> LF) and turn a 7-line change into a
+  full-file diff, polluting the commit history.
+- After a timing change passes its verification (gate + full difftest +
+  IPC proof + synth WNS improved), commit it IMMEDIATELY.  Do not stack
+  the next change on top of an uncommitted verified one — a regression
+  or a failed experiment then cannot be separated from the good change.
+- Every commit must be verified from ITS OWN content.  Never carry a
+  verification result over from an earlier version of the code (e.g.
+  after a git checkout + replay of an edit, re-run gate/difftest/synth
+  before committing) and never claim a verification that was not run on
+  the committed content.
+
 ## Build / Test
 
 - `make test-<case>` (simple / fibonacci / matrix / stream / cryptonight /
