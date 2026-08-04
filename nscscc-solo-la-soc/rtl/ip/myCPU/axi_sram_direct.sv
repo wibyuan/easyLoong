@@ -408,19 +408,14 @@ module axi_sram_direct #(
     always_comb begin
         base_ram_addr = ram_addr_out_r;
         base_ram_be_n = ram_be_out_r;
-        base_ram_ce_n = ram_ce_out_r;
+        base_ram_ce_n = base_ram_ce_out_r;
         base_ram_oe_n = ram_oe_out_r;
         base_ram_we_n = ram_we_out_r;
         ext_ram_addr  = ram_addr_out_r;
         ext_ram_be_n  = ram_be_out_r;
-        ext_ram_ce_n  = ram_ce_out_r;
+        ext_ram_ce_n  = ext_ram_ce_out_r;
         ext_ram_oe_n  = ram_oe_out_r;
         ext_ram_we_n  = ram_we_out_r;
-        if (bank_out_r) begin
-            base_ram_ce_n = 1'b1;
-        end else begin
-            ext_ram_ce_n = 1'b1;
-        end
     end
 
     // The data-bus tri-state select is precomputed one cycle ahead: the
@@ -463,6 +458,13 @@ module axi_sram_direct #(
     logic [31:0] ram_wdata_out_r;
     logic        ram_write_active_r;
     logic        bank_out_r;
+    // Per-bank CE registers: the pin path was ram_ce_out_r -> bank-select
+    // AND -> OBUF, an extra LUT hop between the register and the IOB (with
+    // the IOB clock skew that hop was the impl top at -0.376).  Both
+    // inputs are edge-registered, so moving the AND into a register per
+    // bank produces the identical pin waveform (pattern per the T-select
+    // precompute below).
+    logic        base_ram_ce_out_r, ext_ram_ce_out_r;
     always_ff @(posedge aclk) begin
         if (!aresetn) begin
             ram_addr_out_r     <= 20'd0;
@@ -473,6 +475,8 @@ module axi_sram_direct #(
             ram_wdata_out_r    <= 32'd0;
             ram_write_active_r <= 1'b0;
             bank_out_r         <= 1'b0;
+            base_ram_ce_out_r  <= 1'b1;
+            ext_ram_ce_out_r   <= 1'b1;
         end else begin
             ram_addr_out_r     <= ram_addr_out;
             ram_be_out_r       <= ram_be_out;
@@ -482,6 +486,8 @@ module axi_sram_direct #(
             ram_wdata_out_r    <= ram_wdata_out;
             ram_write_active_r <= ram_write_active;
             bank_out_r         <= bank_out;
+            base_ram_ce_out_r  <= ram_ce_out_r || bank_out_r;
+            ext_ram_ce_out_r   <= ram_ce_out_r || !bank_out_r;
         end
     end
 
