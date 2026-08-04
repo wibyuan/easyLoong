@@ -7,7 +7,10 @@ module core_top #(
     // kernel's cacop flush walk uses it and covers both levels (the L1's
     // ways/sets are a subset of the L2 walk).
     parameter int DCACHE_SETS = 16384,
-    parameter int ICACHE_SETS = 256,
+    // 1KB icache (64 sets x 16B): 256 sets broadcast the pc index to ~600
+    // RAMD64E (4-level chains); 64 sets cut it to ~150 single-level LUTRAMs
+    // and the isolated experiment measured impl WNS -0.304 -> +0.024.
+    parameter int ICACHE_SETS = 64,
     parameter int DCACHE_WAYS = 4,
     parameter int DCACHE_WORDS = 4,
     // L1 dcache geometry (0-cycle hit, LUTRAM tags).
