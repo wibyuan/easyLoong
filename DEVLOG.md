@@ -1,6 +1,15 @@
 # DEVLOG — 开发进度与已知问题
 
-## 已验证
+## 已验证（2026-08-04 起，当前 master = 直连 SRAM + 无 dcache + 写缓冲）
+
+- [x] **直连异步 SRAM（wip/direct-sram → master）**：新模块 `axi_sram_direct` 在 cpu_clk 直驱 BaseRAM/ExtRAM 引脚，完全绕开 AXI CDC / crossbar / axi2sram（~16-20 拍 + EXTRA_LATENCY 校准 → 物理下限 2 拍读 / 3 拍写）。MMIO（UART/confreg）经原 CDC+crossbar 转发。difftest 6/6 + 数据比对全过；cryptonight IPC 0.3854→0.5312 (+38%)、stream +41%、mixed +18%。详见文末「2026-08-04: 直连异步 SRAM + 无 dcache + 写缓冲」
+- [x] **无 dcache（wip/no-dcache → master）**：LSU 直通 AXI 仲裁器（全部 uncached 直通），`CPUCFG.0x10` bit2=0 → 内核跳过 dcache 初始化与 FLUSH_DCACHE；NEMU cpucfg 同步。cryptonight IPC 0.5312→0.7833（再 +47%），stream +25%、mixed +4%，matrix -39%（工作集原先吃缓存命中）；四测试周期合计约减半
+- [x] **上板写地址 bug 定位与修复（3 拍写）**：真 SRAM 在 WE 下降沿锁存地址，同拍驱动地址+WE（零 tAS/tSD）导致上板写落错地址（matrix 只读输入区被改写 26,658/65,536 字节；仿真模型不建模 tAS/tSD 故抓不到）。修复：写改为 3 拍（建立/脉冲/保持）。上板验证中（CI `submit-nodcache-fix`）
+- [x] **写缓冲 + store→load 转发（wip/no-dcache → master）**：8 项 FIFO，store 接受即回 b（LSU ~1 拍退休），后台 3 拍排空；load 按字节匹配最新 store（全覆盖 1 拍完成，部分覆盖 SRAM 读+合并）。bring-up 排掉三个 bug（drain 与读接受同拍竞态、转发读覆盖写引脚、FIFO count 同拍 push+dequeue 冲突）。difftest 6/6；cryptonight 0.7193→0.7974、stream +20%、mixed +13%、matrix +9%。CI `submit-nodcache-wb`
+- [x] NEMU store 队列 48→4096（无 dcache 后每个 store 都提交，旧队列瞬间溢出会静默禁用 difftest store 校验）
+- [x] 2-wide 双发射上板通过（2026-08-03，`dev/ilp-2wide`，CI `submit-20260803-2wide`）：五级双槽顺序流水线（IF2/ID2/EX2/MEM2/WB2）+ 深度 3 取指队列 + 4R2W 寄存器堆 + 双 EX（EX0 全功能 / EX1 纯 ALU）+ 共享 LSU + 双提交 difftest。difftest 6/6；上板四测试合计 **1932ms**（单发射 2045ms，-5.5%）：matrix 172ms / stream 410ms / cryptonight 1316ms / mixed 34ms。详见文末「2026-08-03: 2-wide 双发射」章节
+
+## 已验证（历史，2026-07-23 ~ 2026-08-02 两级 cache 时代）
 
 - [x] 两级 dcache（直通式）上板通过（2026-08-02）：8KB 0-cycle L1 + 1MB 全 BRAM L2（全部 `ram_sdpram` 实例化），单元测试 15/15、difftest 6/6；上板四测试合计 **2045ms**（单级 2177ms，-6.1%）：matrix 190ms / stream 419ms / cryptonight 1399ms / mixed 37ms。详见「2026-08-02（续三）」
 - [x] 1MB 单级 DCache 上板通过（2026-08-02）：WaitStart 超时根因定位为 **HUM 一致性回归**（S_REFILL_WRITE 写口覆盖 + HUM store 缺 dirty/PLRU + 响应/清除/写口门控不一致，`2c803d8`+`0365302` 修复）。上板全过：matrix 209ms / stream 566ms / cryptonight 1367ms / mixed 35ms（合计 -11% vs master）；**REQP-1839/1840 复位窗口嫌疑排除**。详见文末「1MB 单级 DCache」章节
@@ -52,7 +61,9 @@
 
 ## 待完成
 
+- [ ] **直连方案上板实测**：CI `submit-nodcache-wb` 时序验证 + 上板验证（cryptonight difftest 折算 ~579ms vs 旧基线 1316ms）
 - [ ] DifftestTrapEvent 接入：模块已定义，未在 core.sv 实例化，异常/中断时需接入
+- [ ] 频率探索（60/70/75MHz）：SRAM 直连后访存不随频率缩放，频率上限主要受写脉冲宽度（tWP 8-10ns）与组合路径约束
 - [x] FPGA 上板实测（2026-08-01）：`30e9c97`（非阻塞 dcache）实机全部测试通过；写回/refill 重叠（`2c4f3298`）全部 50 分已回退（见「写回/refill 重叠上板失败排查」）
 - [x] dcache ghost hit workaround 修复（2026-07-26）：LSU 修复 + just_hit 机制替代 s1_valid 无条件清零，store hit stall 移除（见修复记录）
 - [x] dcache 写缓冲/非阻塞化（2026-07-31）：store miss 当拍接受 + refill 合并、读回写合并进 refill 写、hit-under-miss 同拍服务其他行命中——refill 期间 store 不再阻塞（原占 stall 70-89% 的主瓶颈，见「非阻塞 DCache」章节）。残余阻塞：refill 期间到达的二次 miss（单 MSHR 上限）、顺序 load miss 延迟、写回→refill 串行（写回/refill 重叠已实现但上板失败回退，见「写回/refill 重叠上板失败排查」）
@@ -1030,44 +1041,50 @@ raddr mux 最初把 `f_valid`（fill 进行中）切到 `f_idx`（fill 写判定
 
 ---
 
-## 下一步方向（2026-08-03）：Runahead —— 掩盖顺序核的 miss 延迟
+---
 
-### 问题（已量化）
+## 2026-08-04: 直连异步 SRAM + 无 dcache + 写缓冲（wip/direct-sram → wip/no-dcache → master）
 
-cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依赖链（`addr2` 依赖 `pad[addr1]` 返回数据）。**多 MSHR / load-under-miss 收益 <5%**（DEVLOG 2026-08-01 实测）：顺序流水线一次只有一条 load 在 MEM，后续地址算得出但发不出——**MSHR 只是存储槽，不产生并发**。并发地址只能来自预取器 / runahead / 乱序执行。
+### 背景与动机
 
-### 方案：MERE（`docs/md/2504.01582v1.pdf_by_PaddleOCR-VL-1.6.md`，东南大学 2025，J.ACM）
+原 AXI 访存链路（CPU AXI → CDC FIFO → crossbar → axi2sram，~16-20 拍 + EXTRA_LATENCY 校准）是延迟与复杂度大头；SRAM 本身是异步器件，不需要时钟域和总线。参考 2025 龙芯杯二等奖 Synapse-X4（无 dcache + WriteBuffer + 2 拍固定延迟直连 SRAM）的做法，绕开 AXI 链路并把缓存层级整体撤销。
 
-标量顺序核上实现 runahead：**miss 时不 stall**，继续投机执行后续指令（不提交、不写 GPR），把链上后续访存地址当预取发出；miss 返回瞬间算好下一地址继续预取（**提前一个 miss 步长**），正常执行重跑时命中。核心组件：
+### 提交链（已合并 master，fast-forward）
 
-- **RCU**（runahead 控制单元 + Efficiency Detector：检测间接访存，预取准确率 95%）
-- **MC-CP**（多周期 GPR checkpoint / 恢复）
-- **Runahead-Cache**（投机 store 暂存，供投机 load 转发）
-- **释放电路**（依赖 stall-load 寄存器的指令跳过，scoreboard 式）
+1. `29a13a0` `axi_sram_direct`：AXI 从端直驱异步 SRAM 引脚（cpu_clk 域），SRAM 范围（0x1c000000-0x1c7fffff）2 拍读；MMIO（UART/confreg）经原 CDC+crossbar 转发；`soc_top` 移除 axi_wrap_ram_sp_external，crossbar ram slave 打 tie-off
+2. `100c2a6` 无 dcache：LSU dreq 直连 AXI 仲裁器；`CPUCFG.0x10` bit2=0（无 D-cache）→ 内核跳过 dcache 初始化与 FLUSH_DCACHE（指令数差 = 65,536 步 cacop walk，正确跳过）；NEMU cpucfg 同步；NEMU store 队列 48→4096
+3. `b372c69` 3 拍写：上板写地址 bug（见下）
+4. `cea199c` 写缓冲 + store→load 转发
 
-论文结果：达到 2-wide OoO 的 **93.5% 性能**，面积/功耗 <5%。
+### 上板写地址 bug（仿真抓不到，仅真 SRAM 暴露）
 
-### 与我们的匹配
+- 现象：无 dcache 版上板 matrix 失败（-1 于 1718ms），dump 显示 **matrix 只读输入区（0x1c400000）26,658/65,536 字节被改写成计算值**
+- 根因：写路径接受拍同时驱动 addr+data+WE（零 tAS/tSD 建立时间）。真 IS61WV102416 在 **WE 下降沿锁存地址**，锁存到跳变/旧地址 → 写落错地址。仿真模型 `sram.v` 组合读+边沿写，不建模 tAS/tSD → 仿真全绿
+- 为什么带 dcache 版本上板通过：L2 把 store 吸收（工作集不换出），写路径几乎未触发
+- 修复：写改 3 拍（建立/脉冲/保持），代价 ~8% IPC
 
-- cryptonight 的链式间接访问正是论文 target 的 **indirect miss** 模式（地址依赖前一个 miss 数据）
-- 我们的 2-wide 顺序 + 单 MSHR 两级 cache 与论文基座（5 级标量顺序 + 非阻塞 D-cache）同构
-- mixed_stride 的伪随机索引 + 依赖链同样受益
+### 写缓冲 bring-up 排掉的三个 bug（difftest 逐条抓出）
 
-### 关键结论（多轮分析收敛）
+1. **drain 启动与读接受同拍竞态**：drain 看 `rd_cnt==0`（读未接受）、读看 `wr_cnt==0`（drain 未启动）——同拍双双启动，读引脚覆盖写 WE 脉冲 → 写静默丢失。修复：drain 启动要求 `!ar_go`
+2. **转发读仍驱动读引脚**：rd_cnt=1 无条件进读引脚分支，打断 drain 进行中的写。修复：只有真 SRAM 读（非全转发）才驱动引脚
+3. **FIFO count 同拍 push+dequeue 冲突**：+1 与 -1 是两个 always 分支，后执行覆盖 → 新 push 条目被排除出 count，永不排空 → 静默丢 store（模型写地址整段缺失暴露）。修复：count 净更新合并
 
-1. **单 MSHR 即可起步**：cryptonight 的 B 地址依赖 A 数据，天然串行，每时刻只有一个可发预取——单 MSHR 够用
-2. **多 MSHR 不是先决条件，是增强**（stream/mixed 的独立预取并发），可后置
-3. **真正的先决**：LSU fire-and-forget（miss 不 stall、发出即释放）+ L1 预取接受语义 + checkpoint/释放电路
-4. **MSHR 覆盖顺序、不覆盖随机**：随机 + 依赖链的地址不可提前预测，多 MSHR 只能干等
+### 性能（difftest IPC，全部 6/6 + 数据比对 PASS）
 
-### 路线
+| 测试 | 旧基线(AXI+两级cache) | 直连+dcache | 直连+无cache | +写缓冲 |
+|------|:---:|:---:|:---:|:---:|
+| cryptonight | 0.3854 | 0.5312 | 0.7833 | **0.7974** |
+| stream | 0.2543 | 0.3595 | 0.4507 | **0.4951** |
+| mixed | 0.5070 | 0.5957 | 0.6199 | **0.6503** |
+| matrix | 0.7179 | 0.7314 | 0.4389 | **0.4476** |
+| simple | 0.5818 | 0.5841 | — | **0.5841** |
+| fibonacci | 0.1265 | — | — | **0.1328** |
 
-在 **master（单 LSU 双发射，`a7e6b67`，上板 1932ms）** 上实施，与双 LSU 方向互斥（双 LSU 的锁步 vs runahead 的投机自由推进）：
+- cryptonight +107%、stream +95%、mixed +28%、matrix -38%（工作集原先吃缓存命中）；四测试周期合计约减半（98M → 50M）
+- 内核 FLUSH_DCACHE walk（65,536 步）在无 dcache 时正确跳过，指令数差 = 785,091（全部测试精确一致）
+- difftest 移除 EXTRA_LATENCY 校准后无失真，周期数即真实时序
 
-1. LSU fire-and-forget + L1 预取路径（runahead 模式）
-2. GPR checkpoint / 恢复（MC-CP）
-3. Runahead-Cache（投机 store 转发）
-4. Efficiency Detector + StepCounter（进入/退出条件）
+### 关键教训
 
 双 LSU 分支（`dev/ilp-2wide`）已存档：difftest 6/6 全过但仅 matrix +1.9%（其余 0%），且尚未上板验证，**性价比低，不回用**。
 
@@ -1320,3 +1337,15 @@ scripts/vivado/run_vivado.sh impl     # create + 综合 + 实现 + 时序报告
 - `unittest/beq_fallthrough_beq/`：back-to-back beq 模式单测，**未复现 bug**
   （NEMU 按 DUT 提交步进，弹跳自洽），未入库。
 - `nscscc-solo-la-soc/rtl/ip/myCPU/core.sv.bak_dbg`：调试备份。
+
+### 直连 SRAM 方案的关键教训（远端 2026-08-04 记录，与上述 100MHz 冲刺记录并存）
+
+1. **cache 存储必须 `ram_sdpram` 实例化**（沿用）——本次直连方案的存储只有 icache，天然规避
+2. **异步 SRAM 写必须给地址/数据建立时间**——WE 与地址同拍驱动是上板专属 bug，仿真模型永远抓不到
+3. **difftest 不比内存**——写错位/丢写只有 ExtRAM 比对或上板能抓；本次 3 个写缓冲 bug 由 difftest 寄存器比对抓出（load 返回错值），2 个由上板抓出（写落错地址）
+4. **参考获奖方案（Synapse-X4）的价值**：无 dcache + WriteBuffer 的方向被实测验证——cryptonight 从 1316ms 量级降到 ~580ms 量级（difftest 折算，上板待验证）
+
+### 待办
+
+- CI `submit-nodcache-wb` 时序验证 + 上板实测
+- 频率探索（60/70/75MHz）：访存不随频率缩放后，上限受写脉冲（tWP）与组合路径约束
