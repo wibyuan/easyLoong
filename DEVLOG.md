@@ -1173,3 +1173,45 @@ cryptonight 的 DCacheRefill 占 ~43% 周期：2MB 随机 scratchpad + 串行依
 2. **store 路径**（Impl -1.078 浮出）：LSU FSM → Axi_CDC wFifo。切点待分析（LSU 请求注册化 or CDC 写端口寄存器化；store 延迟的 IPC 代价需实测）。
 
 两条路径的 IPC 归因都需**同构建复跑**（排除 workload 重建波动）。
+
+---
+
+## Vivado 操作手册（交接必备）
+
+### 流程入口
+
+```bash
+scripts/vivado/run_vivado.sh create   # 重建工程（RTL + xci + XDC）
+scripts/vivado/run_vivado.sh synth    # create + 综合 + utilization/时序报告
+scripts/vivado/run_vivado.sh impl     # create + 综合 + 实现 + 时序报告
+```
+
+- Docker 镜像 `vivado:2019.2`，仓库根目录挂载为 `/workspace`。
+- 报告输出：`run_vivado/project/{synth,impl}_timing_summary.rpt`、
+  `{synth,impl}_critical_paths.rpt`、`synth_util_hier.rpt`。
+- WNS 读取：报告首行数据表的第 1 列。
+
+### 硬性注意事项
+
+1. **任何 RTL 改动必须先过门禁再启动 Vivado**：
+   `scripts/gate_diff.sh simple matrix cryptonight`（失败 exit 1）。
+   禁止 `grep "mismatch" && docker` 链（grep 匹配失败文本退出码是 0 会放行）。
+2. **PLL 产物清理**：Vivado 每次运行会在 `src/soc/xilinx_ip/clk_pll/` 再生成
+   `clk_pll_sim_netlist.v/.dcp/.veo/.xml` 等 7 个产物，`create_project.tcl` 会
+   把它们当源文件扫入，综合报 `Synth 8-5832: source file was generated for
+   simulation`。`run_vivado.sh` 已自动清理（产物每次重新生成，删除安全；
+   `.xci` 才是源）。
+3. **xci 保护**：任何 Vivado 运行后检查 `git status src/soc/xilinx_ip/`——
+   `upgrade_ip` 可能静默改写 `.xci`，用 `git checkout` 还原。
+4. **difftest 串行**：`make test-*` 共享构建目录（NEMU defconfig + supervisor），
+   并行会写坏构建（曾实测）。串行跑，日志可放 `/tmp`（输出物非源）。
+5. **`run_vivado/flow/` 受 pre-receive 钩子保护**：不得修改；实验脚本一律放
+   `scripts/`。
+6. **IPC 归因**：`make test-*` 每次重建 kernel（workload 数据可能变动），
+   IPC 有运行间波动（如 mixed 0.5829~0.5882）——归因需同构建复跑。
+
+### 未跟踪的实验文件（有意保留，勿随意删除）
+
+- `unittest/beq_fallthrough_beq/`：back-to-back beq 模式单测，**未复现 bug**
+  （NEMU 按 DUT 提交步进，弹跳自洽），未入库。
+- `nscscc-solo-la-soc/rtl/ip/myCPU/core.sv.bak_dbg`：调试备份。
