@@ -1216,9 +1216,9 @@ wire        cdc_rlast  ;
 wire        cdc_rvalid ;
 wire        cdc_rready ;
 
-axi_sram_direct u_axi_sram_direct (
-    .aclk             ( cpu_clk           ),
-    .aresetn          ( cpu_resetn        ),
+axi_sram_direct #(.WB_DEPTH(4)) u_axi_sram_direct (
+     .aclk             ( cpu_clk           ),
+     .aresetn          ( cpu_resetn        ),
     // AXI slave (CPU master)
     .arid             ( cpu_arid          ),
     .araddr           ( cpu_araddr        ),
