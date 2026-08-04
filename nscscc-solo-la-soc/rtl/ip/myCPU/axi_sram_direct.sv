@@ -175,8 +175,22 @@ module axi_sram_direct #(
     // a stale preview only biases the full-forward-vs-SRAM decision, and
     // both paths produce correct data.
     logic [31:0] search_addr;
+    // The accept-time search re-runs on the REGISTERED preview address
+    // (the accept always follows its preview exactly one cycle later with
+    // the same address — the arbiter's read FSM holds the request until
+    // the accept), never on the combinational araddr: the LSU/arbiter
+    // address muxes (slot0/slot1 select, DMW translation, icache-vs-LSU
+    // select) must stay off the search->pin-drive accept chain (impl
+    // critical family: ex_mem1.mem_addr -> those muxes -> the coverage
+    // search -> bank_out_r/ram_addr_out_r, worst -0.339ns).  Zero-IPC:
+    // the address value is identical, only its source is registered.
+    logic [31:0] ar_preview_addr_r;
+    always_ff @(posedge aclk) begin
+        if (ar_preview_valid)
+            ar_preview_addr_r <= ar_preview_addr;
+    end
     assign search_addr = (rd_cnt == 2'd1) ? r_addr
-                        : (ar_preview_valid ? ar_preview_addr : araddr);
+                        : (ar_preview_valid ? ar_preview_addr : ar_preview_addr_r);
 
     logic [3:0]  wb_cover_ar;
     logic [31:0] wb_fwd_ar;
