@@ -143,7 +143,6 @@ module axi_sram_direct #(
     logic        r_mmio;                 // MMIO read accepted, awaiting rlast
     logic        w_mmio;                 // MMIO write accepted, awaiting b
     logic [31:0] r_addr;
-    logic [7:0]  r_rem;
     logic [3:0]  r_id;
     logic        r_bank;
     logic [1:0]  rd_cnt;                 // 0 idle / 1 forward / 2 SRAM respond
@@ -299,7 +298,7 @@ module axi_sram_direct #(
     wire sram_bresp    = wb_push_b && !w_mmio;
 
     assign rvalid = r_mmio ? mmio_rvalid : (sram_fwd_resp || sram_rd_resp);
-    assign rlast  = r_mmio ? mmio_rlast  : (r_rem == 8'd0);
+    assign rlast  = r_mmio ? mmio_rlast  : 1'b1;
     assign rid    = r_mmio ? mmio_rid[3:0] : r_id;
     assign rresp  = r_mmio ? mmio_rresp  : 2'b00;
     assign rdata  = r_mmio ? mmio_rdata
@@ -431,7 +430,6 @@ module axi_sram_direct #(
             w_mmio    <= 1'b0;
             rd_cnt    <= 2'd0;
             wr_cnt    <= 2'd0;
-            r_rem     <= 8'd0;
             wb_head   <= '0;
             wb_tail   <= '0;
             wb_count  <= '0;
@@ -501,35 +499,28 @@ module axi_sram_direct #(
             end
 
             // ---- SRAM read FSM (with the write-buffer forwarding) ----
+            // Single-beat only: every requester here issues arlen==0 (the
+            // LSU's burst_len is hardwired to 0 and the icache is always
+            // single-beat), so r_addr is captured once and rlast is always
+            // 1 — there is no burst advance, which keeps r_addr's D-side
+            // (araddr, CE = ar_go) and reset trivially clean.
             if (ar_go && ar_sram) begin
                 rd_cnt <= 2'd1;
                 r_addr <= araddr;
-                r_rem  <= arlen;
                 r_id   <= arid;
                 r_bank <= araddr[22];
             end else if (rd_cnt == 2'd1) begin
                 if (wb_full_r) begin
                     // fully forwarded: respond now, no SRAM access
                     if (rready) begin
-                        if (r_rem == 8'd0) begin
-                            rd_cnt <= 2'd0;
-                        end else begin
-                            r_addr <= r_addr + 32'd4;
-                            r_rem  <= r_rem - 8'd1;
-                        end
+                        rd_cnt <= 2'd0;
                     end
                 end else begin
                     rd_cnt <= 2'd2;
                 end
             end else if (rd_cnt == 2'd2) begin
                 if (rready) begin
-                    if (r_rem == 8'd0) begin
-                        rd_cnt <= 2'd0;
-                    end else begin
-                        rd_cnt <= 2'd1;
-                        r_addr <= r_addr + 32'd4;
-                        r_rem  <= r_rem - 8'd1;
-                    end
+                    rd_cnt <= 2'd0;
                 end
             end
         end
