@@ -1333,6 +1333,15 @@ NEMU `ICACHE_INDEX_BITS` 8→6 与 DUT CPUCFG.0x11 对齐（difftest 比较读�
 再实现，不要先写 RTL**。`ac35c43` 的 IPC 代价（mixed -10.4%/cryptonight -6.7%）当前不可恢复：
 组合旁路回归会被 +0.024 余量否决，其余子类无常数可合并，代价接受。
 
+**CPUCFG 宣称无 cache + icache 结构移除（2026-08-05，双重否决）**：因无 dcache，考虑 CPUCFG.0x10 的
+bit0（I$）也置 0 → 内核 init.S 的 `andi t1,t0,0x5; beq t1,zero,no_cache_mmu` 自动走无缓存路径（跳过
+INIT_CACHE 扫描 + DMW 设置），从而去掉 icache 的 cacop 机制（S_CACOP_ST + 请求寄存化 + hazard 的
+cacop_not_ready）。**结果**：① cacop 移除后全量 6/6 + IPC 不变，但 impl **+0.024 → -0.127**（网表变化 →
+布局打散，同 FQ 实验模式——被移除的结构本就不是当前时序负担，顶部是 SRAM 引脚 IOB 地板）；② CPUCFG
+宣称单独保留无意义（只省 boot ~64 拍扫描，还引入"内核永不冲刷"的一致性前提——虽然当前评测代码全是内核
+内嵌、从不运行时修改、S_INIT 复位清零足够，但收益不值得）。**两者全部回退，master 保持 +0.024**。
+教训：icache 的"复杂度"不是当前瓶颈，结构移除对时序是净亏损；一致性由 S_INIT + 代码从不修改保证。
+
 **FQ 改动组的结构与教训（`shame/fq-absorb-target`，供后续参考）**：
 - 族 A 断法：FQ 只在 `!fq_stall_all`（其 CE）时采纳 nfq，`!fq_stall_all` 蕴含 `iresp.data_ok` ——
   吸收侧选择/数据改读状态基信号（`fetch_valid*_abs`/`iresp.data`），0-cycle 响应链离开 fq 寄存器 D 路径；
