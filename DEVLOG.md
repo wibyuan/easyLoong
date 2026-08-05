@@ -1497,6 +1497,17 @@ scripts/vivado/run_vivado.sh impl     # create + 综合 + 实现 + 时序报告
   （NEMU 按 DUT 提交步进，弹跳自洽），未入库。
 - `nscscc-solo-la-soc/rtl/ip/myCPU/core.sv.bak_dbg`：调试备份。
 
+### PLL 改频（docker headless 已解决，2026-08-05）
+
+`scripts/vivado/refreq_pll.tcl <freq_mhz>`：把 clk_pll.xci 复制进临时工程，
+用 Vivado 改 `CONFIG.CLKOUT1_REQUESTED_OUT_FREQ`（cpu_clk = 向导输出 #1 =
+PLLE2 CLKOUT0）、`CONFIG.CLKOUT2_REQUESTED_OUT_FREQ=25`（sys_clk），
+`generate_target` 后把重生成的 xci 拷回。向导自动重算 VCO/分频/实际频率，
+请求频率只是"最近可达成"（50MHz 参考钟下 PLL 整数比限制，如请求 101 →
+实际 101.667）。此前 2c1270a 记载的 "docker headless re-frequency is
+unsolved" 已作废；手改 xci 不再需要。101–110MHz 扫描见 gitlab 分支
+`freq-{101..110}mhz`。
+
 ### 直连 SRAM 方案的关键教训（远端 2026-08-04 记录，与上述 100MHz 冲刺记录并存）
 
 1. **cache 存储必须 `ram_sdpram` 实例化**（沿用）——本次直连方案的存储只有 icache，天然规避
