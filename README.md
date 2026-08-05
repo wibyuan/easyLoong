@@ -125,6 +125,8 @@
 
 指令级差分测试（difftest，DUT vs NEMU 逐拍比对）6/6 全部通过：阶段 1-5 功能测试 + fibonacci，含 ExtRAM 数据比对（matrix/stream/cryptonight/mixed）。基准 IPC（Verilator difftest，100MHz）：matrix 0.448 / stream 0.496 / mixed 0.593 / cryptonight 0.744。测试方法见第 6/7 节，历史记录见 [DEVLOG.md](DEVLOG.md)。
 
+**上板实测（100MHz，2026-08-05）**：Matrix 126ms / Stream 80ms / Cryptonight 311ms / Mixed 6ms（相对 90MHz 基线 140/89/345/6ms，比例 ≈90/100，IPC 无损失）。
+
 ## 5. 开发环境搭建
 
 ### Clone

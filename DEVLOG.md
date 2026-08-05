@@ -2,6 +2,7 @@
 
 ## 已验证（2026-08-04 起，当前 master = 直连 SRAM + 无 dcache + 写缓冲）
 
+- [x] **100MHz 上板通过（2026-08-05，`submit-100mhz-icache1k`）**：1KB icache + 无 dcache 直连 SRAM + 100MHz 时序闭环（impl +0.024）。上板四测试：**matrix 126ms / stream 80ms / cryptonight 311ms / mixed 6ms**（相对 90MHz 基线 140/89/345/6ms，比例 ≈90/100——**IPC 在 100MHz 完整保持**，1KB icache 对基准零影响确认）。历史对比：2-wide 1932ms（2026-08-03）→ 当前合计 ~523ms（-73%）
 - [x] **直连异步 SRAM（wip/direct-sram → master）**：新模块 `axi_sram_direct` 在 cpu_clk 直驱 BaseRAM/ExtRAM 引脚，完全绕开 AXI CDC / crossbar / axi2sram（~16-20 拍 + EXTRA_LATENCY 校准 → 物理下限 2 拍读 / 3 拍写）。MMIO（UART/confreg）经原 CDC+crossbar 转发。difftest 6/6 + 数据比对全过；cryptonight IPC 0.3854→0.5312 (+38%)、stream +41%、mixed +18%。详见文末「2026-08-04: 直连异步 SRAM + 无 dcache + 写缓冲」
 - [x] **无 dcache（wip/no-dcache → master）**：LSU 直通 AXI 仲裁器（全部 uncached 直通），`CPUCFG.0x10` bit2=0 → 内核跳过 dcache 初始化与 FLUSH_DCACHE；NEMU cpucfg 同步。cryptonight IPC 0.5312→0.7833（再 +47%），stream +25%、mixed +4%，matrix -39%（工作集原先吃缓存命中）；四测试周期合计约减半
 - [x] **上板写地址 bug 定位与修复（3 拍写）**：真 SRAM 在 WE 下降沿锁存地址，同拍驱动地址+WE（零 tAS/tSD）导致上板写落错地址（matrix 只读输入区被改写 26,658/65,536 字节；仿真模型不建模 tAS/tSD 故抓不到）。修复：写改为 3 拍（建立/脉冲/保持）。上板验证中（CI `submit-nodcache-fix`）
