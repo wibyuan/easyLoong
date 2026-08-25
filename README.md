@@ -1,5 +1,9 @@
 # easyLoong — NSCSCC 2026 龙芯杯个人赛 (LoongArch)
 
+> 本项目为第十届龙芯杯（NSCSCC 2026）个人赛 LA32R 处理器核开发的完整代码记录。
+> 本项目最终止步初赛（未能进入决赛），在 Matrix、Stream 等性能测试上与顶尖选手的乱序多发射核存在数倍的客观差距。
+> 记录仅为完整留存本人从零搭建流水线、接入 difftest、利用大模型（DeepSeek V4）进行硬件调试与优化的真实过程，供后续参赛同学与体系结构初学者参考避坑。
+
 基于 XC7A200T-2FBG676C FPGA 的 LoongArch 32-bit (LA32R) 精简版 CPU 实现。
 
 > **⚠ 任何 Vivado / 综合 / 实现 / 时序 / PLL 工作必须首先阅读并遵循 [DEVLOG.md](DEVLOG.md)「Vivado 操作手册（交接必备）」**，并使用 `scripts/vivado/run_vivado.sh {create|synth|impl}` 流程（默认策略）。RTL 改动必须先过门禁 `scripts/gate_diff.sh simple matrix cryptonight`。
